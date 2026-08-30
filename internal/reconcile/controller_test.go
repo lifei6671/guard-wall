@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
+	"github.com/lifei6671/guard-wall/internal/enforcement"
 	"github.com/lifei6671/guard-wall/internal/firewall/fake"
 )
 
@@ -345,6 +346,28 @@ func TestUnrelatedSnapshotRevisionDoesNotInvalidateTargetFence(t *testing.T) {
 	}
 	if generation, ok := controller.ConfirmedTarget(target); !ok || generation != 1 {
 		t.Fatalf("confirmed generation = %d,%v; want 1,true", generation, ok)
+	}
+}
+
+func TestPhysicalTargetMatchIncludesSafetyGraceExpiry(t *testing.T) {
+	target := netip.MustParsePrefix("192.0.2.41/32")
+	effectiveUntil := time.Unix(1_700_000_000, 0).UTC()
+	intent := targetIntent(target, 1)
+	intent.EffectiveUntil = &effectiveUntil
+	intent.TimeoutMode = core.TimeoutNative
+	observed := core.PhysicalTargetObserved{
+		CanonicalTarget: target, BanMembership: core.ObservedMembershipPresent,
+		PolicyCoverage: core.ObservedPolicyNone, TimeoutMode: core.TimeoutNative,
+		NativeExpiry: enforcement.NativeExpiryForIntent(intent), Scopes: intent.Scopes,
+		AddressFamily: intent.AddressFamily, OwnerVersion: intent.BackendAttributesDigest,
+	}
+	if !physicalTargetMatches(map[netip.Prefix]core.PhysicalTargetObserved{target: observed}, intent) {
+		t.Fatal("SafetyGrace-adjusted native expiry did not converge")
+	}
+	stale := effectiveUntil
+	observed.NativeExpiry = &stale
+	if physicalTargetMatches(map[netip.Prefix]core.PhysicalTargetObserved{target: observed}, intent) {
+		t.Fatal("unadjusted EffectiveUntil was accepted as native expiry")
 	}
 }
 

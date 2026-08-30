@@ -4,8 +4,10 @@ import (
 	"context"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
+	"github.com/lifei6671/guard-wall/internal/enforcement"
 )
 
 func TestBackendConfirmedRejectedAndUnknown(t *testing.T) {
@@ -124,6 +126,55 @@ func TestBackendSnapshotsAreIndependent(t *testing.T) {
 	next, _ := backend.Probe(context.Background())
 	if _, exists := next.Targets[target]; !exists {
 		t.Fatal("caller mutated backend through a snapshot map")
+	}
+}
+
+func TestBackendAppliesAndRefreshesNativeExpiryWithSafetyGrace(t *testing.T) {
+	backend := NewBackend()
+	target := netip.MustParsePrefix("192.0.2.40/32")
+	effectiveUntil := time.Unix(1_700_000_000, 0).UTC()
+	intent := targetIntent(target, 1)
+	intent.EffectiveUntil = &effectiveUntil
+	intent.TimeoutMode = core.TimeoutNative
+	if _, err := backend.Apply(context.Background(), targetPlan(target, intent)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := backend.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := effectiveUntil.Add(enforcement.M0SafetyGrace)
+	if observed := snapshot.Targets[target]; observed.NativeExpiry == nil || !observed.NativeExpiry.Equal(want) {
+		t.Fatalf("native expiry = %v, want %v", observed.NativeExpiry, want)
+	}
+
+	effectiveUntil = effectiveUntil.Add(time.Hour)
+	intent.EffectiveUntil = &effectiveUntil
+	intent.Generation++
+	if _, err := backend.Apply(context.Background(), targetPlan(target, intent)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = backend.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = effectiveUntil.Add(enforcement.M0SafetyGrace)
+	if observed := snapshot.Targets[target]; observed.NativeExpiry == nil || !observed.NativeExpiry.Equal(want) {
+		t.Fatalf("refreshed native expiry = %v, want %v", observed.NativeExpiry, want)
+	}
+
+	intent.EffectiveUntil = nil
+	intent.TimeoutMode = core.TimeoutNone
+	intent.Generation++
+	if _, err := backend.Apply(context.Background(), targetPlan(target, intent)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = backend.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed := snapshot.Targets[target]; observed.NativeExpiry != nil || observed.TimeoutMode != core.TimeoutNone {
+		t.Fatalf("permanent target retained timeout: %+v", observed)
 	}
 }
 

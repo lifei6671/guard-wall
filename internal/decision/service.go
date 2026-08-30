@@ -46,6 +46,8 @@ func (e *TerminalConflictError) Unwrap() error { return ErrTerminalConflict }
 // AutomaticRequest contains the immutable creation facts for an Automatic Decision trigger.
 type AutomaticRequest struct {
 	DecisionID  core.DecisionID
+	DeliveryID  core.DeliveryID
+	EventID     core.EventID
 	NodeID      core.NodeID
 	RuleID      core.RuleID
 	RuleVersion *core.RuleVersion

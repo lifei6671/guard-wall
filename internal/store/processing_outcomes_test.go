@@ -18,17 +18,18 @@ const (
 )
 
 type processingFixture struct {
-	now          time.Time
-	deliveryID   core.DeliveryID
-	eventID      core.EventID
-	position     core.SourcePosition
-	outcome      core.ParserTerminalOutcome
-	contribution core.DetectionContribution
-	alert        core.Alert
-	decision     core.Decision
-	projection   core.DesiredBanProjection
-	audit        CriticalAudit
-	receipt      core.ProcessingReceipt
+	now              time.Time
+	deliveryID       core.DeliveryID
+	eventID          core.EventID
+	position         core.SourcePosition
+	outcome          core.ParserTerminalOutcome
+	detectionOutcome core.DetectionTerminalOutcome
+	contribution     core.DetectionContribution
+	alert            core.Alert
+	decision         core.Decision
+	projection       core.DesiredBanProjection
+	audit            CriticalAudit
+	receipt          core.ProcessingReceipt
 }
 
 func TestProcessingSemanticWritersCommitTogether(t *testing.T) {
@@ -227,6 +228,10 @@ func prepareProcessingFixture(t *testing.T, database *Store) processingFixture {
 		contribution: core.DetectionContribution{
 			DeliveryID: deliveryID, EventID: eventID, RuleID: ruleID, RuleVersion: ruleVersion, ContributedAt: now,
 		},
+		detectionOutcome: core.DetectionTerminalOutcome{
+			DeliveryID: deliveryID, EventID: eventID, RuleID: ruleID, RuleVersion: ruleVersion,
+			Kind: core.DetectionOutcomeSuccess, CompletedAt: now,
+		},
 		alert: core.Alert{
 			ID: alertID, NodeID: testNodeID, EventID: eventID, RuleID: ruleID,
 			RuleVersion: ruleVersion, CanonicalTarget: target, ObservedAt: now, CreatedAt: now,
@@ -259,6 +264,9 @@ func writeCompleteProcessingOutcome(t *testing.T, uow *UnitOfWork, fixture proce
 	if err := uow.PutParserOutcome(ctx, fixture.outcome); err != nil {
 		t.Fatal(err)
 	}
+	if err := uow.PutDetectionOutcome(ctx, fixture.detectionOutcome); err != nil {
+		t.Fatal(err)
+	}
 	if inserted, err := uow.PutDetectionContribution(ctx, fixture.contribution); err != nil || !inserted {
 		t.Fatalf("PutDetectionContribution() = %v,%v", inserted, err)
 	}
@@ -287,10 +295,14 @@ func writeUntilInjectedFailure(ctx context.Context, uow *UnitOfWork, fixture pro
 	if err := uow.PutParserOutcome(ctx, outcome); err != nil {
 		return err
 	}
-	contribution := fixture.contribution
+	detectionOutcome := fixture.detectionOutcome
 	if failStage == "detection" {
-		contribution.RuleVersion = "missing"
+		detectionOutcome.RuleVersion = "missing"
 	}
+	if err := uow.PutDetectionOutcome(ctx, detectionOutcome); err != nil {
+		return err
+	}
+	contribution := fixture.contribution
 	if _, err := uow.PutDetectionContribution(ctx, contribution); err != nil {
 		return err
 	}
@@ -339,7 +351,7 @@ func writeUntilInjectedFailure(ctx context.Context, uow *UnitOfWork, fixture pro
 func assertProcessingCounts(t *testing.T, database *Store, want int) {
 	t.Helper()
 	for _, table := range []string{
-		"parser_terminal_outcomes", "detection_contributions", "alerts", "decisions",
+		"parser_terminal_outcomes", "detection_terminal_outcomes", "detection_contributions", "alerts", "decisions",
 		"desired_ban_projections", "audit_logs", "processing_receipts",
 	} {
 		var count int

@@ -77,6 +77,31 @@ func TestResolveTargetPermanentIntentHasNoNativeTimeout(t *testing.T) {
 	}
 }
 
+func TestNativeExpiryForIntentAddsSafetyGraceOnlyToFiniteNativeTimeout(t *testing.T) {
+	effectiveUntil := time.Unix(1_700_000_000, 0).UTC()
+	finite := core.NormalizedTargetEnforcementIntent{
+		EffectiveUntil: &effectiveUntil,
+		TimeoutMode:    core.TimeoutNative,
+	}
+	nativeExpiry := NativeExpiryForIntent(finite)
+	if nativeExpiry == nil || !nativeExpiry.Equal(effectiveUntil.Add(M0SafetyGrace)) {
+		t.Fatalf("native expiry = %v", nativeExpiry)
+	}
+	if !finite.EffectiveUntil.Equal(effectiveUntil) {
+		t.Fatalf("effective until was mutated: %v", finite.EffectiveUntil)
+	}
+
+	finite.TimeoutMode = core.TimeoutNone
+	if expiry := NativeExpiryForIntent(finite); expiry != nil {
+		t.Fatalf("non-native timeout received expiry %v", expiry)
+	}
+	finite.EffectiveUntil = nil
+	finite.TimeoutMode = core.TimeoutNative
+	if expiry := NativeExpiryForIntent(finite); expiry != nil {
+		t.Fatalf("permanent target received expiry %v", expiry)
+	}
+}
+
 func TestEquivalentDetectsEveryComparedAttribute(t *testing.T) {
 	base := core.NormalizedTargetEnforcementIntent{
 		NodeID:                  "00112233445566778899aabbccddeeff",

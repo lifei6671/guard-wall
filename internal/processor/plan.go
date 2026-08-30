@@ -4,11 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
+	"time"
+	"unicode/utf8"
+
+	"github.com/lifei6671/guard-wall/internal/core"
 )
 
-// PlanFailureClass distinguishes a deterministic parser rejection from failures
+// PlanFailureClass distinguishes a deterministic record rejection from failures
 // that must abort the whole processing attempt without producing completion.
 type PlanFailureClass uint8
 
@@ -20,14 +25,22 @@ const (
 )
 
 // PlanFailure is a classified failure returned by a catalog or ParserRunner.
+// A RecordPermanent failure must carry the stable, sanitized diagnostic that is
+// safe to persist in the terminal receipt and Critical Audit.
 type PlanFailure struct {
-	Class PlanFailureClass
-	Cause error
+	Class          PlanFailureClass
+	Code           string
+	SanitizedError string
+	Action         string
+	Cause          error
 }
 
 func (e *PlanFailure) Error() string {
 	if e == nil {
 		return "processing plan failure"
+	}
+	if e.Class == PlanFailureRecordPermanent && e.SanitizedError != "" {
+		return fmt.Sprintf("processing plan failure class %d: %s", e.Class, e.SanitizedError)
 	}
 	if e.Cause == nil {
 		return fmt.Sprintf("processing plan failure class %d", e.Class)
@@ -44,15 +57,15 @@ func (e *PlanFailure) Unwrap() error {
 
 // ParserSnapshot is one immutable Active Parser revision selected at ingress.
 type ParserSnapshot struct {
-	ParserID string
-	Version  string
+	ParserID core.ParserID
+	Version  core.ParserVersion
 	Priority int
 }
 
 // RuleSnapshot is one immutable Active Detection Rule revision.
 type RuleSnapshot struct {
-	RuleID  string
-	Version string
+	RuleID  core.RuleID
+	Version core.RuleVersion
 }
 
 // PlanCatalog provides atomic Active-version snapshots. Rules are intentionally
@@ -62,37 +75,32 @@ type PlanCatalog interface {
 	SnapshotRules(context.Context) ([]RuleSnapshot, error)
 }
 
-// ParserExecution contains only the fact needed by this slice to decide whether
-// the lazy Rule Catalog snapshot is required.
+// ParserExecution contains only Parser-owned fields. The plan constructs every
+// system-owned SecurityEvent field from the frozen snapshot and Delivery.
 type ParserExecution struct {
-	EmittedEvents uint32
+	Events []core.EventFields
 }
 
-// ParserRunner executes one already-frozen Parser revision.
+// ParserRunner executes one already-frozen Parser revision against a RawRecord.
 type ParserRunner interface {
-	RunParser(context.Context, ParserSnapshot) (ParserExecution, error)
+	RunParser(context.Context, ParserSnapshot, core.RawRecord) (ParserExecution, error)
 }
 
-// ParserTerminalState is a terminal result for one Parser inside an attempt.
-type ParserTerminalState uint8
-
-const (
-	ParserSucceeded ParserTerminalState = iota + 1
-	ParserRejectedPermanent
-)
-
-// ParserTerminalOutcome records only Parser-local terminal results. Transient,
-// blocked, and cancelled work never appears here as if it were terminal.
-type ParserTerminalOutcome struct {
-	Parser ParserSnapshot
-	State  ParserTerminalState
+// ParserPermanentFailure binds one durable poison diagnostic to the Parser
+// revision that rejected the record.
+type ParserPermanentFailure struct {
+	Parser  ParserSnapshot
+	Failure core.PermanentFailure
 }
 
 // PlanRunResult is attempt-local state. Complete does not imply a committed
 // receipt, SourceDurable, or Coordinator completion.
 type PlanRunResult struct {
-	Outcomes []ParserTerminalOutcome
-	Complete bool
+	ParserOutcomes    []core.ParserTerminalOutcome
+	Events            []core.SecurityEvent
+	Rules             []RuleSnapshot
+	PermanentFailures []ParserPermanentFailure
+	Complete          bool
 }
 
 // ProcessingPlan freezes the Parser Set eagerly and the Rule Catalog lazily.
@@ -100,7 +108,7 @@ type PlanRunResult struct {
 type ProcessingPlan struct {
 	parsers []ParserSnapshot
 	catalog PlanCatalog
-	
+
 	rulesMu     sync.Mutex
 	rulesFrozen bool
 	rules       []RuleSnapshot
@@ -161,36 +169,87 @@ func (p *ProcessingPlan) Rules(ctx context.Context) ([]RuleSnapshot, error) {
 
 // Run executes the all-match Parser Set. RecordPermanent rejects only that
 // Parser; every non-terminal failure aborts the attempt and leaves Complete false.
-func (p *ProcessingPlan) Run(ctx context.Context, runner ParserRunner) (PlanRunResult, error) {
+func (p *ProcessingPlan) Run(
+	ctx context.Context,
+	nodeID core.NodeID,
+	delivery core.Delivery,
+	runner ParserRunner,
+	completedAt time.Time,
+) (PlanRunResult, error) {
 	if p == nil || runner == nil {
 		return PlanRunResult{}, newPlanFailure(PlanFailureBlocked, errors.New("processing plan and parser runner are required"))
 	}
 	if ctx == nil {
 		return PlanRunResult{}, newPlanFailure(PlanFailureBlocked, errors.New("processing context is required"))
 	}
-	result := PlanRunResult{Outcomes: make([]ParserTerminalOutcome, 0, len(p.parsers))}
+	if err := delivery.Validate(); err != nil {
+		return PlanRunResult{}, newPlanFailure(PlanFailureBlocked, fmt.Errorf("validate delivery: %w", err))
+	}
+	if completedAt.IsZero() {
+		return PlanRunResult{}, newPlanFailure(PlanFailureBlocked, errors.New("parser completion time is required"))
+	}
+
+	result := PlanRunResult{
+		ParserOutcomes: make([]core.ParserTerminalOutcome, 0, len(p.parsers)),
+	}
 	for _, parser := range p.parsers {
 		if err := ctx.Err(); err != nil {
 			return clonePlanResult(result), newPlanFailure(PlanFailureCancelled, err)
 		}
-		execution, err := runner.RunParser(ctx, parser)
+		execution, err := runner.RunParser(ctx, parser, cloneRawRecord(delivery.Record))
 		if err != nil {
 			failure := classifyPlanFailure(err, false)
 			if failure.Class == PlanFailureRecordPermanent {
-				result.Outcomes = append(result.Outcomes, ParserTerminalOutcome{
+				result.ParserOutcomes = append(result.ParserOutcomes, core.ParserTerminalOutcome{
+					DeliveryID: delivery.ID, ParserID: parser.ParserID, ParserVersion: parser.Version,
+					Kind: core.ParserOutcomeRecordPermanent, FailureCode: failure.Code,
+					CompletedAt: completedAt,
+				})
+				result.PermanentFailures = append(result.PermanentFailures, ParserPermanentFailure{
 					Parser: parser,
-					State:  ParserRejectedPermanent,
+					Failure: core.PermanentFailure{
+						Stage: "parser", Code: failure.Code, SanitizedError: failure.SanitizedError,
+						Action: failure.Action, OccurredAt: completedAt,
+					},
 				})
 				continue
 			}
 			return clonePlanResult(result), failure
 		}
-		if execution.EmittedEvents > 0 {
-			if _, err := p.Rules(ctx); err != nil {
-				return clonePlanResult(result), err
-			}
+
+		if len(execution.Events) == 0 {
+			result.ParserOutcomes = append(result.ParserOutcomes, core.ParserTerminalOutcome{
+				DeliveryID: delivery.ID, ParserID: parser.ParserID, ParserVersion: parser.Version,
+				Kind: core.ParserOutcomeNoMatch, CompletedAt: completedAt,
+			})
+			continue
 		}
-		result.Outcomes = append(result.Outcomes, ParserTerminalOutcome{Parser: parser, State: ParserSucceeded})
+		if uint64(len(execution.Events)) > math.MaxUint32 {
+			return clonePlanResult(result), newPlanFailure(
+				PlanFailureBlocked, errors.New("parser emitted more events than the stable index supports"))
+		}
+
+		parserEvents := make([]core.SecurityEvent, 0, len(execution.Events))
+		for index, fields := range execution.Events {
+			event, err := core.NewSecurityEvent(
+				nodeID, delivery, parser.ParserID, parser.Version, uint32(index), fields)
+			if err != nil {
+				return clonePlanResult(result), newPlanFailure(
+					PlanFailureBlocked, fmt.Errorf("parser %q emitted invalid event: %w", parser.ParserID, err))
+			}
+			parserEvents = append(parserEvents, event)
+		}
+		rules, err := p.Rules(ctx)
+		if err != nil {
+			return clonePlanResult(result), err
+		}
+		result.Rules = rules
+		result.Events = append(result.Events, parserEvents...)
+		result.ParserOutcomes = append(result.ParserOutcomes, core.ParserTerminalOutcome{
+			DeliveryID: delivery.ID, ParserID: parser.ParserID, ParserVersion: parser.Version,
+			Kind: core.ParserOutcomeSuccess, EmittedCount: uint32(len(parserEvents)),
+			CompletedAt: completedAt,
+		})
 	}
 	result.Complete = true
 	return clonePlanResult(result), nil
@@ -204,7 +263,7 @@ func freezeParsers(parsers []ParserSnapshot) ([]ParserSnapshot, error) {
 		}
 		return frozen[left].ParserID < frozen[right].ParserID
 	})
-	seen := make(map[string]struct{}, len(frozen))
+	seen := make(map[core.ParserID]struct{}, len(frozen))
 	for _, parser := range frozen {
 		if parser.ParserID == "" || parser.Version == "" {
 			return nil, fmt.Errorf("parser snapshot identity is incomplete")
@@ -243,8 +302,16 @@ func classifyPlanFailure(err error, snapshot bool) *PlanFailure {
 			class = PlanFailureBlocked
 		}
 		switch class {
-		case PlanFailureRecordPermanent, PlanFailureTransient, PlanFailureBlocked, PlanFailureCancelled:
-			return newPlanFailure(class, err)
+		case PlanFailureRecordPermanent:
+			if !validPermanentDiagnostic(classified.Code, classified.SanitizedError, classified.Action) {
+				return newPlanFailure(PlanFailureBlocked, errors.New("record-permanent failure diagnostic is incomplete"))
+			}
+			return &PlanFailure{
+				Class: class, Code: classified.Code, SanitizedError: classified.SanitizedError,
+				Action: classified.Action, Cause: err,
+			}
+		case PlanFailureTransient, PlanFailureBlocked, PlanFailureCancelled:
+			return &PlanFailure{Class: class, Cause: err}
 		}
 	}
 	return newPlanFailure(PlanFailureTransient, err)
@@ -254,7 +321,28 @@ func newPlanFailure(class PlanFailureClass, cause error) *PlanFailure {
 	return &PlanFailure{Class: class, Cause: cause}
 }
 
+func validPermanentDiagnostic(code, sanitizedError, action string) bool {
+	return len(code) >= 1 && len(code) <= 128 && utf8.ValidString(code) &&
+		len(sanitizedError) >= 1 && len(sanitizedError) <= 2048 && utf8.ValidString(sanitizedError) &&
+		len(action) >= 1 && len(action) <= 64 && utf8.ValidString(action)
+}
+
+func cloneRawRecord(record core.RawRecord) core.RawRecord {
+	record.Content = append([]byte(nil), record.Content...)
+	if record.Metadata != nil {
+		metadata := make(map[string]string, len(record.Metadata))
+		for key, value := range record.Metadata {
+			metadata[key] = value
+		}
+		record.Metadata = metadata
+	}
+	return record
+}
+
 func clonePlanResult(result PlanRunResult) PlanRunResult {
-	result.Outcomes = append([]ParserTerminalOutcome(nil), result.Outcomes...)
+	result.ParserOutcomes = append([]core.ParserTerminalOutcome(nil), result.ParserOutcomes...)
+	result.Events = append([]core.SecurityEvent(nil), result.Events...)
+	result.Rules = append([]RuleSnapshot(nil), result.Rules...)
+	result.PermanentFailures = append([]ParserPermanentFailure(nil), result.PermanentFailures...)
 	return result
 }

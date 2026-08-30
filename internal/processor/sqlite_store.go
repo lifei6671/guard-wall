@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
+	"github.com/lifei6671/guard-wall/internal/decision"
 	"github.com/lifei6671/guard-wall/internal/store"
 )
 
@@ -51,6 +51,10 @@ func (u *sqliteUnitOfWork) writeParserOutcome(ctx context.Context, outcome core.
 	return u.unit.PutParserOutcome(ctx, outcome)
 }
 
+func (u *sqliteUnitOfWork) writeDetectionOutcome(ctx context.Context, outcome core.DetectionTerminalOutcome) error {
+	return u.unit.PutDetectionOutcome(ctx, outcome)
+}
+
 func (u *sqliteUnitOfWork) writeDetectionContribution(
 	ctx context.Context,
 	contribution core.DetectionContribution,
@@ -62,16 +66,9 @@ func (u *sqliteUnitOfWork) writeAlert(ctx context.Context, alert core.Alert) err
 	return u.unit.PutAlert(ctx, alert)
 }
 
-func (u *sqliteUnitOfWork) writeDecision(ctx context.Context, decision core.Decision) error {
-	return u.unit.PutDecision(ctx, decision)
-}
-
-func (u *sqliteUnitOfWork) writeProjection(
-	ctx context.Context,
-	projection core.DesiredBanProjection,
-	updatedAt time.Time,
-) error {
-	return u.unit.PutProjection(ctx, projection, updatedAt)
+func (u *sqliteUnitOfWork) recordAutomaticDecision(ctx context.Context, request decision.AutomaticRequest) error {
+	_, err := decision.RecordAutomaticInTransaction(ctx, u.unit, request)
+	return err
 }
 
 func (u *sqliteUnitOfWork) writeCriticalAudit(ctx context.Context, audit store.CriticalAudit) error {

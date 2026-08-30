@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
+	"github.com/lifei6671/guard-wall/internal/enforcement"
 )
 
 // Domain assigns every external mutation to exactly one retry budget.
@@ -310,7 +311,7 @@ func physicalFromIntent(intent core.NormalizedTargetEnforcementIntent) core.Phys
 		OwnerVersion:         intent.BackendAttributesDigest,
 	}
 	if intent.TimeoutMode == core.TimeoutNative {
-		observed.NativeExpiry = cloneTime(intent.EffectiveUntil)
+		observed.NativeExpiry = enforcement.NativeExpiryForIntent(intent)
 	}
 	return observed
 }

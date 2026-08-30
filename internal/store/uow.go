@@ -122,6 +122,32 @@ func (u *UnitOfWork) PutDetectionContribution(ctx context.Context, contribution 
 	return false, nil
 }
 
+// PutDetectionOutcome inserts one applicable Event/Rule revision's terminal result.
+func (u *UnitOfWork) PutDetectionOutcome(ctx context.Context, outcome core.DetectionTerminalOutcome) error {
+	if err := u.ready(ctx); err != nil {
+		return err
+	}
+	if err := outcome.Validate(); err != nil {
+		return u.fail(fmt.Errorf("put detection outcome: validate: %w", err))
+	}
+	kind, err := detectionOutcomeKindValue(outcome.Kind)
+	if err != nil {
+		return u.fail(err)
+	}
+	_, err = u.tx.ExecContext(ctx, `
+		INSERT INTO detection_terminal_outcomes(
+			delivery_id, event_id, rule_id, rule_version, kind,
+			failure_code, completed_at_us
+		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		string(outcome.DeliveryID), string(outcome.EventID), string(outcome.RuleID),
+		string(outcome.RuleVersion), kind, nullableString(outcome.FailureCode),
+		outcome.CompletedAt.UTC().UnixMicro())
+	if err != nil {
+		return u.fail(fmt.Errorf("put detection outcome for event %q: %w", outcome.EventID, err))
+	}
+	return nil
+}
+
 // PutAlert inserts one durable Alert tied to a detection membership.
 func (u *UnitOfWork) PutAlert(ctx context.Context, alert core.Alert) error {
 	if err := u.ready(ctx); err != nil {
@@ -467,6 +493,17 @@ func parserOutcomeKindValue(kind core.ParserOutcomeKind) (string, error) {
 		return "record_permanent", nil
 	default:
 		return "", fmt.Errorf("put parser outcome: unsupported kind %d", kind)
+	}
+}
+
+func detectionOutcomeKindValue(kind core.DetectionOutcomeKind) (string, error) {
+	switch kind {
+	case core.DetectionOutcomeSuccess:
+		return "success", nil
+	case core.DetectionOutcomeRecordPermanent:
+		return "record_permanent", nil
+	default:
+		return "", fmt.Errorf("put detection outcome: unsupported kind %d", kind)
 	}
 }
 

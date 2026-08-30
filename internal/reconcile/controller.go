@@ -1,4 +1,4 @@
-// Package reconcile implements the in-memory M0 C2 retry, fencing, and mutation rules.
+// Package reconcile implements the M0 C2 retry, fencing, persistence, and mutation rules.
 package reconcile
 
 import (
@@ -75,6 +75,8 @@ type Controller struct {
 	backend Backend
 	clock   Clock
 	audit   CriticalAuditWriter
+	nodeID  core.NodeID
+	store   RetryStateStore
 
 	mutationMu sync.Mutex
 	stateMu    sync.Mutex
@@ -92,6 +94,9 @@ type Controller struct {
 	targetStates         map[core.TargetRetryKey]core.RetryState
 	confirmedTargets     map[netip.Prefix]core.TargetEnforcementGeneration
 	pendingProbes        map[pendingProbeKey]attemptRef
+	syntheticRefs        map[attemptRef]struct{}
+	startupProbeRequired bool
+	recoveryReloadNeeded bool
 }
 
 // NewController constructs an empty retry ledger around a backend and mandatory audit boundary.
@@ -116,6 +121,7 @@ func NewController(backend Backend, clock Clock, audit CriticalAuditWriter) (*Co
 		targetStates:         make(map[core.TargetRetryKey]core.RetryState),
 		confirmedTargets:     make(map[netip.Prefix]core.TargetEnforcementGeneration),
 		pendingProbes:        make(map[pendingProbeKey]attemptRef),
+		syntheticRefs:        make(map[attemptRef]struct{}),
 	}, nil
 }
 
@@ -137,6 +143,7 @@ func (c *Controller) SetDesiredSnapshot(snapshot core.DesiredFirewallSnapshot) e
 	c.desired = prepared
 	c.desiredTargets = targets
 	c.hasDesired = true
+	c.activateHydratedStateLocked()
 	return nil
 }
 
@@ -145,12 +152,15 @@ func (c *Controller) SetDesiredSnapshot(snapshot core.DesiredFirewallSnapshot) e
 func (c *Controller) Execute(ctx context.Context, plan fake.OperationPlan) (ExecutionResult, error) {
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
+	if err := c.reloadRecoveryIfNeeded(ctx); err != nil {
+		return ExecutionResult{}, err
+	}
 
 	if err := fake.ValidatePlan(plan); err != nil {
-		c.markInvalidPlan(plan)
+		persistErr := c.markInvalidPlan(ctx, plan)
 		return ExecutionResult{Apply: fake.ApplyResult{
 			Kind: fake.ResultRejected, Domain: plan.Domain, Target: plan.Target, Digest: plan.Digest, ErrorCode: "invalid_plan",
-		}}, fmt.Errorf("%w: %v", ErrInvalidPlan, err)
+		}}, errors.Join(fmt.Errorf("%w: %v", ErrInvalidPlan, err), persistErr)
 	}
 	probeKey := pendingProbeKeyForPlan(plan)
 	var attempt attemptRef
@@ -164,7 +174,22 @@ func (c *Controller) Execute(ctx context.Context, plan fake.OperationPlan) (Exec
 		plan.BasisSnapshotDigest = snapshot.Digest()
 		plan.Digest = fake.PlanDigest(plan)
 		var recovered bool
-		attempt, recovered, err = c.beginAfterRequiredProbe(plan, snapshot, probeKey)
+		attempt, recovered, err = c.beginAfterRequiredProbe(ctx, plan, snapshot, probeKey)
+		if err != nil {
+			return ExecutionResult{}, err
+		}
+		if recovered {
+			return ExecutionResult{RecoveredByProbe: true}, nil
+		}
+	} else if c.requiresStartupProbe() {
+		snapshot, err := c.backend.Probe(ctx)
+		if err != nil {
+			return ExecutionResult{}, fmt.Errorf("startup recovery probe: %w", err)
+		}
+		plan.BasisSnapshotDigest = snapshot.Digest()
+		plan.Digest = fake.PlanDigest(plan)
+		var recovered bool
+		attempt, recovered, err = c.beginAfterStartupProbe(ctx, plan, snapshot)
 		if err != nil {
 			return ExecutionResult{}, err
 		}
@@ -173,15 +198,15 @@ func (c *Controller) Execute(ctx context.Context, plan fake.OperationPlan) (Exec
 		}
 	} else {
 		var err error
-		attempt, err = c.beginAttempt(plan)
+		attempt, err = c.beginAttempt(ctx, plan)
 		if err != nil {
 			return ExecutionResult{}, err
 		}
 	}
 	result, err := c.backend.Apply(ctx, plan)
 	if err != nil {
-		c.finishFailureAndRequireProbe(attempt, probeKey, "backend_error")
-		return ExecutionResult{}, fmt.Errorf("apply plan: %w", err)
+		persistErr := c.finishFailureAndRequireProbe(ctx, attempt, probeKey, "backend_error")
+		return ExecutionResult{}, errors.Join(fmt.Errorf("apply plan: %w", err), persistErr)
 	}
 	execution := ExecutionResult{Apply: result}
 
@@ -191,32 +216,170 @@ func (c *Controller) Execute(ctx context.Context, plan fake.OperationPlan) (Exec
 		if code == "" {
 			code = "unknown_result"
 		}
-		c.finishFailureAndRequireProbe(attempt, probeKey, code)
+		if err := c.finishFailureAndRequireProbe(ctx, attempt, probeKey, code); err != nil {
+			return execution, err
+		}
 		return execution, nil
 	case fake.ResultRejected:
 		code := result.ErrorCode
 		if code == "" {
 			code = "rejected"
 		}
-		c.finishFailure(attempt, code, retryable(code))
+		if err := c.finishFailure(ctx, attempt, probeKey, code, retryable(code)); err != nil {
+			return execution, err
+		}
 		return execution, nil
 	case fake.ResultConfirmed:
 		snapshot, probeErr := c.backend.Probe(ctx)
 		if probeErr != nil {
-			c.finishFailureAndRequireProbe(attempt, probeKey, "confirm_probe_failed")
-			return execution, fmt.Errorf("confirm probe: %w", probeErr)
+			persistErr := c.finishFailureAndRequireProbe(ctx, attempt, probeKey, "confirm_probe_failed")
+			return execution, errors.Join(fmt.Errorf("confirm probe: %w", probeErr), persistErr)
 		}
-		return execution, c.commitConfirmed(attempt, plan, snapshot, probeKey)
+		return execution, c.commitConfirmed(ctx, attempt, plan, snapshot, probeKey)
 	default:
-		c.finishFailure(attempt, "invalid_apply_result", false)
-		return execution, fmt.Errorf("unsupported apply result %d", result.Kind)
+		persistErr := c.finishFailure(ctx, attempt, probeKey, "invalid_apply_result", false)
+		return execution, errors.Join(fmt.Errorf("unsupported apply result %d", result.Kind), persistErr)
 	}
+}
+
+// probeRecovery performs the observation-only half of a Backend healthy event.
+// It may confirm or retire durable Probe requirements, but never begins an attempt.
+func (c *Controller) probeRecovery(ctx context.Context) (int, []ReconcileKey, error) {
+	if ctx == nil {
+		return 0, nil, fmt.Errorf("context is required")
+	}
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
+	if err := c.reloadRecoveryIfNeeded(ctx); err != nil {
+		return 0, nil, err
+	}
+	snapshot, err := c.backend.Probe(ctx)
+	if err != nil {
+		return 0, nil, fmt.Errorf("backend recovery probe: %w", err)
+	}
+
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if !c.hasDesired {
+		return 0, nil, nil
+	}
+	resolved := 0
+	unresolved := make([]ReconcileKey, 0)
+	seenUnresolved := make(map[ReconcileKey]struct{})
+	for key, ref := range c.pendingProbes {
+		if !c.pendingKeyMatchesCurrentDesiredLocked(key) {
+			if err := c.finishStaleLocked(ctx, ref, key); err != nil {
+				return resolved, nil, err
+			}
+			delete(c.pendingProbes, key)
+			continue
+		}
+		if !c.snapshotMatchesCurrentDesiredLocked(snapshot, key.domain, key.target) {
+			dispatchKey := ReconcileKey{Domain: key.domain, Target: key.target}
+			if _, exists := seenUnresolved[dispatchKey]; !exists {
+				seenUnresolved[dispatchKey] = struct{}{}
+				unresolved = append(unresolved, dispatchKey)
+			}
+			continue
+		}
+		if err := c.finishRecoveredPendingLocked(ctx, ref, key); err != nil {
+			return resolved, nil, err
+		}
+		delete(c.pendingProbes, key)
+		resolved++
+	}
+	return resolved, unresolved, nil
+}
+
+// probeStartupRecovery compares all persisted startup work with one authoritative
+// snapshot. Matching keys are confirmed without consuming an attempt; only drifted
+// keys are returned to the dispatcher for mutation.
+func (c *Controller) probeStartupRecovery(ctx context.Context, keys []ReconcileKey) ([]ReconcileKey, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("context is required")
+	}
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
+	if err := c.reloadRecoveryIfNeeded(ctx); err != nil {
+		return nil, err
+	}
+	snapshot, err := c.backend.Probe(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("startup recovery probe: %w", err)
+	}
+
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if !c.hasDesired {
+		c.startupProbeRequired = false
+		return nil, nil
+	}
+	unresolved := make([]ReconcileKey, 0, len(keys))
+	seenUnresolved := make(map[ReconcileKey]struct{}, len(keys))
+	resolved := make(map[ReconcileKey]struct{}, len(keys))
+	addUnresolved := func(key ReconcileKey) {
+		if _, exists := seenUnresolved[key]; exists {
+			return
+		}
+		seenUnresolved[key] = struct{}{}
+		unresolved = append(unresolved, key)
+	}
+
+	for key, ref := range c.pendingProbes {
+		dispatchKey := ReconcileKey{Domain: key.domain, Target: key.target}
+		if !c.pendingKeyMatchesCurrentDesiredLocked(key) {
+			if err := c.finishStaleLocked(ctx, ref, key); err != nil {
+				return nil, err
+			}
+			delete(c.pendingProbes, key)
+			continue
+		}
+		if !c.snapshotMatchesCurrentDesiredLocked(snapshot, key.domain, key.target) {
+			addUnresolved(dispatchKey)
+			continue
+		}
+		if err := c.finishRecoveredPendingLocked(ctx, ref, key); err != nil {
+			return nil, err
+		}
+		delete(c.pendingProbes, key)
+		resolved[dispatchKey] = struct{}{}
+	}
+
+	for _, key := range keys {
+		if _, alreadyResolved := resolved[key]; alreadyResolved {
+			continue
+		}
+		if !c.snapshotMatchesCurrentDesiredLocked(snapshot, key.Domain, key.Target) {
+			addUnresolved(key)
+			continue
+		}
+		ref, ok := c.currentAttemptRefForKeyLocked(key)
+		if !ok {
+			continue
+		}
+		state := c.getState(ref)
+		state.Status = core.ReconcileConverged
+		state.NextAttemptAt = nil
+		state.LastErrorCode = ""
+		if err := c.persistStateLocked(ctx, ref, state, nil, nil); err != nil {
+			return nil, fmt.Errorf("persist startup Probe recovery: %w", err)
+		}
+		c.putState(ref, state)
+		if key.Domain == fake.DomainTarget {
+			c.confirmedTargets[key.Target] = ref.target.Generation
+		}
+	}
+	c.startupProbeRequired = false
+	return unresolved, nil
 }
 
 // RetryInfrastructure publishes a new epoch only after Critical Audit succeeds.
 func (c *Controller) RetryInfrastructure(ctx context.Context) (core.InfrastructureRetryKey, error) {
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
+	if err := c.reloadRecoveryIfNeeded(ctx); err != nil {
+		return core.InfrastructureRetryKey{}, err
+	}
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if !c.hasDesired {
@@ -231,9 +394,15 @@ func (c *Controller) RetryInfrastructure(ctx context.Context) (core.Infrastructu
 	if err := c.audit.AppendCriticalAudit(ctx, event); err != nil {
 		return core.InfrastructureRetryKey{}, err
 	}
-	c.infrastructureEpoch = next
 	key := core.InfrastructureRetryKey{Revision: c.desired.InfrastructureRevision, Epoch: next}
-	c.infrastructureStates[key] = core.RetryState{Status: core.ReconcilePending}
+	state := core.RetryState{Status: core.ReconcilePending}
+	ref := attemptRef{domain: fake.DomainInfrastructure, infrastructure: key}
+	if err := c.persistStateLocked(ctx, ref, state, nil, nil); err != nil {
+		return core.InfrastructureRetryKey{}, fmt.Errorf("persist infrastructure retry epoch: %w", err)
+	}
+	c.markPendingRefsSupersededLocked(ref)
+	c.infrastructureEpoch = next
+	c.infrastructureStates[key] = state
 	return key, nil
 }
 
@@ -241,6 +410,9 @@ func (c *Controller) RetryInfrastructure(ctx context.Context) (core.Infrastructu
 func (c *Controller) RetryPolicy(ctx context.Context) (core.PolicyRetryKey, error) {
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
+	if err := c.reloadRecoveryIfNeeded(ctx); err != nil {
+		return core.PolicyRetryKey{}, err
+	}
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if !c.hasDesired {
@@ -255,9 +427,15 @@ func (c *Controller) RetryPolicy(ctx context.Context) (core.PolicyRetryKey, erro
 	if err := c.audit.AppendCriticalAudit(ctx, event); err != nil {
 		return core.PolicyRetryKey{}, err
 	}
-	c.policyEpoch = next
 	key := core.PolicyRetryKey{Revision: c.desired.PolicyRevision, Epoch: next}
-	c.policyStates[key] = core.RetryState{Status: core.ReconcilePending}
+	state := core.RetryState{Status: core.ReconcilePending}
+	ref := attemptRef{domain: fake.DomainPolicy, policy: key}
+	if err := c.persistStateLocked(ctx, ref, state, nil, nil); err != nil {
+		return core.PolicyRetryKey{}, fmt.Errorf("persist policy retry epoch: %w", err)
+	}
+	c.markPendingRefsSupersededLocked(ref)
+	c.policyEpoch = next
+	c.policyStates[key] = state
 	return key, nil
 }
 
@@ -265,6 +443,9 @@ func (c *Controller) RetryPolicy(ctx context.Context) (core.PolicyRetryKey, erro
 func (c *Controller) RetryTarget(ctx context.Context, target netip.Prefix) (core.TargetRetryKey, error) {
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
+	if err := c.reloadRecoveryIfNeeded(ctx); err != nil {
+		return core.TargetRetryKey{}, err
+	}
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	intent, ok := c.desiredTargets[target]
@@ -280,9 +461,15 @@ func (c *Controller) RetryTarget(ctx context.Context, target netip.Prefix) (core
 	if err := c.audit.AppendCriticalAudit(ctx, event); err != nil {
 		return core.TargetRetryKey{}, err
 	}
-	c.targetEpochs[target] = next
 	key := core.TargetRetryKey{Target: target, Generation: intent.Generation, Epoch: next}
-	c.targetStates[key] = core.RetryState{Status: core.ReconcilePending}
+	state := core.RetryState{Status: core.ReconcilePending}
+	ref := attemptRef{domain: fake.DomainTarget, target: key}
+	if err := c.persistStateLocked(ctx, ref, state, nil, nil); err != nil {
+		return core.TargetRetryKey{}, fmt.Errorf("persist target retry epoch: %w", err)
+	}
+	c.markPendingRefsSupersededLocked(ref)
+	c.targetEpochs[target] = next
+	c.targetStates[key] = state
 	return key, nil
 }
 
@@ -351,16 +538,16 @@ type attemptRef struct {
 	target         core.TargetRetryKey
 }
 
-func (c *Controller) beginAttempt(plan fake.OperationPlan) (attemptRef, error) {
+func (c *Controller) beginAttempt(ctx context.Context, plan fake.OperationPlan) (attemptRef, error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if !c.planMatchesCurrentDesiredLocked(plan) {
 		return attemptRef{}, ErrStalePlan
 	}
-	return c.beginAttemptLocked(plan)
+	return c.beginAttemptLocked(ctx, plan)
 }
 
-func (c *Controller) beginAttemptLocked(plan fake.OperationPlan) (attemptRef, error) {
+func (c *Controller) beginAttemptLocked(ctx context.Context, plan fake.OperationPlan) (attemptRef, error) {
 	ref, state, ok := c.attemptStateLocked(plan)
 	if !ok {
 		state = core.RetryState{Status: core.ReconcilePending}
@@ -377,38 +564,79 @@ func (c *Controller) beginAttemptLocked(plan fake.OperationPlan) (attemptRef, er
 	state.LastAttemptAt = timePointer(now)
 	state.NextAttemptAt = nil
 	state.LastErrorCode = ""
+	probeKey := pendingProbeKeyForPlan(plan)
+	previousPending, replacesPending := c.pendingProbes[probeKey]
+	if err := c.persistApplyingStateLocked(ctx, ref, state, probeKey, previousPending, replacesPending); err != nil {
+		return attemptRef{}, fmt.Errorf("persist applying attempt: %w", err)
+	}
 	c.putState(ref, state)
+	c.pendingProbes[probeKey] = ref
+	if replacesPending {
+		delete(c.syntheticRefs, previousPending)
+	}
 	return ref, nil
 }
 
-func (c *Controller) beginAfterRequiredProbe(plan fake.OperationPlan, snapshot fake.Snapshot, key pendingProbeKey) (attemptRef, bool, error) {
+func (c *Controller) beginAfterRequiredProbe(ctx context.Context, plan fake.OperationPlan, snapshot fake.Snapshot, key pendingProbeKey) (attemptRef, bool, error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if !c.planMatchesCurrentDesiredLocked(plan) {
 		return attemptRef{}, false, ErrStalePlan
 	}
-	_, currentWasPending := c.pendingProbes[key]
-	currentRecovered := c.resolvePendingProbesLocked(snapshot, key, plan)
+	currentRecovered, err := c.resolvePendingProbesLocked(ctx, snapshot, key, plan)
+	if err != nil {
+		return attemptRef{}, false, err
+	}
 	if currentRecovered {
 		return attemptRef{}, true, nil
 	}
-	attempt, err := c.beginAttemptLocked(plan)
+	attempt, err := c.beginAttemptLocked(ctx, plan)
 	if err != nil {
 		// A premature retry must retain its exact pending Probe requirement. Unrelated
 		// pending keys do not consume this plan's retry budget.
 		return attemptRef{}, false, err
 	}
-	if currentWasPending {
-		delete(c.pendingProbes, key)
-	}
 	return attempt, false, nil
 }
 
-func (c *Controller) resolvePendingProbesLocked(snapshot fake.Snapshot, currentKey pendingProbeKey, currentPlan fake.OperationPlan) bool {
+func (c *Controller) beginAfterStartupProbe(ctx context.Context, plan fake.OperationPlan, snapshot fake.Snapshot) (attemptRef, bool, error) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if !c.planMatchesCurrentDesiredLocked(plan) {
+		return attemptRef{}, false, ErrStalePlan
+	}
+	if !c.snapshotMatchesCurrentDesiredLocked(snapshot, plan.Domain, plan.Target) {
+		attempt, err := c.beginAttemptLocked(ctx, plan)
+		if err == nil {
+			c.startupProbeRequired = false
+		}
+		return attempt, false, err
+	}
+	ref, state, ok := c.attemptStateLocked(plan)
+	if !ok {
+		state = core.RetryState{Status: core.ReconcilePending}
+	}
+	state.Status = core.ReconcileConverged
+	state.NextAttemptAt = nil
+	state.LastErrorCode = ""
+	if err := c.persistStateLocked(ctx, ref, state, nil, nil); err != nil {
+		return attemptRef{}, false, fmt.Errorf("persist startup Probe recovery: %w", err)
+	}
+	c.putState(ref, state)
+	c.startupProbeRequired = false
+	if plan.Domain == fake.DomainTarget {
+		c.confirmedTargets[plan.Target] = plan.ExpectedTargetGeneration
+	}
+	return attemptRef{}, true, nil
+}
+
+func (c *Controller) resolvePendingProbesLocked(ctx context.Context, snapshot fake.Snapshot, currentKey pendingProbeKey, currentPlan fake.OperationPlan) (bool, error) {
 	currentRecovered := false
 	for key, ref := range c.pendingProbes {
 		if !c.pendingKeyMatchesCurrentDesiredLocked(key) {
-			c.finishStaleLocked(ref)
+			if err := c.finishStaleLocked(ctx, ref, key); err != nil {
+				return false, err
+			}
 			delete(c.pendingProbes, key)
 			continue
 		}
@@ -416,14 +644,18 @@ func (c *Controller) resolvePendingProbesLocked(snapshot fake.Snapshot, currentK
 			continue
 		}
 		if key == currentKey {
-			c.finishRecoveredByProbeLocked(currentPlan)
+			if err := c.finishRecoveredByProbeLocked(ctx, currentPlan, key, ref); err != nil {
+				return false, err
+			}
 			currentRecovered = true
 		} else {
-			c.finishRecoveredPendingLocked(ref, key)
+			if err := c.finishRecoveredPendingLocked(ctx, ref, key); err != nil {
+				return false, err
+			}
 		}
 		delete(c.pendingProbes, key)
 	}
-	return currentRecovered
+	return currentRecovered, nil
 }
 
 func (c *Controller) pendingKeyMatchesCurrentDesiredLocked(key pendingProbeKey) bool {
@@ -441,15 +673,24 @@ func (c *Controller) pendingKeyMatchesCurrentDesiredLocked(key pendingProbeKey) 
 	}
 }
 
-func (c *Controller) finishRecoveredPendingLocked(ref attemptRef, key pendingProbeKey) {
-	state := c.getState(ref)
+func (c *Controller) finishRecoveredPendingLocked(ctx context.Context, ref attemptRef, key pendingProbeKey) error {
+	stateRef, state, ok := c.currentStateForPendingKeyLocked(key)
+	if !ok {
+		stateRef = ref
+		state = c.getState(ref)
+	}
 	state.Status = core.ReconcileConverged
 	state.NextAttemptAt = nil
 	state.LastErrorCode = ""
-	c.putState(ref, state)
+	if err := c.persistStateAndClearProbeLocked(ctx, stateRef, state, key, ref); err != nil {
+		return fmt.Errorf("persist Probe recovery: %w", err)
+	}
+	c.putState(stateRef, state)
+	delete(c.syntheticRefs, ref)
 	if key.domain == fake.DomainTarget {
 		c.confirmedTargets[key.target] = key.targetGeneration
 	}
+	return nil
 }
 
 func (c *Controller) attemptStateLocked(plan fake.OperationPlan) (attemptRef, core.RetryState, bool) {
@@ -472,13 +713,41 @@ func (c *Controller) attemptStateLocked(plan fake.OperationPlan) (attemptRef, co
 	}
 }
 
-func (c *Controller) finishFailure(ref attemptRef, code string, canRetry bool) {
-	c.stateMu.Lock()
-	defer c.stateMu.Unlock()
-	c.finishFailureLocked(ref, code, canRetry)
+func (c *Controller) currentAttemptRefForKeyLocked(key ReconcileKey) (attemptRef, bool) {
+	ref := attemptRef{domain: key.Domain}
+	switch key.Domain {
+	case fake.DomainInfrastructure:
+		ref.infrastructure = core.InfrastructureRetryKey{Revision: c.desired.InfrastructureRevision, Epoch: c.infrastructureEpoch}
+		return ref, true
+	case fake.DomainPolicy:
+		ref.policy = core.PolicyRetryKey{Revision: c.desired.PolicyRevision, Epoch: c.policyEpoch}
+		return ref, true
+	case fake.DomainTarget:
+		intent, exists := c.desiredTargets[key.Target]
+		if !exists {
+			return ref, false
+		}
+		ref.target = core.TargetRetryKey{Target: key.Target, Generation: intent.Generation, Epoch: c.targetEpochs[key.Target]}
+		return ref, true
+	default:
+		return ref, false
+	}
 }
 
-func (c *Controller) finishFailureLocked(ref attemptRef, code string, canRetry bool) {
+func (c *Controller) finishFailure(ctx context.Context, ref attemptRef, key pendingProbeKey, code string, canRetry bool) error {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.finishFailureLocked(ctx, ref, key, code, canRetry, false)
+}
+
+func (c *Controller) finishFailureLocked(
+	ctx context.Context,
+	ref attemptRef,
+	key pendingProbeKey,
+	code string,
+	canRetry bool,
+	requireProbe bool,
+) error {
 	state := c.getState(ref)
 	state.LastErrorCode = code
 	if !canRetry || state.AttemptCount >= maxMutationAttempts {
@@ -489,36 +758,79 @@ func (c *Controller) finishFailureLocked(ref attemptRef, code string, canRetry b
 		next := c.clock.Now().Add(retryBackoff[state.AttemptCount-1])
 		state.NextAttemptAt = &next
 	}
+	var upsertProbe, deleteProbe *pendingProbeKey
+	if requireProbe {
+		upsertProbe = &key
+	} else {
+		deleteProbe = &key
+	}
+	if err := c.persistStateLocked(ctx, ref, state, upsertProbe, deleteProbe); err != nil {
+		// The pre-mutation Applying transition is already durable and requires Probe.
+		// Retain the in-memory barrier until the final transition can be persisted.
+		c.pendingProbes[key] = ref
+		return fmt.Errorf("persist reconcile failure: %w", err)
+	}
 	c.putState(ref, state)
+	if requireProbe {
+		c.pendingProbes[key] = ref
+	} else {
+		delete(c.pendingProbes, key)
+	}
+	return nil
 }
 
-func (c *Controller) finishFailureAndRequireProbe(ref attemptRef, key pendingProbeKey, code string) {
+func (c *Controller) finishFailureAndRequireProbe(ctx context.Context, ref attemptRef, key pendingProbeKey, code string) error {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
-	c.finishFailureLocked(ref, code, true)
-	c.pendingProbes[key] = ref
+	return c.finishFailureLocked(ctx, ref, key, code, true, true)
 }
 
-func (c *Controller) finishStaleLocked(ref attemptRef) {
+func (c *Controller) finishStaleLocked(ctx context.Context, ref attemptRef, key pendingProbeKey) error {
 	state := c.getState(ref)
 	state.Status = core.ReconcilePending
 	state.NextAttemptAt = nil
 	state.LastErrorCode = "stale_completion"
+	stateRef := ref
+	persistedState := state
+	if currentRef, currentState, ok := c.currentStateForPendingKeyLocked(key); ok && currentRef != ref {
+		stateRef = currentRef
+		persistedState = currentState
+	}
+	var err error
+	if _, synthetic := c.syntheticRefs[ref]; synthetic && stateRef == ref {
+		err = c.clearProbeLocked(ctx, key, ref)
+	} else {
+		err = c.persistStateAndClearProbeLocked(ctx, stateRef, persistedState, key, ref)
+	}
+	if err != nil {
+		return fmt.Errorf("persist stale completion: %w", err)
+	}
 	c.putState(ref, state)
+	delete(c.syntheticRefs, ref)
+	return nil
 }
 
-func (c *Controller) finishConvergedLocked(ref attemptRef, plan fake.OperationPlan) {
+func (c *Controller) finishConvergedLocked(ctx context.Context, ref attemptRef, plan fake.OperationPlan, key pendingProbeKey) error {
 	state := c.getState(ref)
 	state.Status = core.ReconcileConverged
 	state.NextAttemptAt = nil
 	state.LastErrorCode = ""
+	if err := c.persistStateLocked(ctx, ref, state, nil, &key); err != nil {
+		return fmt.Errorf("persist converged state: %w", err)
+	}
 	c.putState(ref, state)
 	if plan.Domain == fake.DomainTarget {
 		c.confirmedTargets[plan.Target] = plan.ExpectedTargetGeneration
 	}
+	return nil
 }
 
-func (c *Controller) finishRecoveredByProbeLocked(plan fake.OperationPlan) {
+func (c *Controller) finishRecoveredByProbeLocked(
+	ctx context.Context,
+	plan fake.OperationPlan,
+	key pendingProbeKey,
+	pendingRef attemptRef,
+) error {
 	ref, state, ok := c.attemptStateLocked(plan)
 	if !ok {
 		state = core.RetryState{Status: core.ReconcilePending}
@@ -526,39 +838,49 @@ func (c *Controller) finishRecoveredByProbeLocked(plan fake.OperationPlan) {
 	state.Status = core.ReconcileConverged
 	state.NextAttemptAt = nil
 	state.LastErrorCode = ""
+	if err := c.persistStateAndClearProbeLocked(ctx, ref, state, key, pendingRef); err != nil {
+		return fmt.Errorf("persist observation-only convergence: %w", err)
+	}
 	c.putState(ref, state)
+	delete(c.syntheticRefs, pendingRef)
 	if plan.Domain == fake.DomainTarget {
 		c.confirmedTargets[plan.Target] = plan.ExpectedTargetGeneration
 	}
+	return nil
 }
 
-func (c *Controller) commitConfirmed(ref attemptRef, plan fake.OperationPlan, snapshot fake.Snapshot, key pendingProbeKey) error {
+func (c *Controller) commitConfirmed(ctx context.Context, ref attemptRef, plan fake.OperationPlan, snapshot fake.Snapshot, key pendingProbeKey) error {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	// The current fence, observed physical postcondition, and durable in-memory writeback are one
 	// state transition. SetDesiredSnapshot cannot publish a new fence between these checks.
 	if !c.planMatchesCurrentDesiredLocked(plan) {
-		c.finishStaleLocked(ref)
+		if err := c.finishStaleLocked(ctx, ref, key); err != nil {
+			c.pendingProbes[key] = ref
+			return errors.Join(ErrStaleCompletion, err)
+		}
 		return ErrStaleCompletion
 	}
 	if !c.snapshotMatchesCurrentDesiredLocked(snapshot, plan.Domain, plan.Target) {
-		c.finishFailureLocked(ref, "postcondition_mismatch", true)
-		return nil
+		return c.finishFailureLocked(ctx, ref, key, "postcondition_mismatch", true, false)
 	}
-	c.finishConvergedLocked(ref, plan)
+	if err := c.finishConvergedLocked(ctx, ref, plan, key); err != nil {
+		c.pendingProbes[key] = ref
+		return err
+	}
 	delete(c.pendingProbes, key)
 	return nil
 }
 
-func (c *Controller) markInvalidPlan(plan fake.OperationPlan) {
+func (c *Controller) markInvalidPlan(ctx context.Context, plan fake.OperationPlan) error {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if !c.hasDesired {
-		return
+		return nil
 	}
 	ref, state, ok := c.attemptStateLocked(plan)
 	if ref.domain != fake.DomainInfrastructure && ref.domain != fake.DomainPolicy && ref.domain != fake.DomainTarget {
-		return
+		return nil
 	}
 	if !ok {
 		state = core.RetryState{}
@@ -566,7 +888,11 @@ func (c *Controller) markInvalidPlan(plan fake.OperationPlan) {
 	state.Status = core.ReconcileDegraded
 	state.NextAttemptAt = nil
 	state.LastErrorCode = "invalid_plan"
+	if err := c.persistStateLocked(ctx, ref, state, nil, nil); err != nil {
+		return fmt.Errorf("persist invalid plan: %w", err)
+	}
 	c.putState(ref, state)
+	return nil
 }
 
 func (c *Controller) getState(ref attemptRef) core.RetryState {
@@ -649,6 +975,33 @@ func (c *Controller) hasPendingProbes() bool {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	return len(c.pendingProbes) != 0
+}
+
+func (c *Controller) requiresStartupProbe() bool {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.startupProbeRequired
+}
+
+func (c *Controller) markPendingRefsSupersededLocked(current attemptRef) {
+	for _, pending := range c.pendingProbes {
+		if pending == current || pending.domain != current.domain {
+			continue
+		}
+		samePhysicalKey := false
+		switch current.domain {
+		case fake.DomainInfrastructure:
+			samePhysicalKey = pending.infrastructure.Revision == current.infrastructure.Revision
+		case fake.DomainPolicy:
+			samePhysicalKey = pending.policy.Revision == current.policy.Revision
+		case fake.DomainTarget:
+			samePhysicalKey = pending.target.Target == current.target.Target &&
+				pending.target.Generation == current.target.Generation
+		}
+		if samePhysicalKey {
+			c.syntheticRefs[pending] = struct{}{}
+		}
+	}
 }
 
 func pendingProbeKeyForPlan(plan fake.OperationPlan) pendingProbeKey {
@@ -765,7 +1118,7 @@ func physicalTargetMatches(targets map[netip.Prefix]core.PhysicalTargetObserved,
 		return false
 	}
 	if intent.TimeoutMode == core.TimeoutNative {
-		return equalTime(observed.NativeExpiry, intent.EffectiveUntil)
+		return equalTime(observed.NativeExpiry, enforcement.NativeExpiryForIntent(intent))
 	}
 	return observed.NativeExpiry == nil
 }

@@ -250,6 +250,62 @@ type DetectionContribution struct {
 	ContributedAt time.Time
 }
 
+// DetectionOutcomeKind is the closed set of durable terminal Rule results for
+// one Event and frozen Rule revision.
+type DetectionOutcomeKind uint8
+
+const (
+	DetectionOutcomeSuccess DetectionOutcomeKind = iota + 1
+	DetectionOutcomeRecordPermanent
+)
+
+// DetectionTerminalOutcome proves that one applicable Rule revision reached a
+// terminal result for an Event in the delivery-owned transaction.
+type DetectionTerminalOutcome struct {
+	DeliveryID  DeliveryID
+	EventID     EventID
+	RuleID      RuleID
+	RuleVersion RuleVersion
+	Kind        DetectionOutcomeKind
+	FailureCode string
+	CompletedAt time.Time
+}
+
+// Validate checks Detection terminal-result combinations.
+func (o DetectionTerminalOutcome) Validate() error {
+	if !ValidDeliveryID(o.DeliveryID) {
+		return fmt.Errorf("detection outcome delivery id is not canonical")
+	}
+	if !ValidEventID(o.EventID) {
+		return fmt.Errorf("detection outcome event id is not canonical")
+	}
+	if err := validateTextIdentifier("rule id", string(o.RuleID)); err != nil {
+		return err
+	}
+	if err := validateTextIdentifier("rule version", string(o.RuleVersion)); err != nil {
+		return err
+	}
+	if o.CompletedAt.IsZero() {
+		return fmt.Errorf("detection outcome completed time is required")
+	}
+	switch o.Kind {
+	case DetectionOutcomeSuccess:
+		if o.FailureCode != "" {
+			return fmt.Errorf("successful detection outcome cannot contain a failure")
+		}
+	case DetectionOutcomeRecordPermanent:
+		if err := validateTextIdentifier("detection failure code", o.FailureCode); err != nil {
+			return fmt.Errorf("permanent detection outcome requires failure code: %w", err)
+		}
+		if len(o.FailureCode) > 128 {
+			return fmt.Errorf("detection failure code exceeds 128 bytes")
+		}
+	default:
+		return fmt.Errorf("unsupported detection outcome kind %d", o.Kind)
+	}
+	return nil
+}
+
 // Validate checks the detection membership identity.
 func (c DetectionContribution) Validate() error {
 	if !ValidDeliveryID(c.DeliveryID) {

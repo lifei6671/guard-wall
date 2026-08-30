@@ -8,6 +8,10 @@ import (
 	"github.com/lifei6671/guard-wall/internal/core"
 )
 
+// M0SafetyGrace is the frozen Fake Slice failsafe added to finite native
+// Firewall timeouts. Decision expiry remains authoritative.
+const M0SafetyGrace = 5 * time.Minute
+
 // TargetPolicy contains the Firewall-significant policy and backend attributes for one target.
 type TargetPolicy struct {
 	Coverage                core.PolicyCoverage
@@ -95,6 +99,16 @@ func Equivalent(left, right core.NormalizedTargetEnforcementIntent) bool {
 		left.PolicyCoverage == right.PolicyCoverage &&
 		left.PolicyRelationDigest == right.PolicyRelationDigest &&
 		left.BackendAttributesDigest == right.BackendAttributesDigest
+}
+
+// NativeExpiryForIntent derives the physical native timeout without changing
+// the Decision-owned EffectiveUntil value.
+func NativeExpiryForIntent(intent core.NormalizedTargetEnforcementIntent) *time.Time {
+	if intent.TimeoutMode != core.TimeoutNative || intent.EffectiveUntil == nil {
+		return nil
+	}
+	expiry := intent.EffectiveUntil.Add(M0SafetyGrace)
+	return &expiry
 }
 
 func addressFamily(ipv4 bool) core.AddressFamily {

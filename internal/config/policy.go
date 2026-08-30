@@ -46,7 +46,7 @@ func schemaNodeAtPath(root schemaNode, path string) (schemaNode, bool) {
 		return schemaNode{}, false
 	}
 	current := root
-	for _, component := range strings.Split(path, ".") {
+	for component := range strings.SplitSeq(path, ".") {
 		if component == "" {
 			return schemaNode{}, false
 		}

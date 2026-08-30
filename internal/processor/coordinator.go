@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
+	"github.com/lifei6671/guard-wall/internal/decision"
 	"github.com/lifei6671/guard-wall/internal/store"
 )
 
@@ -29,10 +30,10 @@ const (
 // can add outcomes to the coordinator-owned transaction but cannot commit it.
 type outcomeWriter interface {
 	writeParserOutcome(context.Context, core.ParserTerminalOutcome) error
+	writeDetectionOutcome(context.Context, core.DetectionTerminalOutcome) error
 	writeDetectionContribution(context.Context, core.DetectionContribution) (bool, error)
 	writeAlert(context.Context, core.Alert) error
-	writeDecision(context.Context, core.Decision) error
-	writeProjection(context.Context, core.DesiredBanProjection, time.Time) error
+	recordAutomaticDecision(context.Context, decision.AutomaticRequest) error
 	writeCriticalAudit(context.Context, store.CriticalAudit) error
 }
 
@@ -48,8 +49,30 @@ type processingStore interface {
 	beginProcessing(context.Context) (processingUnitOfWork, error)
 }
 
+// preparedAttempt contains only already-computed semantic writes. Parser and
+// Detection evaluation happen before the Coordinator opens the SQLite unit of
+// work, keeping the transaction free of external or expensive computation.
+type preparedAttempt interface {
+	write(context.Context, outcomeWriter) error
+	terminal() (core.ReceiptKind, *core.PermanentFailure)
+	confirm()
+	abort()
+}
+
 type attemptRunner interface {
-	run(context.Context, outcomeWriter, core.Delivery) error
+	prepare(context.Context, core.Delivery) (preparedAttempt, error)
+}
+
+type deferredPreparedAttempt interface {
+	deferResolution()
+}
+
+type pendingAttemptResolver interface {
+	resolvePending(core.DeliveryID, bool)
+}
+
+type sharedAttemptGate interface {
+	acquireDelivery(context.Context, core.DeliveryID) (func(), error)
 }
 
 // Coordinator is the sole owner of begin, commit and rollback for a processing
@@ -61,6 +84,8 @@ type Coordinator struct {
 	readbackTimeout time.Duration
 	flightMu        sync.Mutex
 	flights         map[core.DeliveryID]chan struct{}
+	pendingMu       sync.Mutex
+	pending         map[core.DeliveryID]preparedAttempt
 }
 
 func NewCoordinator(store processingStore, runner attemptRunner) *Coordinator {
@@ -70,6 +95,7 @@ func NewCoordinator(store processingStore, runner attemptRunner) *Coordinator {
 		clock:           func() time.Time { return time.Now().UTC() },
 		readbackTimeout: time.Second,
 		flights:         make(map[core.DeliveryID]chan struct{}),
+		pending:         make(map[core.DeliveryID]preparedAttempt),
 	}
 }
 
@@ -95,30 +121,56 @@ func (c *Coordinator) Process(ctx context.Context, delivery core.Delivery) (core
 }
 
 func (c *Coordinator) processLeader(ctx context.Context, delivery core.Delivery) (core.DurableCompletion, error) {
+	if gate, ok := c.runner.(sharedAttemptGate); ok {
+		release, err := gate.acquireDelivery(ctx, delivery.ID)
+		if err != nil {
+			return core.DurableCompletion{}, fmt.Errorf("acquire shared processing attempt: %w", err)
+		}
+		defer release()
+	}
 	receipt, found, err := c.store.findReceipt(ctx, delivery.ID)
 	if err != nil {
 		return core.DurableCompletion{}, fmt.Errorf("find processing receipt: %w", err)
 	}
 	if found {
-		return completionFromReceipt(delivery, receipt)
+		completion, err := completionFromReceipt(delivery, receipt)
+		if err != nil {
+			return core.DurableCompletion{}, err
+		}
+		c.resolvePending(delivery.ID, true)
+		return completion, nil
+	}
+	c.resolvePending(delivery.ID, false)
+
+	prepared, err := c.runner.prepare(ctx, delivery)
+	if err != nil {
+		return core.DurableCompletion{}, fmt.Errorf("prepare processing attempt: %w", err)
+	}
+	if prepared == nil {
+		return core.DurableCompletion{}, fmt.Errorf("prepare processing attempt: nil result")
 	}
 
 	tx, err := c.store.beginProcessing(ctx)
 	if err != nil {
+		prepared.abort()
 		return core.DurableCompletion{}, fmt.Errorf("begin processing: %w", err)
 	}
-	if err := c.runner.run(ctx, tx, delivery); err != nil {
+	if err := prepared.write(ctx, tx); err != nil {
+		prepared.abort()
 		return core.DurableCompletion{}, rollbackWithCause(tx, fmt.Errorf("run processing attempt: %w", err))
 	}
 
+	kind, failure := prepared.terminal()
 	receipt = core.ProcessingReceipt{
 		DeliveryID: delivery.ID,
 		SourceID:   delivery.Record.SourceID,
 		Position:   delivery.Record.Position,
-		Kind:       core.ReceiptSuccess,
+		Kind:       kind,
+		Failure:    clonePermanentFailure(failure),
 		Committed:  c.clock(),
 	}
 	if err := tx.writeReceipt(ctx, receipt); err != nil {
+		prepared.abort()
 		return core.DurableCompletion{}, rollbackWithCause(tx, fmt.Errorf("write processing receipt: %w", err))
 	}
 
@@ -126,10 +178,22 @@ func (c *Coordinator) processLeader(ctx context.Context, delivery core.Delivery)
 	switch state {
 	case commitConfirmed:
 		if commitErr != nil {
+			// Confirmed means durable state won. Keep the post-commit ledger in
+			// sync even if an adapter also reports an invariant error.
+			prepared.confirm()
 			return core.DurableCompletion{}, fmt.Errorf("commit reported confirmed with error: %w", commitErr)
 		}
-		return completionFromReceipt(delivery, receipt)
+		completion, err := completionFromReceipt(delivery, receipt)
+		if err != nil {
+			// The transaction is already durable. Preserve Window/DB alignment
+			// even when an adapter accepted an invalid locally-built receipt.
+			prepared.confirm()
+			return core.DurableCompletion{}, err
+		}
+		prepared.confirm()
+		return completion, nil
 	case commitRejected:
+		prepared.abort()
 		cause := ErrCommitRejected
 		if commitErr != nil {
 			cause = errors.Join(cause, commitErr)
@@ -142,15 +206,60 @@ func (c *Coordinator) processLeader(ctx context.Context, delivery core.Delivery)
 		defer cancel()
 		persisted, persistedFound, readErr := c.store.findReceipt(readbackContext, delivery.ID)
 		if readErr == nil && persistedFound {
-			return completionFromReceipt(delivery, persisted)
+			completion, err := completionFromReceipt(delivery, persisted)
+			if err != nil {
+				// A row exists at the durability key, but it cannot prove this
+				// completion. Keep the reservation unresolved until a later
+				// read can prove committed or absent state.
+				c.rememberPending(delivery.ID, prepared)
+				return core.DurableCompletion{}, err
+			}
+			prepared.confirm()
+			return completion, nil
+		}
+		if readErr == nil {
+			prepared.abort()
+		} else {
+			c.rememberPending(delivery.ID, prepared)
 		}
 		return core.DurableCompletion{}, errors.Join(ErrCommitUnknown, commitErr, readErr)
 	default:
+		prepared.abort()
 		cause := fmt.Errorf("unsupported commit state %d", state)
 		if commitErr != nil {
 			cause = errors.Join(cause, commitErr)
 		}
 		return core.DurableCompletion{}, rollbackWithCause(tx, cause)
+	}
+}
+
+func (c *Coordinator) rememberPending(id core.DeliveryID, prepared preparedAttempt) {
+	if deferred, ok := prepared.(deferredPreparedAttempt); ok {
+		deferred.deferResolution()
+	}
+	c.pendingMu.Lock()
+	previous := c.pending[id]
+	c.pending[id] = prepared
+	c.pendingMu.Unlock()
+	if previous != nil {
+		previous.abort()
+	}
+}
+
+func (c *Coordinator) resolvePending(id core.DeliveryID, committed bool) {
+	c.pendingMu.Lock()
+	prepared := c.pending[id]
+	delete(c.pending, id)
+	c.pendingMu.Unlock()
+	if prepared != nil {
+		if committed {
+			prepared.confirm()
+		} else {
+			prepared.abort()
+		}
+	}
+	if resolver, ok := c.runner.(pendingAttemptResolver); ok {
+		resolver.resolvePending(id, committed)
 	}
 }
 
@@ -201,4 +310,12 @@ func rollbackWithCause(tx processingUnitOfWork, cause error) error {
 		return errors.Join(cause, fmt.Errorf("rollback processing: %w", err))
 	}
 	return cause
+}
+
+func clonePermanentFailure(failure *core.PermanentFailure) *core.PermanentFailure {
+	if failure == nil {
+		return nil
+	}
+	cloned := *failure
+	return &cloned
 }

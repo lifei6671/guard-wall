@@ -288,7 +288,7 @@ func isLoopbackHost(host string) bool {
 
 func valueAtPath(document any, path string) (any, bool) {
 	current := document
-	for _, component := range strings.Split(path, ".") {
+	for component := range strings.SplitSeq(path, ".") {
 		object, ok := current.(map[string]any)
 		if !ok {
 			return nil, false

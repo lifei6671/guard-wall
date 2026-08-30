@@ -80,7 +80,7 @@ type Config struct {
 	Store         Store   `json:"store"`
 	Logging       Logging `json:"logging"`
 	Web           Web     `json:"web"`
-	SMTP          SMTP    `json:"smtp,omitempty"`
+	SMTP          SMTP    `json:"smtp"`
 }
 
 // Load reads one JSON configuration document. JSON is also a valid YAML 1.2

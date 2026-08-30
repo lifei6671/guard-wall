@@ -87,7 +87,7 @@ func TestMigrationEmptyAndIdempotent(t *testing.T) {
 				&migrationCount, &checksum); err != nil {
 				t.Fatalf("read migration ledger: %v", err)
 			}
-			if migrationCount != 1 || len(checksum) != 64 {
+			if migrationCount != 3 || len(checksum) != 64 {
 				t.Fatalf("migration ledger = count %d checksum %q", migrationCount, checksum)
 			}
 
@@ -562,6 +562,7 @@ var m0Tables = []string{
 	"processing_receipts",
 	"parser_terminal_outcomes",
 	"detection_contributions",
+	"detection_terminal_outcomes",
 	"alerts",
 	"decisions",
 	"desired_ban_projections",
@@ -569,6 +570,7 @@ var m0Tables = []string{
 	"infrastructure_reconcile_state",
 	"policy_reconcile_state",
 	"target_reconcile_state",
+	"reconcile_probe_requirements",
 	"audit_logs",
 }
 
