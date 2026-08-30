@@ -1,0 +1,7 @@
+interface:
+  display_name: "Task Continuity"
+  short_description: "维护长任务状态、关键工程决策、验证经验与跨会话恢复"
+  default_prompt: "使用 $task-continuity 为当前项目建立或恢复最小可用的任务状态。"
+
+policy:
+  allow_implicit_invocation: true
