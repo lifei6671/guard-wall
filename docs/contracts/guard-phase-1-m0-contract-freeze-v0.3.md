@@ -8,12 +8,13 @@
 
 | 项目 | 内容 |
 |---|---|
-| M0 Core Contract | `Specified`；待可执行验证，尚未 `Frozen/GO` |
-| Phase 1 Development Baseline | `Specified`；M1–M10 尚未完成 |
-| 文档发布状态 | `Not Released`；仅第 36 节通过后改为 `Released` |
+| 文档定位 | Phase 1 规范性开发基线；文档存在不构成实现或验证证据 |
+| 状态转换 | M0 按第 18 节判定 `Frozen/GO`；Phase 1 按第 36 节判定 `Released` |
+| 实时执行状态 | [Phase 1 STATUS](../development/phase-1/STATUS.md) |
 | 适用范围 | Guard Phase 1（M0–M10） |
 | 架构基线 | [Guard 分布式日志驱动主机防护系统技术方案 V0.4](../guard-distributed-log-driven-host-protection-system-technical-design-v0.4.md) |
 | 文件路径 | 保留 `m0-contract-freeze` 历史稳定入口；标题与正文已扩展为完整 Phase 1 规格 |
+| 开发执行入口 | [Phase 1 开发状态与 M0 执行矩阵](../development/phase-1/README.md) |
 | 目标 | 将架构语义下沉为可编译、可迁移、可故障注入验证的 Contract，并给出 M1–M10 可直接拆分的开发规格与验收 Gate |
 
 本文中的“必须”“禁止”“只能”是规范性要求。本文使用 `Guard`
