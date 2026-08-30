@@ -1,5 +1,5 @@
 <p align="center">
-<img src="https://github.com/lifei6671/guard-wall/raw/master/docs/static/guard-wall-logo-2.png" alt="GuardWall" title="GuardWall" width="400" height="260"/>
+<img src="https://github.com/lifei6671/guard-wall/raw/master/docs/static/guard-wall-logo-2.png" alt="GuardWall" title="GuardWall" width="400" />
 </p>
 ![GuardWall logo](docs/static/guard-wall-logo-2.png)
 
