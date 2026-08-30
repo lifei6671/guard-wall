@@ -10,15 +10,20 @@
 |---|---|
 | 当前阶段 | `M0 Contract Freeze` |
 | 当前结论 | `NO-GO` |
-| 可启动 | `M0-A`、`M0-B` |
-| 被阻塞 | `M0-C`、`M0-D`、`M1–M10` |
-| M0 证据状态 | `Specified` |
+| 已完成 | `A1–A4`（`Implemented`，尚未 `Verified`） |
+| 进行中 | `B1–B4`、`C1–C2`、`D1–D4` |
+| 可启动 | `None`；当前 READY 项已进入执行 |
+| 被阻塞 | `C3`、`D5–D7`、`M1–M10` |
+| M0 证据状态 | `Implemented`（worktree preliminary；尚未 `Verified`） |
 | Phase 1 发布状态 | `Not Released` |
-| 当前 Evidence | `None` |
+| 当前 Evidence | `artifacts/evidence/M0/worktree/m0-a/`、`m0-b/`、`m0-c/`、`m0-d/` |
 | 最近更新 | `2026-08-30` |
 
-当前仓库还没有 M0 所需的可编译模型、ADR、migration、Config Schema、
-Fake Slice、Contract Tests、真实 nftables Spike 或 Evidence Manifest。
+当前仓库已有 M0-A Contract、Crash Matrix manifest、两份 ADR、Go Core、SQLite
+migration/Store、Config Schema、安全 credential reader，以及增强后的 C1/C2 preliminary
+Slice；typed Processing outcomes 已同事务接入 Coordinator。仍缺真实 Parser/Detection
+编排、Window post-commit 语义、C3 Crash Matrix、正式 Contract Tests、目标 Linux
+durability 与 commit-bound Evidence Manifest。
 
 ## 2. 状态字段
 
@@ -38,21 +43,21 @@ Fake Slice、Contract Tests、真实 nftables Spike 或 Evidence Manifest。
 
 | ID | 工作项 | 推进状态 | 证据状态 | 负责人/任务 | Evidence | Blocker / 下一步 |
 |---|---|---|---|---|---|---|
-| A1 | Core Model 与权威关系 | `READY` | `Specified` | `Unassigned` | `None` | 建立 core-model Contract 与一致性审查 |
-| A2 | Source delivery 与事务协调 | `READY` | `Specified` | `Unassigned` | `None` | 建立 source-delivery Contract 与接口表达 |
-| A3 | Decision / Enforcement / Reconcile | `READY` | `Specified` | `Unassigned` | `None` | 建立单轨 decision-enforcement Contract |
-| A4 | Crash Matrix | `READY` | `Specified` | `Unassigned` | `None` | 为 §12.3/§17.3 建立 case manifest |
-| B1 | SQLite 并发、事务与 durability Spike | `READY` | `Specified` | `Unassigned` | `None` | 准备 Spike、migration 草案和故障验证 |
-| B2 | Source identity 与 replay Spike | `READY` | `Specified` | `Unassigned` | `None` | 准备 golden vectors 与轮转/restart Spike |
-| B3 | nftables Backend Spike | `READY` | `Specified` | `Unassigned` | `None` | 准备隔离 Firewall 环境 |
-| B4 | Agent/Enforcer 权限与 IPC Spike | `READY` | `Specified` | `Unassigned` | `None` | 准备权限 ADR、IPC 与 systemd 验证 |
-| C1 | Source Fake Slice | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 A1、A2、A4、B1、B2 Verified |
-| C2 | Decision/Enforcement Fake Slice | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 A1、A3、A4、B1 Verified |
+| A1 | Core Model 与权威关系 | `COMPLETE` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-a/contract-review.md` | 运行级验证留给 C1/C2/D1/D2/D5 |
+| A2 | Source delivery 与事务协调 | `COMPLETE` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-a/contract-review.md` | 运行级验证留给 C1/D1/D2/D5 |
+| A3 | Decision / Enforcement / Reconcile | `COMPLETE` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-a/contract-review.md` | 运行级验证留给 C2/D1/D2/D5/D6 |
+| A4 | Crash Matrix | `COMPLETE` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-a/contract-review.md` | manifest 已审查；runner 执行留给 C3/D5 |
+| B1 | SQLite 并发、事务与 durability Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | Go driver/PRAGMA/migration 已通过；缺目标 Linux SIGKILL/reboot/filesystem 与 power-loss 证据 |
+| B2 | Source identity 与 replay Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/source-slice/result.md` | 独立 Go golden tests 已通过；缺 restart、generation/replay 证据 |
+| B3 | nftables Backend Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/nftables-result.json` | 缺 production hook/priority、packet path、Snapshot/Plan、ownership 与恢复证据 |
+| B4 | Agent/Enforcer 权限与 IPC Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json` | 缺跨 UID、systemd hardening、capability、对象校验与恢复证据 |
+| C1 | Source Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/source-slice/result.md` | 多 Parser plan 与 typed outcome 同事务端口已通过；缺真实 Parser/Detection 编排、shutdown、Window post-commit、crash/durability |
+| C2 | Decision/Enforcement Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | Decision/Policy/Fake/Reconcile 与 fabricated Automatic Decision SQLite 原子链通过；缺 SQLite lifecycle、expiry scheduler、health/restart |
 | C3 | 完整 Crash Matrix | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 C1、C2 Verified |
-| D1 | Go 类型与接口 | `BLOCKED` | `Specified` | `Unassigned` | `None` | 只冻结已通过 Spike/Slice 的接口 |
-| D2 | SQLite migration | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 B1/C1/C2 相关证据 |
-| D3 | Config Schema | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 ownership 与默认值验证 |
-| D4 | ADR | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 A/B 结论与用户批准 |
+| D1 | Go 类型与接口 | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | Core/Config/Decision/Fake/Source 与 typed Processing UoW 端口通过 race/vet；缺真实 Parser/Detection engine ports |
+| D2 | SQLite migration | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | migration/checkpoint/generation/outcome 原子性已通过；缺 replay/reprocess refs、restart 与目标 Linux durability |
+| D3 | Config Schema | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md` | Schema/default/range/ownership/drift 与 credential reader 已通过；缺完整 YAML、SMTP Ready、hot-reload/restart 和目标 Linux 权限验证 |
+| D4 | ADR | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/adr-review.md` | ADR-0001/0002 已接受；delivery/durability/firewall/retry ADR 尚未齐全 |
 | D5 | Contract Tests | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 C1–C3 可执行用例 |
 | D6 | V0.4 同步 | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待新语义 Verified 后清理旧模型 |
 | D7 | M0 Evidence Manifest | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 D1–D6 Evidence 汇总 |
@@ -61,9 +66,9 @@ Fake Slice、Contract Tests、真实 nftables Spike 或 Evidence Manifest。
 
 | Gate | Contract | 当前结果 | Evidence | 未通过原因 | 解锁条件 |
 |---|---|---|---|---|---|
-| G18.1 Contract 完整性 | §18.1 | `FAIL` | `None` | 选择仅为 Specified；ADR、Spike、编译模型和 V0.4 同步未完成 | M0-A/B 与 D1/D4/D6 对应证据通过 |
-| G18.2 可执行验证 | §18.2 | `FAIL` | `None` | Fake Slice、crash/concurrency/replay/firewall/durability 测试不存在 | M0-C、migration 和 Contract Tests 全部通过 |
-| G18.3 产物一致性 | §18.3 | `FAIL` | `None` | migration、Config Schema、代码、测试和 Evidence Manifest 未落盘 | M0-D 全部责任产物通过 drift/一致性检查 |
+| G18.1 Contract 完整性 | §18.1 | `FAIL` | `artifacts/evidence/M0/worktree/` | A 与 D1/D4 部分 Implemented；B 仍 preliminary，D6 未完成 | M0-B 与 D1/D4/D6 对应证据通过 |
+| G18.2 可执行验证 | §18.2 | `FAIL` | `artifacts/evidence/M0/worktree/m0-c/` | C1/C2 仅最小纵切；C3、完整 replay/firewall/durability 未运行 | M0-C、migration 和 Contract Tests 全部通过 |
+| G18.3 产物一致性 | §18.3 | `FAIL` | `artifacts/evidence/M0/worktree/m0-d/` | migration/代码/Config Schema 已落盘；D5–D7 与 commit-bound Manifest 缺失 | M0-D 全部责任产物通过 drift/一致性检查 |
 
 M0 只有在 G18.1、G18.2、G18.3 全部为 `PASS` 后，才可改为
 `COMPLETE / Frozen / GO`，并解锁 M1–M10 Entry Gate。
@@ -145,10 +150,21 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
 | 2026-08-30 | M0-A | `BLOCKED` | `READY` | `None` | Phase 1 Contract 已达到 Specified，可开始行为不变量工作 |
 | 2026-08-30 | M0-B | `BLOCKED` | `READY` | `None` | 风险项已定义，可开始隔离 Spike |
 | 2026-08-30 | G18.1–G18.3 | `NOT RUN` | `FAIL` | `None` | 必需实现与可执行证据尚未落盘 |
+| 2026-08-30 | A1–A4、B1–B4 | `READY` | `IN_PROGRESS` | `None` | 用户接受 D-002 并授权继续 M0-A/M0-B |
+| 2026-08-30 | A1–A4 | `IN_PROGRESS / Specified` | `COMPLETE / Implemented` | `artifacts/evidence/M0/worktree/m0-a/contract-review.md` | 责任产物齐全；两轮交叉审查已清零 P0/P1 |
+| 2026-08-30 | B1–B4 | `IN_PROGRESS / Specified` | `IN_PROGRESS / Implemented` | `artifacts/evidence/M0/worktree/m0-b/` | preliminary Spike 通过；仍有明确 unverified domains |
+| 2026-08-30 | C1–C2 | `BLOCKED / Specified` | `IN_PROGRESS / Implemented` | `artifacts/evidence/M0/worktree/m0-c/` | 两条最小 Fake Slice 通过 race/vet 与 P0/P1 复审；完整 §17 用例未完成 |
+| 2026-08-30 | D1、D2、D4 | `BLOCKED / Specified` | `IN_PROGRESS / Implemented` | `artifacts/evidence/M0/worktree/m0-d/` | Go module/driver、Core、migration/Store 与 ADR-0002 落盘；目标 Linux 与完整端口未验证 |
+| 2026-08-30 | C1、C2、D1、D2 | `IN_PROGRESS / Implemented` | `IN_PROGRESS / Implemented` | `artifacts/evidence/M0/worktree/m0-c/`、`m0-d/` | Source safety、Decision/Policy 与 Store 语义扩展完成；交叉复审清零已实现范围 P0/P1 |
+| 2026-08-30 | D3 | `BLOCKED / Specified` | `IN_PROGRESS / Implemented` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md` | 用户确认配置契约；Schema ownership/default/range/unknown/drift 测试通过 |
+| 2026-08-30 | C1、C2、D1–D3 | `IN_PROGRESS / Implemented` | `IN_PROGRESS / Implemented` | `artifacts/evidence/M0/worktree/m0-c/`、`m0-d/` | 多 Parser plan、typed outcome 七表事务接线与 credential reader 完成；交叉复审无 P0/P1，全仓验证通过 |
 
 ## 7. 下一步队列
 
-1. 为 M0-A 的 A1–A4 确认负责人和任务链接。
-2. 为 M0-B 的 B1–B4 准备 Spike 环境与证据目录。
-3. 先形成 M0-A/B 的首轮可验证接口，再判断是否解锁 M0-C。
-4. 任一状态变化都同时登记 Evidence、Blocker 和本文件更新记录。
+1. 补齐 C1：真实 Parser/SecurityEvent/Detection 编排接入 plan/UoW、Window post-commit
+   幂等、poison、shutdown 与 crash/restart。
+2. 补齐 C2：SQLite-backed Decision duplicate/manual replace 生命周期、expiry/SafetyGrace
+   scheduler、health 与 restart recovery。
+3. 补齐 D3 runtime：完整 YAML、SMTP Ready、hot-reload/restart 与目标 Linux
+   credential 权限；随后执行 C3、D5–D7 和 Linux SIGKILL/restart/durability。
+4. B3/B4 继续补齐生产等价隔离证据；保持 G18.1–G18.3 `FAIL`、M0 `NO-GO`。

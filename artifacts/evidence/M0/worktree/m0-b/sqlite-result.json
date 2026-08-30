@@ -1,0 +1,37 @@
+{
+  "schema": "guard.evidence.m0-b1.v1",
+  "status": "PASS_WITH_UNVERIFIED_DOMAINS",
+  "evidence_maturity": "worktree_preliminary",
+  "base_commit": "3aca38a",
+  "working_tree_dirty": true,
+  "command": "python -B spikes/sqlite/m0_sqlite_spike.py",
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.10",
+    "sqlite": "3.49.1"
+  },
+  "checks": {
+    "pragma_read_back": {
+      "journal_mode": "wal",
+      "synchronous": 2,
+      "foreign_keys": 1,
+      "busy_timeout_ms": 5000,
+      "wal_autocheckpoint": 1000
+    },
+    "concurrent_partial_unique_index": {
+      "inserted": 1,
+      "duplicate": 7
+    },
+    "critical_audit_atomic_rollback": {
+      "decision": 0,
+      "projection": 0
+    }
+  },
+  "not_verified": [
+    "future Go SQLite driver behavior",
+    "cross-process SIGKILL recovery",
+    "Linux reboot and filesystem behavior",
+    "power-loss durability"
+  ],
+  "gate_effect": "B1 remains Implemented, not Verified; this result cannot pass G18.2 alone"
+}

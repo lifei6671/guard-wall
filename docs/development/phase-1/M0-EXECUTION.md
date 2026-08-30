@@ -21,12 +21,16 @@ M0 的目标是把 Phase 1 核心语义从 `Specified` 推进到 `Verified/Froze
 
 ```text
 M0-A 行为不变量 ─┐
-                  ├─→ M0-C 两条 Fake Slice ─→ M0-D 正式冻结 ─→ M0 GO
-M0-B 风险 Spike ─┘
+                  ├─→ C1/C2 Fake Slice ─→ C3 ─→ M0-D ─→ M0 GO
+B1/B2 风险 Spike ─┘
+
+B3/B4 风险 Spike ─────────────────────────────↗ G18.1 / M0 GO
 ```
 
 - M0-A 与 M0-B 中互不依赖的工作可以并行。
 - M0-C 必须等待其依赖的 M0-A 条款和 M0-B 风险项形成可执行结论。
+- C1 只依赖 B1/B2，C2 只依赖 B1；B3/B4 不阻塞 C1/C2，但必须在
+  G18.1 与 M0 GO 前完成。
 - M0-D 只能冻结已经被 Spike 或 Fake Slice 验证过的接口。
 
 ## 3. M0-A — 行为不变量

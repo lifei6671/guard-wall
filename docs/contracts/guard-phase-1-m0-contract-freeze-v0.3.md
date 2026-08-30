@@ -515,7 +515,7 @@ type SecurityEvent struct {
     SourcePosition SourcePosition
     ParserID       string
     ParserVersion  string
-    EmittedIndex   int
+    EmittedIndex   uint32
     NodeID         string
 
     EventType string

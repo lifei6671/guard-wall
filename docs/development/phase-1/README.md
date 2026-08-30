@@ -57,7 +57,9 @@ Specified → Implemented → Verified → Frozen
 3. 将状态改为 `IN_PROGRESS`，登记负责人、分支或任务链接。
 4. 实现 Contract 要求的代码、ADR、migration、Schema、测试或 Spike。
 5. 运行精确验证命令，把结果写入 `artifacts/evidence/<milestone>/<commit>/`。
-6. 在 `STATUS.md` 登记 Evidence 路径；证据复核通过后改为 `COMPLETE / Verified`。
+6. 在 `STATUS.md` 登记 Evidence 路径，并按工作包完成条件更新状态。文档审查和
+   preliminary Spike 通常最多达到 `COMPLETE / Implemented`；只有所需自动化和
+   目标环境证据齐全后才能标记 `Verified`。
 7. 里程碑全部工作包通过后执行 Exit Gate；Gate 通过才能解锁下游里程碑。
 
 ## 5. Evidence 最小要求

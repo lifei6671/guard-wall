@@ -1,0 +1,237 @@
+version: guard.m0-crash-matrix.v1
+status: specified
+contract:
+  path: docs/contracts/guard-phase-1-m0-contract-freeze-v0.3.md
+  sections:
+    - "12.3"
+    - "17.3"
+
+# 本文件是 Crash Contract Test 的用例清单，不是测试通过证据。
+# runner 落地后必须为每个 case 记录注入是否命中、重启轮次和最终断言。
+required_final_assertions:
+  - desired_ban_projection
+  - normalized_enforcement_intent
+  - firewall_snapshot
+  - observed_infrastructure_state
+  - observed_policy_state
+  - observed_target_state
+  - decision_history
+  - retry_domain_state
+  - critical_audit
+
+cases:
+  - id: M0-CRASH-001
+    name: decision_before_commit
+    injection_point: decision_transaction_before_commit
+    setup: create_new_automatic_decision
+    restart: required
+    expected:
+      decision: absent
+      desired_projection: unchanged
+      firewall_mutation: forbidden
+    final_state:
+      desired_ban_projection: unchanged_from_setup
+      normalized_enforcement_intent: unchanged_from_setup
+      firewall_snapshot: unchanged_from_setup
+      observed_infrastructure_state: unchanged_from_setup
+      observed_policy_state: unchanged_from_setup
+      observed_target_state: unchanged_from_setup
+      decision_history: no_new_entry
+      retry_domain_state: unchanged_from_setup
+      critical_audit: no_false_success_entry
+    assertions:
+      - no_new_decision_row
+      - no_new_projection_row
+      - no_firewall_side_effect
+      - no_false_success_audit
+
+  - id: M0-CRASH-002
+    name: decision_committed_before_firewall
+    injection_point: after_decision_projection_audit_commit_before_reconcile_apply
+    setup: create_active_decision_for_absent_target
+    restart: required
+    expected:
+      decision: active
+      recovery: rebuild_complete_desired_snapshot_and_apply
+    final_state:
+      desired_ban_projection: present_from_committed_decision
+      normalized_enforcement_intent: current_present_generation
+      firewall_snapshot: matches_current_desired_snapshot
+      observed_infrastructure_state: confirmed_current_revision
+      observed_policy_state: confirmed_current_revision
+      observed_target_state: confirmed_current_generation
+      decision_history: one_active_transition
+      retry_domain_state: converged_or_preserved_current_budget
+      critical_audit: one_committed_decision_entry
+    assertions:
+      - committed_decision_preserved
+      - projection_rebuild_matches_active_decisions
+      - policy_and_infrastructure_included
+      - target_eventually_converged
+
+  - id: M0-CRASH-003
+    name: firewall_success_before_target_observed_write
+    injection_point: after_firewall_apply_success_before_target_observed_commit
+    setup: apply_present_target
+    restart: required
+    expected:
+      first_action: probe_or_snapshot
+      unchanged_generation: confirm_existing_result
+      changed_generation: converge_current_intent
+    final_state:
+      desired_ban_projection: current_committed_projection
+      normalized_enforcement_intent: current_generation
+      firewall_snapshot: matches_current_generation
+      observed_infrastructure_state: from_authoritative_probe
+      observed_policy_state: from_authoritative_probe
+      observed_target_state: confirmed_current_generation_only
+      decision_history: unchanged_from_committed_history
+      retry_domain_state: no_budget_reset_or_duplicate_attempt
+      critical_audit: no_duplicate_success_entry
+    assertions:
+      - no_blind_duplicate_mutation
+      - stale_generation_not_confirmed
+      - current_generation_eventually_converged
+
+  - id: M0-CRASH-004
+    name: decision_ended_before_firewall_revoke
+    injection_point: after_decision_end_projection_commit_before_target_relaxation
+    setup: end_last_active_decision_for_target
+    restart: required
+    expected:
+      desired_membership: absent
+      recovery: converge_new_target_generation
+    final_state:
+      desired_ban_projection: absent_for_ended_target
+      normalized_enforcement_intent: absent_current_generation
+      firewall_snapshot: target_absent
+      observed_infrastructure_state: confirmed_current_revision
+      observed_policy_state: confirmed_current_revision
+      observed_target_state: confirmed_absent_current_generation
+      decision_history: one_terminal_transition
+      retry_domain_state: current_absent_generation_budget_only
+      critical_audit: one_decision_end_entry
+    assertions:
+      - terminal_decision_preserved
+      - projection_is_absent
+      - old_present_intent_not_recreated
+      - target_eventually_absent
+
+  - id: M0-CRASH-005
+    name: firewall_revoke_before_observed_write
+    injection_point: after_firewall_revoke_success_before_target_observed_commit
+    setup: remove_present_target
+    restart: required
+    expected:
+      first_action: probe_or_snapshot
+      observed_membership: absent
+    final_state:
+      desired_ban_projection: absent_for_ended_target
+      normalized_enforcement_intent: absent_current_generation
+      firewall_snapshot: target_absent
+      observed_infrastructure_state: from_authoritative_probe
+      observed_policy_state: from_authoritative_probe
+      observed_target_state: confirmed_absent_current_generation
+      decision_history: unchanged_from_committed_terminal_history
+      retry_domain_state: no_duplicate_revoke_attempt
+      critical_audit: no_duplicate_history_or_success_entry
+    assertions:
+      - no_blind_duplicate_revoke
+      - target_eventually_converged_absent
+      - history_and_audit_not_duplicated
+
+  - id: M0-CRASH-006
+    name: attempt_persisted_before_external_call
+    injection_point: after_attempt_commit_before_external_mutation
+    setup: prepare_each_failure_domain_once
+    variants:
+      - infrastructure
+      - policy
+      - target
+    restart: required
+    expected:
+      first_action: probe
+      attempt_count: preserved
+      retry_budget: not_reset
+    final_state:
+      desired_ban_projection: unchanged_from_committed_intent
+      normalized_enforcement_intent: current_revision_or_generation
+      firewall_snapshot: authoritative_probe_then_current_plan_result
+      observed_infrastructure_state: probe_result_for_infrastructure_variant
+      observed_policy_state: probe_result_for_policy_variant
+      observed_target_state: probe_result_for_target_variant
+      decision_history: unchanged
+      retry_domain_state: persisted_attempt_and_only_matching_domain_consumed
+      critical_audit: no_duplicate_attempt_success_entry
+    assertions:
+      - persisted_attempt_not_rolled_back
+      - only_matching_domain_budget_consumed
+      - restart_does_not_create_new_retry_epoch
+
+  - id: M0-CRASH-007
+    name: firewall_timeout_unknown_result
+    injection_point: external_mutation_timeout_after_dispatch
+    setup: backend_result_is_ambiguous
+    variants:
+      - infrastructure
+      - policy
+      - target
+    restart: optional
+    expected:
+      observed_state: unknown
+      next_action: probe_before_any_mutation
+    final_state:
+      desired_ban_projection: unchanged_from_committed_intent
+      normalized_enforcement_intent: current_revision_or_generation
+      firewall_snapshot: authoritative_probe_result
+      observed_infrastructure_state: unknown_until_probe_then_probe_result
+      observed_policy_state: unknown_until_probe_then_probe_result
+      observed_target_state: unknown_until_probe_then_probe_result
+      decision_history: unchanged
+      retry_domain_state: timeout_attempt_consumed_in_matching_domain
+      critical_audit: one_structured_timeout_or_unknown_result_entry
+    assertions:
+      - timeout_consumes_attempt
+      - no_converged_claim_from_timeout
+      - no_second_write_before_probe
+
+  - id: M0-CRASH-008
+    name: unrelated_snapshot_revision_advance
+    injection_point: after_target_confirm_before_confirmed_generation_commit
+    setup: advance_snapshot_revision_with_unrelated_target
+    restart: optional
+    expected:
+      unchanged_target_generation: remains_confirmable
+      progress: no_starvation
+    final_state:
+      desired_ban_projection: current_for_both_targets
+      normalized_enforcement_intent: unchanged_for_stable_target
+      firewall_snapshot: stable_target_matches_unchanged_generation
+      observed_infrastructure_state: current
+      observed_policy_state: current
+      observed_target_state: stable_target_confirmed_without_starvation
+      decision_history: unchanged_for_stable_target
+      retry_domain_state: stable_target_budget_not_reset
+      critical_audit: no_duplicate_or_false_stale_entry
+    assertions:
+      - unrelated_revision_does_not_invalidate_target_result
+      - stale_result_cannot_overwrite_changed_target_generation
+      - stable_target_eventually_converged
+
+runner_requirements:
+  deterministic_clock: true
+  deterministic_fault_injection: true
+  isolated_database_per_case: true
+  fake_firewall_required: true
+  repeat_runs_minimum: 3
+  fail_on_skipped_case: true
+  evidence_fields:
+    - commit
+    - command
+    - environment
+    - case_id
+    - injection_hit
+    - restart_count
+    - passed_assertions
+    - failed_assertions
+    - final_state_digest

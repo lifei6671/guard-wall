@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://guard-wall.local/schema/config-v1.schema.json",
+  "title": "Guard Wall Phase 1 Configuration",
+  "description": "The sole authority for Phase 1 configuration fields, defaults, bounds, ownership, sensitivity, and restart behavior.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["store"],
+  "x-guard-non-loopback-plaintext": {
+    "addressProperty": "web.listen_address",
+    "allowProperty": "web.security.allow_remote_http"
+  },
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "default": 1,
+      "x-guard-owner": "yaml",
+      "x-guard-hot-reload": false,
+      "x-guard-restart-required": true,
+      "x-guard-sensitive": false
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "raw_queue_capacity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536,
+          "default": 512,
+          "x-guard-owner": "yaml",
+          "x-guard-hot-reload": false,
+          "x-guard-restart-required": true,
+          "x-guard-sensitive": false
+        },
+        "event_queue_capacity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536,
+          "default": 1024,
+          "x-guard-owner": "yaml",
+          "x-guard-hot-reload": false,
+          "x-guard-restart-required": true,
+          "x-guard-sensitive": false
+        },
+        "reconcile_queue_capacity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536,
+          "default": 256,
+          "x-guard-owner": "yaml",
+          "x-guard-hot-reload": false,
+          "x-guard-restart-required": true,
+          "x-guard-sensitive": false
+        },
+        "shutdown_timeout": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*(ms|s|m)$",
+          "default": "30s",
+          "x-guard-duration-min-ms": 5000,
+          "x-guard-duration-max-ms": 300000,
+          "x-guard-owner": "yaml",
+          "x-guard-hot-reload": false,
+          "x-guard-restart-required": true,
+          "x-guard-sensitive": false
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "checkpoint_interval": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*(ms|s|m)$",
+          "default": "1s",
+          "x-guard-duration-min-ms": 100,
+          "x-guard-duration-max-ms": 30000,
+          "x-guard-owner": "yaml",
+          "x-guard-hot-reload": false,
+          "x-guard-restart-required": true,
+          "x-guard-sensitive": false
+        },
+        "checkpoint_record_threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "default": 256,
+          "x-guard-owner": "yaml",
+          "x-guard-hot-reload": false,
+          "x-guard-restart-required": true,
+          "x-guard-sensitive": false
+        }
+      }
+    },
+    "store": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["database_path"],
+      "properties": {
+        "database_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^/",
+          "x-guard-owner": "yaml",
+          "x-guard-hot-reload": false,
+          "x-guard-restart-required": true,
+          "x-guard-sensitive": false
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["debug", "info", "warn", "error"],
+          "default": "info",
+          "x-guard-owner": "yaml",
+          "x-guard-hot-reload": true,
+          "x-guard-restart-required": false,
+          "x-guard-sensitive": false
+        }
+      }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "listen_address": {
+          "type": "string",
+          "default": "127.0.0.1:8080",
+          "x-guard-listen-address": true,
+          "x-guard-owner": "yaml",
+          "x-guard-hot-reload": false,
+          "x-guard-restart-required": true,
+          "x-guard-sensitive": false
+        },
+        "security": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "properties": {
+            "allow_remote_http": {
+              "type": "boolean",
+              "default": false,
+              "x-guard-owner": "yaml",
+              "x-guard-hot-reload": false,
+              "x-guard-restart-required": true,
+              "x-guard-sensitive": false
+            }
+          }
+        }
+      }
+    },
+    "smtp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "credential_file": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^/",
+          "x-guard-owner": "yaml",
+          "x-guard-hot-reload": false,
+          "x-guard-restart-required": true,
+          "x-guard-sensitive": true
+        }
+      }
+    }
+  }
+}
