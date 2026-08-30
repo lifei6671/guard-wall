@@ -1,4 +1,6 @@
-# Guard Phase 1 M0 — Contract Freeze 技术规格 V0.3
+# Guard Phase 1 全面开发技术规格 V0.3
+
+> M0 Contract Freeze + M1–M10 Development Baseline
 
 ---
 
@@ -6,21 +8,36 @@
 
 | 项目 | 内容 |
 |---|---|
-| 状态 | M0 执行基线，尚未 Frozen |
-| 适用范围 | Guard Phase 1 |
+| M0 Core Contract | `Specified`；待可执行验证，尚未 `Frozen/GO` |
+| Phase 1 Development Baseline | `Specified`；M1–M10 尚未完成 |
+| 文档发布状态 | `Not Released`；仅第 36 节通过后改为 `Released` |
+| 适用范围 | Guard Phase 1（M0–M10） |
 | 架构基线 | [Guard 分布式日志驱动主机防护系统技术方案 V0.4](../guard-distributed-log-driven-host-protection-system-technical-design-v0.4.md) |
-| 目标 | 把架构语义下沉为可编译、可迁移、可故障注入验证的开发 Contract |
+| 文件路径 | 保留 `m0-contract-freeze` 历史稳定入口；标题与正文已扩展为完整 Phase 1 规格 |
+| 目标 | 将架构语义下沉为可编译、可迁移、可故障注入验证的 Contract，并给出 M1–M10 可直接拆分的开发规格与验收 Gate |
 
-本文中的“必须”“禁止”“只能”是规范性要求。
+本文中的“必须”“禁止”“只能”是规范性要求。本文使用 `Guard`
+作为系统简称；产品展示名称、Go module path 与发布包名称不在本文中互相推导，
+分别以 README、`go.mod` 与发布配置为权威源。
 
-只有第 18 节全部通过后，本文件状态才能从“M0 执行基线”改为
-“Frozen”，Phase 1 才允许按里程碑拆分为并行开发任务。
+本文同时承担两种职责：
 
-### 1.1 与 V0.4 的权威关系
+1. 第 2–18 节冻结 M0 核心正确性 Contract，指导 Spike、Fake Slice 和故障注入验证。
+2. 第 22 节起规定 Phase 1 的统一工程基线、M1–M10 开发包、测试证据和 Release Gate。
 
-- M0 未 Frozen 时，V0.4 继续承担已发布的产品范围与总体架构基线；本文中的冲突项
-  是待 Spike、Slice 和 ADR 验证的候选修正，只允许用于 M0 实验，不得当作已发布
-  代码 Contract。
+只有第 18 节全部通过后，`M0 Core Contract` 才能从 `Specified` 改为
+`Frozen/GO`，Phase 1 才允许按里程碑拆分为并行开发任务；这不代表 M1–M10
+已经完成，也不改变整份文档的 `Not Released` 状态。
+在此之前，可以执行 M0-A–M0-D 和第 3.3 节允许的骨架工作，不得把
+“开始 M0 实验/实现”表述为“M0 已通过”。
+
+### 1.1 权威关系
+
+- V0.4 继续承担已发布的产品范围和总体架构基线。
+- 本文是 Phase 1 开发期的规范性实现目标。对 Source、SecurityEvent、Decision、
+  Enforcement、Firewall、Resource Limits 和故障恢复语义，本文明确修正
+  V0.4 的地方以本文为准；但未通过对应 Gate 前，这些条款只能驱动
+  Spike、Slice 和开发中代码，不得被表述为已验证的发布 Contract。
 - M0 Frozen 后，对本文覆盖的 Source、SecurityEvent、Decision、Enforcement、
   Firewall、Resource Limits 和故障恢复 Contract，以 Frozen M0、对应 ADR 及可执行
   产物为实现权威。
@@ -30,6 +47,27 @@
 至少需要同步处理：V0.4 的 `Pending/Revoking/Failed` Decision、Decision 级 Retry
 字段、`guard-agent decision retry`、`guard_decision_failed_total` 和 ADR-017；相应能力
 迁移到 Enforcement/Reconcile Contract。
+
+### 1.2 规范状态与证据语义
+
+每一项 Phase 1 能力只能处于以下状态之一：
+
+```text
+Specified
+  = 规范已给出唯一实现目标，可编写 Spike/Slice/代码
+
+Implemented
+  = 权威代码、migration 或 Schema 已落盘，但不代表 Gate 已通过
+
+Verified
+  = 对应自动化测试、故障注入、Spike 或人工安全检查已形成可定位证据
+
+Frozen
+  = 所属里程碑的必需 Gate 全部通过，且权威产物已同步
+```
+
+文档中写明默认值、算法或状态机，只能证明 `Specified`；不得取代测试、
+Spike 结果或 Release Evidence。
 
 ---
 
@@ -68,9 +106,23 @@ Decision
 
 ---
 
-## 3. 范围边界
+## 3. Phase 1 与 M0 范围边界
 
-### 3.1 M0 必须完成
+### 3.1 Phase 1 In Scope
+
+Phase 1 交付单机 Standalone 的最小完整产品闭环：
+
+- Linux 日志文件采集、解析、规则检测和持久化处理回执。
+- 自动封禁、人工封禁、解封、过期和 allowlist / protected target 约束。
+- nftables、iptables-nft/legacy、UFW 与 Docker 防护集成，以及声明式对账、失败重试和降级可观测性。
+- SQLite 本地状态、版本化 migration、备份恢复和崩溃恢复。
+- 最小管理 API、Web 管理面、CLI、通知与审计查询。
+- 内置日志源、解析器和检测规则，以及安装、升级、卸载和运维文档。
+- Contract、单元、集成、崩溃恢复、权限、安全和安装验收证据。
+
+Phase 1 不以“代码已写完”为完成标准，而以第 36 节 Release Gate 全部通过为准。
+
+### 3.2 M0 必须完成
 
 - SecurityEvent、SourcePosition 和稳定事件身份。
 - Decision、Desired Projection、Normalized Enforcement Intent 与 Reconcile State 的职责、状态和不变量。
@@ -83,7 +135,7 @@ Decision
 - 核心 Given/When/Then Contract Tests。
 - M0 Go/No-Go Gate。
 
-### 3.2 可以与 M0 并行，但不得反向冻结 Contract
+### 3.3 可以与 M0 并行，但不得反向冻结 Contract
 
 - 仓库目录和构建骨架。
 - 日志、测试、lint、CI 基础设施。
@@ -94,16 +146,24 @@ Decision
 如果工程语言、前端技术栈或第三方依赖尚未通过 ADR 确认，禁止以“搭骨架”
 为由新增依赖或锁文件。
 
-### 3.3 不进入 M0
+### 3.4 不进入 M0，但仍属于 Phase 1 后续里程碑
 
-- Phase 2 Cluster 能力。
-- 完整 Web 页面和全部 REST/OpenAPI 资源。
+- 第 32 节规定的最小管理 API、Web 页面和 OpenAPI 资源。
 - React、Vite、shadcn/ui 或其他具体前端栈选型。
-- 全部 iptables、UFW、Docker Backend 的生产实现。
+- 通知适配器、内置规则包和产品化安装能力。
+- nftables、iptables-nft/legacy、UFW 与 Docker 集成的完整 Apply / Confirm / Recovery 实现。
+
+这些内容不能反向阻塞 M0 核心链路；进入对应里程碑前，必须完成所需的
+技术选型、接口细化和 Gate 用例。
+
+### 3.5 Phase 1 Out of Scope
+
+- Phase 2 Cluster、多节点协同和集中式控制面。
 - GeoIP、Threat Intelligence、机器学习、自动 CIDR 聚合。
 - Progressive Ban 和复杂关联检测。
+- 跨节点全局速率、分布式一致性和高可用数据库。
 
-这些内容只能在对应里程碑开始前另行冻结，不能阻塞 M0 核心链路。
+Out of Scope 能力不得以预留扩展点为由增加 Phase 1 的依赖、状态机或兼容层。
 
 ---
 
@@ -224,6 +284,9 @@ Target Domain
 | Go 类型和接口 | M0-D 冻结后的代码 |
 | SQLite Schema | migration SQL |
 | 配置字段 | Config Schema |
+| HTTP API | OpenAPI 文档及其生成 drift check |
+| CLI 参数、输出和退出码 | CLI Contract/golden tests |
+| Agent/Enforcer IPC frame 与操作 | versioned IPC Protocol Schema/golden tests |
 | 行为验收 | 自动化 Contract Tests |
 
 Markdown 不得复制完整 DDL、完整生成代码或测试实现，避免多份内容漂移。
@@ -254,7 +317,8 @@ M0-D 正式冻结
   ├─ migration
   ├─ Config Schema
   ├─ ADR
-  └─ Contract Tests
+  ├─ Contract Tests
+  └─ V0.4 旧 Decision/Retry/CLI/Metric/ADR 同步清理
 ```
 
 M0-A、M0-B 可以并行处理互不依赖的研究项。
@@ -263,6 +327,28 @@ M0-C 必须基于 M0-A 的第一版行为不变量；Fake Slice 不是和 Contra
 的独立开发任务。
 
 M0-D 只能冻结已经被 Spike 或 Slice 验证过的接口。
+
+### 5.1 Phase 1 单轨实现定案
+
+为避免同一模块出现两套不兼容实现，Phase 1 开发只允许使用下列路径。
+这些选择当前状态为 `Specified`；对应 Spike 和 Contract Tests 通过前不得标记
+`Verified` 或 `Frozen`。
+
+| 主题 | Phase 1 唯一选择 | 必须的验证边界 |
+|---|---|---|
+| 工程语言 | Go；确切 toolchain 以 `go.mod` 为权威 | 编译、race、Linux 支持矩阵 |
+| Source delivery | receipt pipeline + terminal `processing_receipt` | crash/replay、事务幂等、checkpoint 不越洞 |
+| Parser 调度 | enabled Parser 全部执行（all-match），`priority + parser_id` 稳定排序 | 多 Parser 错误与版本切换 |
+| Event ID | 版本化长度帧 + SHA-256 + lowercase base32hex | golden vectors、跨重启稳定 |
+| Automatic Decision 唯一键 | `node_id + rule_id + canonical_target` partial unique index | SQLite 并发触发 |
+| Manual Decision 唯一键 | `node_id + canonical_target` partial unique index | replace 原子性 |
+| Reconcile | Infrastructure / Policy / Target 三个 failure domain，每个外部 batch 只属于一个 domain | 顺序、fencing、预算隔离、unknown result |
+| SQLite | WAL + `synchronous=FULL` + `foreign_keys=ON` + `busy_timeout=5000ms` | PRAGMA read-back、SIGKILL/reboot/power-loss 证据边界 |
+| 权限 | 非特权 `guard-agent` + 最小 root `guard-enforcer` | Unix Socket 身份、协议白名单、systemd hardening |
+| Firewall 写入 | 单一 Enforcer 串行执行，声明式 Snapshot/Plan | 隔离环境中的 atomicity、ownership、drift |
+
+Phase 1 明确不实现 durable inbox。它可以作为未来 ADR 的备选方案，但不得出现在
+Phase 1 生产 Schema、恢复路径或必测矩阵中。
 
 ---
 
@@ -287,13 +373,9 @@ Metadata
 只用于本轮处理顺序和连续 SourceDurable 判断。外部 Position 负责恢复日志源，稳定 Delivery ID
 负责跨重启幂等，Sequence 不承担稳定身份。
 
-M0-B 根据投递方案冻结 Sequence 的持久化方式：
-
-- durable inbox：Sequence 随 inbox item 一起持久化；
-- receipt pipeline：Sequence 可以是 session-local，crash 后从 checkpoint 重读并重新
-  分配，幂等依靠稳定 Delivery ID 和 receipt。
-
-禁止把“持久化 Sequence”实现成未经基准验证的逐条独立 SQLite 更新。
+Phase 1 的 `DeliverySequence` 是 session-local，每个 Source processing session 从 1
+开始分配。crash 后从已持久化 checkpoint 重读并重新分配，跨重启幂等依靠稳定
+Delivery ID 和 `processing_receipt`，不依靠 Sequence 值相等。
 
 ### 6.2 File Position
 
@@ -333,12 +415,35 @@ created_at
 lifecycle_state
 ```
 
+`file_generation` 使用 128-bit CSPRNG 生成并编码为小写 hex，创建后不可变。
+`lifecycle_state` 冻结为单向状态机：
+
+```text
+Open → Draining → Sealed → Retired
+  └─────────→ Sealed
+```
+
+- `Open`：当前可继续读取的 generation。
+- `Draining`：rename/create 后旧文件仍通过已打开 fd 读到 EOF。
+- `Sealed`：不再产生新 RawRecord，但仍可能被 checkpoint、receipt 或 replay 引用。
+- `Retired`：checkpoint 已安全越过本 generation 的最大 DeliverySequence，且无
+  receipt/replay/reprocess 引用；达到 retention 后才允许删除。
+
+generation row 必须在首条记录的 outcome/receipt 事务之前或同一事务提交。
+rename/create 时旧 generation 进入 `Draining`，新 `(device_id, inode)` 创建 `Open`
+generation；copytruncate 即使 inode 未变，也必须 seal 旧 generation 并为 offset 0
+开始的数据创建新 generation。状态禁止回退或复活。
+
 旧 generation 尚未 checkpoint、但新 generation 已产生 receipt 时发生 crash，重启后
 新 generation 的 Delivery ID 必须保持不变。
 
 Generation registry row 只有在该 generation 已被持久化 checkpoint 安全越过、没有
-未完成 inbox/receipt 引用、且确认不存在需要重放的记录后才能进入可清理终态。清理
+receipt/replay/reprocess 引用、且确认不存在需要重放的记录后才能进入 `Retired`。清理
 前必须保留 Delivery ID 重建所需字段。
+
+重启时必须恢复全部非 `Retired` generation。找不到旧 inode 时，已提交 receipt 的
+结果保持完成；尚未建立稳定 Position/receipt 的字节不得声称可恢复，必须写
+`DataLossSuspected` Audit/Health。fast-regrow 盲区仍是 Phase 1 known limitation。
 
 ### 6.3 Journald Position
 
@@ -369,6 +474,29 @@ Journald:
 
 同一条记录因崩溃重放时，Delivery ID 必须保持不变。
 
+Delivery ID 的文本与二进制编码冻结为：
+
+```text
+delivery_id = "dlv1_" + lowercase(base32hex-no-padding(SHA-256(frame)))
+
+File frame = UTF-8("guard.delivery.file.v1\0")
+           + field(SourceID)
+           + field(FileGeneration)
+           + uint64-be(StartOffset)
+           + uint64-be(EndOffset)
+
+Journald frame = UTF-8("guard.delivery.journald.v1\0")
+              + field(SourceID)
+              + field(Cursor)
+
+field(value) = uint32-be(byte_length) + exact UTF-8 bytes
+```
+
+offset 必须是非负整数且 `StartOffset <= EndOffset`。`FileGeneration` 使用 generation
+registry 中持久化的小写 hex 原值；Journald Cursor 按 API 返回字符串的精确 UTF-8
+字节编码，不进行 Unicode normalization、大小写或结构猜测。M0-D 必须为 File 与
+Journald 各提供 golden vectors，并验证 receipt key 与重启重放稳定。
+
 ---
 
 ## 7. SecurityEvent Contract
@@ -386,7 +514,7 @@ type SecurityEvent struct {
     SourcePosition SourcePosition
     ParserID       string
     ParserVersion  string
-    OutputIndex    int
+    EmittedIndex   int
     NodeID         string
 
     EventType string
@@ -415,9 +543,13 @@ SourceID
 SourcePosition
 ParserID
 ParserVersion
-OutputIndex
+EmittedIndex
 NodeID
 ```
+
+Phase 1 `NodeID` 在首次初始化时使用 128-bit CSPRNG 生成并编码为小写 hex，
+在 `node_identity` 中持久化。重启、升级和配置热更新不得改变 NodeID；只有
+`purge` 后的全新初始化才可生成新值。
 
 ### 7.2 Parser-owned 字段
 
@@ -451,13 +583,33 @@ Fields
 SecurityEvent ID 必须由下列稳定信息派生：
 
 ```text
+node_id
 delivery_id
 parser_id
 parser_version
 emitted_index
 ```
 
-M0-D 必须冻结具体编码和 hash 算法，并提供跨重启稳定性测试。
+具体编码冻结为：
+
+```text
+event_id = "evt1_" + lowercase(base32hex-no-padding(SHA-256(frame)))
+
+frame = UTF-8("guard.security-event.v1\0")
+      + field(NodeID)
+      + field(DeliveryID)
+      + field(ParserID)
+      + field(ParserVersion)
+      + uint32-be(EmittedIndex)
+
+field(value) = uint32-be(byte_length) + exact UTF-8 bytes
+```
+
+`EmittedIndex` 从 0 开始，必须是 Parser 单次输出中的稳定顺序。Parser ID/Version
+使用已持久化的原始标识字节，禁止实施 Unicode normalization 或大小写猜测。
+Rule ID/Version 不进入 Event ID；Detection outcome 使用
+`EventID + RuleID + RuleVersion` 作为唯一键。M0-D 必须提供固定 golden vectors
+和跨进程、跨重启稳定性测试。
 
 ### 7.5 Processing Plan 与版本一致性
 
@@ -476,17 +628,14 @@ Parser produces SecurityEvent
   → 根据该 snapshot 计算真正 applicable rules
 ```
 
-- durable inbox 方案必须随 inbox item 持久化可恢复的 `ParserSetSnapshot`，至少包含
-  Parser ID/Version；同时持久化 `DetectionRuleCatalogRevision` 或等价的不可变 Rule
-  Version Set，使后续 Parser 输出只能在该冻结 Rule 世界中求值。
-- durable inbox 不要求 Source 阶段预先列出最终 applicable rules；真正 applicable rules
-  在 SecurityEvent 产生后，从已冻结 Rule Catalog 中确定。
-- 对应 Parser/Rule revision 必须是不可变记录，并保留到所有引用它的 inbox item 进入
-  ProcessingComplete；也可以在 inbox 中保存经验证、可恢复的自包含 snapshot。只保存
-  已经无法解析回旧定义的 ID/Version 不构成可恢复计划。
-- receipt pipeline 方案中，必要结果与 receipt 同事务提交。crash 前未提交的记录允许
-  在重启后使用当前 Active Parser/Rule 重新求值；这属于明确的 re-evaluation，不声称
-  为严格同版本 replay。
+- 每条 RawRecord 进入 processing attempt 时，以当前 Active Parser Set 建立不可变的
+  attempt-local snapshot；每个 SecurityEvent 产生后，再从本 attempt 首次使用时冻结的
+  Rule Catalog snapshot 计算 applicable rules。
+- Parser/Rule revision 在一次 attempt 中不可变；必要 outcome、Critical Audit 和
+  `processing_receipt` 必须由第 22.2 节 Processing Coordinator 在同一 SQLite
+  UnitOfWork 中提交。
+- crash 前未提交 receipt 的记录允许在重启后使用当前 Active Parser/Rule
+  重新求值；这是明确的 re-evaluation，不声称为严格同版本 replay。
 - 已有 terminal processing record 的 Delivery 禁止因 Parser/Rule 升级再次自动处理；
   历史重处理必须是显式运维动作，并使用新的 reprocess identity。
 - Detection 结果的幂等键必须包含稳定 Event ID 与 Rule ID/Version。
@@ -506,41 +655,21 @@ ProcessingComplete
   = Parser / Detection / 必要业务 outcome / Critical Audit 已进入成功或终态拒绝
 ```
 
-两者在不同 delivery model 中的先后关系不同。
+在 Phase 1 receipt pipeline 中，二者由同一个成功事务建立；概念仍分离，
+以防未来把外部副作用错误当成 Source checkpoint 屏障。
 
 ### 8.1 SourceDurable 屏障
 
 “写入内存 Channel”不构成 SourceDurable。
 
-receipt pipeline：
-
 ```text
 Parser / Detection
-  → terminal processing record
+  → terminal processing record (`processing_receipt`)
   → Alert / Decision / Critical Audit 等必要结果同事务提交
   → ProcessingComplete
   → SourceDurable
   → contiguous checkpoint 可推进
 ```
-
-durable inbox：
-
-```text
-RawRecord
-  + SourcePosition
-  + stable Delivery ID
-  + recoverable Processing Plan
-  → durable inbox commit
-  → SourceDurable
-  → contiguous checkpoint 可推进
-
-之后异步：
-  Parser / Detection / outcome / Critical Audit
-  → ProcessingComplete
-```
-
-因此 durable inbox 模式中，Parser/Detection 尚未完成时 Source checkpoint 可以已经推进；
-这是 durable inbox 的核心语义，不得再用“所有 Parser 完成后才能 ACK”覆盖它。
 
 Firewall Apply、Firewall Revoke 和 SMTP 发送不属于 SourceDurable 或
 ProcessingComplete 前置条件。
@@ -551,12 +680,17 @@ ProcessingComplete 前置条件。
 产生 Event 对应的全部适用 Detection Rule，都进入成功或终态拒绝后，才能标记
 `ProcessingComplete`。
 
-M0 只冻结上述跨模块不变量。Parser 的 first-match、all-match、priority 和 error
-continuation 语义在 M3 开始前冻结。Fake Slice 默认使用一个 Parser，不得把该默认行为
-扩展成产品 Contract。
+Phase 1 使用 all-match：每个 Source 的 enabled Parser Set 按 `priority + parser_id`
+稳定排序并全部执行。每个 Parser 可产生 `0..N` 个 Event，`EmittedIndex`
+按单次输出从 0 稳定编号。cheap prefilter 未命中与 parse-not-match 是成功的
+`NotApplicable`，不是错误。
 
-在 receipt pipeline 中，`ProcessingComplete` 同时是 `SourceDurable` 的必要条件；在
- durable inbox 中不是。
+确定性的单 Parser 错误对该 Parser 形成终态拒绝，其他 Parser 继续；DB 错误、
+context cancellation 和无法建立不可变版本 snapshot 的系统错误终止整个
+processing attempt，不得产生 receipt。M3 可以冻结 DSL 与具体资源上限，
+不得再改变这些跨模块 completion 语义。
+
+`ProcessingComplete` 同时是 `SourceDurable` 的必要条件。
 
 ### 8.3 连续 checkpoint
 
@@ -574,28 +708,20 @@ Delivery ID / SourcePosition 负责。
 
 ### 8.4 重放幂等
 
-M0-B 必须在以下两种方案中选择并验证一种：
-
-- durable inbox + 唯一 Delivery/Event ID；或
-- 同步 Detection transaction + terminal processing record / 唯一 Event ID。
-
-无论选择哪种方案，都必须证明：
+Phase 1 使用同步 outcome transaction + terminal `processing_receipt` + 唯一
+Delivery/Event ID。必须证明：
 
 - 未达到 SourceDurable 的记录不会因 checkpoint 提前推进而丢失。
-- 已达到 SourceDurable 的 durable inbox item 即使 Source checkpoint 已推进，仍能在
-  crash 后完成 ProcessingComplete。
 - 重放不会创建重复 Alert、Decision、Critical Audit 或其他持久化副作用。
-- 重放是否重新进入内存 Detection Window 必须有明确产品语义。
+- 已存在 receipt 的 Delivery 不得再次进入内存 Detection Window。
+- crash 前未提交 receipt 的 Delivery 可以重新进入新的内存 Window；这是
+  at-least-once 恢复的允许重复，但下游持久化副作用仍必须幂等。
 
 receipt pipeline 中，即使一条记录没有产生 Alert 或 Decision，也必须写入 terminal
 processing record；该记录、必要业务结果和对应幂等键必须在同一个事务中提交。
 
-用于去重的 terminal processing record、inbox identity 或 tombstone，在对应恢复语义
-仍需要它们时禁止删除：
-
-- receipt pipeline：不得早于对应 Source checkpoint 已持久化安全越过该 Position；
-- durable inbox：不得早于 inbox item 已 ProcessingComplete，且不存在 replay/reprocess
-  引用及其保留策略要求。
+用于去重的 `processing_receipt` 在对应 Source checkpoint 已持久化安全越过
+该 Position，且 retention / explicit reprocess 语义不再需要它前，禁止删除。
 
 Alert、Decision 等下游持久化副作用仍必须拥有独立唯一键，不能只依赖 terminal record。
 
@@ -609,8 +735,7 @@ ProcessingComplete 的稳定 Event ID 即使因任何恢复路径再次出现，
 
 ### 8.5 Poison Record / Terminal Processing Record
 
-确定性解析失败、超长行或资源限制拒绝不能永久阻塞连续 checkpoint 或 durable inbox
-处理。
+确定性解析失败、超长行或资源限制拒绝不能永久阻塞连续 checkpoint。
 
 抽象终态记录称为：
 
@@ -618,17 +743,19 @@ ProcessingComplete 的稳定 Event ID 即使因任何恢复路径再次出现，
 Terminal Processing Record
 ```
 
-具体落地：
+具体落地为 `processing_receipt` terminal row。
 
-```text
-receipt pipeline
-  → processing_receipt terminal row
+处理错误必须先分类：
 
-durable inbox
-  → inbox terminal state / durable tombstone
-```
+| 类别 | 语义 | 是否可写终态 receipt |
+|---|---|---:|
+| `RecordPermanent` | 相同 bytes + 相同不可变 Processing Plan 必然重复失败 | 是 |
+| `PlanBlocked` | Parser/Rule revision 缺失、损坏或无法加载 | 否，Health 进入 Degraded |
+| `Transient` | DB busy、临时 IO、worker 或资源故障 | 否，保留重试 |
+| `Cancelled` | shutdown 或 context cancellation | 否 |
 
-禁止因为文档使用 `receipt` 一词而要求 durable inbox 方案额外维护一套重复 receipt 表。
+`NoMatch` 是成功的零 Event 结果，不是 Poison。只有 `RecordPermanent` 可以进入终态；
+禁止把系统错误或计划损坏包装为 Poison 来推进 checkpoint。
 
 Poison Record 的 Terminal Processing Record 至少包含：
 
@@ -638,10 +765,8 @@ Poison Record 的 Terminal Processing Record 至少包含：
 4. 对影响 Source 连续性的拒绝写 Critical Audit；受限错误样本是否保留由配置决定。
 5. 禁止记录凭据或未经截断的敏感日志内容。
 
-receipt pipeline 完成上述事务后同时达到 ProcessingComplete 和 SourceDurable；durable
-inbox 中原始 inbox durable commit 已经可以使 SourceDurable 成立，但只有 Poison
-terminal state、Critical Audit 等同事务提交后才能达到 ProcessingComplete 并进入可清理
-状态。
+终态 receipt、Critical Audit 和必要的业务 outcome 在同一事务提交后，
+该 Delivery 同时达到 ProcessingComplete 和 SourceDurable。
 
 ### 8.6 Critical Audit
 
@@ -664,11 +789,8 @@ Critical Audit 至少包括：
 Critical Audit 必须与对应业务状态或 Terminal Processing Record 在同一个 SQLite 事务中
 提交，并具有数据库级幂等约束。
 
-- receipt pipeline：Critical Audit 未提交时禁止达到 ProcessingComplete / SourceDurable，
+- Critical Audit 未提交时禁止达到 ProcessingComplete / SourceDurable，
   因而 checkpoint 不得推进。
-- durable inbox：原始 inbox commit 可以先使 SourceDurable 成立，但 Critical Audit 未提交
-  时禁止把 inbox item 标记 ProcessingComplete 或删除；已经持久化推进的 Source checkpoint
-  无需回退。
 - 管理操作：Critical Audit 未提交时禁止返回成功。
 
 Operational Audit 和高频 Telemetry 可以异步批量写入，但不得被表述为安全关键操作已经
@@ -753,7 +875,8 @@ SIGTERM 后按以下顺序执行：
   → exit
 ```
 
-默认 `shutdown_timeout` 在 M0-B 压测后冻结，M0-D 不得保留 TBD。
+默认 `shutdown_timeout=30s`，合法范围 `5s–300s`。M0-B 必须验证该默认值；
+若证据要求修订，必须同步 Config Schema、测试和本文，禁止在代码中静默修改。
 
 超时后允许直接退出；下次启动依靠 at-least-once replay 和幂等约束恢复。
 
@@ -792,6 +915,20 @@ system_cleanup
 ```
 
 不新增与 `Revoked + EndReason` 重叠的 `Cancelled`。
+
+合法状态与 EndReason 组合冻结为：
+
+| State | EndReason | 附加条件 |
+|---|---|---|
+| `Active` | `NULL` | 只有 Active 可参与 Desired Ban Projection |
+| `Expired` | `expired` | 只能由到期路径产生 |
+| `Revoked` | `manual` | 显式人工撤销 |
+| `Revoked` | `manual_replace` | 只适用于 Manual Decision |
+| `Revoked` | `rule_disabled` | 只适用于 Automatic Decision |
+| `Revoked` | `system_cleanup` | 只能由明确系统清理流程产生 |
+
+只允许 `Active → Expired` 或 `Active → Revoked`；终态不可复活。重复终止必须是幂等无变更，
+或返回稳定的冲突错误，禁止改写已存在的 EndReason。
 
 ### 10.3 创建与终止
 
@@ -841,21 +978,16 @@ Policy Resolver 必须计算 Allowlist/Protected Targets 与每个 Ban Target �
 
 该约束必须由 SQLite 唯一索引保证，禁止只做应用层“先查后插”。
 
-SQLite 原生支持 partial unique index。M0-B 必须在下列方案中选择一个，不得同时
-保留两套概念：
+Phase 1 使用 SQLite partial unique index，不使用派生 `active_key`：
 
 ```text
-UNIQUE(rule_id, canonical_target) WHERE state = 'active'
+UNIQUE(node_id, rule_id, canonical_target)
+WHERE decision_source = 'automatic' AND state = 'active'
 ```
 
-或：
-
-```text
-active_key + UNIQUE
-```
-
-最终唯一键是否包含 NodeID、Action、Scope，必须由 Phase 1 数据范围测试证明并在
-M0-D 冻结。
+Phase 1 Automatic Action 只有 `ban`，因此 Action 不进入键；Scope 是 Policy/Firewall
+派生执行属性，不是 Decision 身份，不进入键；RuleVersion 不进入键，禁止通过
+Rule 升级绕过“不自动续期”语义。
 
 发生唯一冲突时必须原子更新：
 
@@ -872,14 +1004,20 @@ Automatic 与 Manual Decision 使用不同业务幂等键：
 
 ```text
 Automatic:
-  rule_id + canonical_target
+  node_id + rule_id + canonical_target
 
 Manual:
-  decision_source=manual + canonical_target
+  node_id + canonical_target
 ```
 
 Phase 1 同一 canonical Target 最多存在一个 Active Manual Decision。重复执行 manual
 ban 默认返回 `AlreadyBanned`，不得静默修改 duration。
+该约束必须由下列 partial unique index 保证：
+
+```text
+UNIQUE(node_id, canonical_target)
+WHERE decision_source = 'manual' AND state = 'active'
+```
 
 只有显式 `--replace` 才允许替换：在同一个 SQLite 事务中把旧 Manual Decision 改为
 `Revoked/EndReason=manual_replace`，写 Critical Audit，再创建新的 Active Manual
@@ -1016,7 +1154,7 @@ Target Observed 至少包含：
 CanonicalTarget
 ObservedAt
 Backend
-ObservedTargetEnforcementGeneration
+ConfirmedTargetEnforcementGeneration
 BanMembership: Unknown/Present/Absent
 PolicyCoverage: None/Partial/Full/Unknown（由 Target + Policy Snapshot 派生）
 PolicyRelationDigest
@@ -1035,6 +1173,12 @@ Ban 与 `/32` Allowlist 是 `Partial`，禁止把整个 `/24` Target 简化成 S
 执行语义与 Desired 一致。
 
 Observed State 是缓存。真正的当前状态只能通过 Firewall Snapshot/Probe 获得。
+
+Backend Snapshot 只返回物理状态和 Guard owner marker，不得声称从 Firewall 观察到应用层
+generation。Reconciler 必须把完整物理状态与当前 Desired Intent 比较；只有全部属性
+匹配且回写时 fencing 仍有效，才能由 Reconciler 写入当前
+`ConfirmedTargetEnforcementGeneration`。重启后也使用相同规则；该字段表示
+“Reconciler 已证实当前物理状态匹配该 generation”，不表示 Firewall 内嵌了 generation。
 
 Observed State 只能来自成功的 Snapshot/Probe，或者 Backend Contract 明确保证具有权威
 确认语义的 Ensure 返回值。操作超时、连接中断或结果不确定时必须写 `Unknown`，并在
@@ -1116,6 +1260,62 @@ Retry key：
 CanonicalTarget + TargetEnforcementGeneration + RetryEpoch
 ```
 
+#### 三个 Domain 的安全依赖顺序
+
+一次 Reconcile 必须从完整 Desired Firewall Snapshot 构建新 Plan，并按下列安全顺序执行：
+
+```text
+Probe / Snapshot
+  → Ensure Guard-owned Infrastructure
+  → 增加或扩大 Allowlist / Protected Policy
+  → 增加、延长 timeout 或扩大 scope 的 Target tightening
+  → 在替代保护已确认后执行 Target relaxation
+  → 为待删除/缩小 Policy 的受影响 Target 建立 TargetPrepared
+  → 删除或缩小不再需要的 Policy
+  → Confirm Snapshot
+```
+
+必须满足：
+
+- Infrastructure 当前 revision 未 Converged 时，禁止 Policy/Target 外部写。
+- 保护性 Policy 增加/扩大未收敛时，禁止对受影响 Target 执行 tightening。
+- Target tightening 默认先于 relaxation；例如 `/24 → /32` 必须先确认 `/32` 已存在，
+  再移除 `/24`。只有 Backend 能用一个原子 batch 同时完成单 Target 替换时才可合并。
+- `TargetPrepared` 只是一项 Plan 内前置条件，不新增持久化状态。它表示在旧 Policy
+  仍存在时，受影响 Target 的 ban membership、timeout、scope 和其他非 Policy 属性
+  已与新 Intent 匹配；不得要求旧 Policy 已经消失。
+- Policy 删除/缩小只能在所有受影响 Target 均 `TargetPrepared` 后执行；删除后必须
+  重新 Snapshot，只有 PolicyRevision 与完整 Target generation 同时匹配才可 Converged。
+- 一个外部 batch 只能属于一个 failure domain；Phase 1 Target batch 每次只包含
+  一个 CanonicalTarget。无法精确归属错误的 Backend 禁止跨 domain 合批。
+- dependency blocked 不消耗 attempt；`BlockedByInfrastructure/Policy` 是调度原因，
+  不新增第四个持久化状态。
+- 每个 domain 成功后必须重新 Snapshot；禁止只凭命令返回码声称 Converged。
+- Contract Tests 必须覆盖 Allowlist/Protected Target 删除、`/24 → /32` 替换、
+  tightening 成功后 relaxation 失败，以及 Policy 删除失败，证明不存在保护空窗或循环等待。
+
+#### Retry 状态机与预算
+
+```text
+Pending
+  → persist attempt_count++ and status=Applying
+  → external mutation
+  → authoritative confirm
+      ├─ match                         → Converged
+      ├─ retryable + retry budget left → RetryWaiting
+      └─ non-retryable / exhausted     → Degraded
+```
+
+- 每个 domain key 允许 1 次首次调用和 5 次自动重试；5 次重试分别在
+  `1s / 5s / 30s / 5m / 15m` 后可执行。
+- attempt 在外部写入前持久化；调用期间 crash、timeout 或结果未知均已消耗本次 attempt。
+- Probe/Snapshot 不消耗 mutation attempt，但必须有独立的超时、退避与 Health/Metric。
+- revision/generation 变化产生新业务 key，从 attempt 0 开始；同一 key 的 restart、
+  health flap 和普通 Reconcile 不得重置预算。
+- stale revision/generation 的返回结果只能结束旧 attempt，禁止覆盖新状态；
+  随后立即 Probe 并为当前 Desired 重建 Plan。
+- non-retryable 包括 OwnershipConflict、不支持能力和不合法 Plan；不得用自动重试隐藏设计错误。
+
 必须满足：
 
 - Apply 失败后 Decision 保持 Active。
@@ -1132,9 +1332,29 @@ CanonicalTarget + TargetEnforcementGeneration + RetryEpoch
   count、next/last attempt、status 和结构化 last error；具体列名以 migration SQL 为唯一
   权威源。
 
-V0.4 的 `guard-agent decision retry <id>` 在新模型中不再成立。M7 开发前必须冻结按
-Infrastructure / Policy / Target Enforcement domain 重试的 CLI/API；Retry 禁止直接修改
-Decision。
+V0.4 的 `guard-agent decision retry <id>` 在新模型中不再成立。Phase 1 CLI 冻结为：
+
+```text
+guard-agent reconcile retry infrastructure
+guard-agent reconcile retry policy
+guard-agent reconcile retry target <canonical-target>
+```
+
+API 必须表达同样的 domain key。Retry 只能使指定 domain 的 `RetryEpoch++`、
+attempt 归零并写 Critical Audit，禁止直接修改 Decision。
+
+Phase 1 使用下列低基数 Reconcile Metrics 替代 `guard_decision_failed_total`：
+
+```text
+guard_reconcile_mutations_total{domain,result}
+guard_reconcile_duration_seconds{domain,result}
+guard_reconcile_unknown_results_total{domain}
+guard_reconcile_degraded{domain}
+guard_firewall_probes_total{backend,result}
+```
+
+`domain` 只能是 `infrastructure|policy|target`；`result` 和 `backend` 必须使用
+Schema 中的有限枚举。CanonicalTarget、DecisionID、错误文本或 Retry key 禁止进入 label。
 
 ### 11.4 Fencing 与并发
 
@@ -1284,16 +1504,19 @@ M0 只冻结两条 Fake Slice 使用的最小表，不一次设计 Phase 1 全�
 
 ```text
 schema_migrations
+node_identity
 sources（最小 identity）
 parsers（最小 identity/version）
 rules（最小 identity/version）
-parser_versions/rule_versions（durable inbox 方案需要）
+parser_versions/rule_versions
 allowlists（最小 canonical range）
+protected_targets（最小 canonical range）
 source_file_generations
 source_checkpoints
-processing_receipts 或 durable_inbox（二选一）
+processing_receipts
 alerts
 decisions
+desired_ban_projections
 enforcement_states
 infrastructure_reconcile_state
 policy_reconcile_state
@@ -1301,8 +1524,8 @@ target_reconcile_state
 audit_logs
 ```
 
-具体是否合并 Reconcile state 表由 migration Spike 决定，但逻辑上必须能分别持久化三个
-failure domain，禁止只有一个无法区分 Infrastructure/Policy/Target 的 retry counter。
+Phase 1 使用三类独立 Reconcile state 表，不合并为带可空外键的通用表。
+三个 failure domain 必须分别持久化，禁止只有一个全局 retry counter。
 
 M0-D migration 必须明确：
 
@@ -1312,13 +1535,10 @@ M0-D migration 必须明确：
 - 时间统一格式和精度。
 - canonical CIDR 表示。
 - event identity、replay key，以及 Terminal Processing Record 的保留期和清理水位。
-- receipt pipeline 的 terminal record 不得早于该 Source 已持久化且不会回退的 checkpoint
+- `processing_receipt` 不得早于该 Source 已持久化且不会回退的 checkpoint
   安全边界被清理。
-- durable inbox item 在 ProcessingComplete、无 replay/reprocess 引用及保留条件满足前不得
-  清理。
 - File generation 必须先于该 generation 第一条 RawRecord durable persist。
-- durable inbox 引用的 Parser/Rule revision 必须不可变，并在最后一个引用 item 终结前
-  禁止清理。
+- Parser/Rule revision 只能通过新版本记录和 Active pointer 切换，禁止就地改写历史版本。
 - Automatic/Manual Active Decision 各自的唯一约束与 replace 事务。
 - `TargetProjectionRevision` 与 `TargetEnforcementGeneration` 的持久化约束。
 - Infrastructure / Policy / Target 三类 retry domain 的 revision/generation、RetryEpoch、
@@ -1339,13 +1559,28 @@ machine power loss
 
 禁止只写“durable”而不说明保证等级。
 
-M0-B 必须验证 SQLite WAL 下所选 `PRAGMA synchronous` 模式及 fsync 行为。若 Phase 1
-只承诺 process-crash durability，必须显式写入 Contract；若承诺 OS/power-loss 后
-Source checkpoint 也不得越过真正持久化的 inbox/receipt，则所选 synchronous 模式必须
-通过故障测试证明。
+Phase 1 SQLite 基线冻结为：
 
-`synchronous`、checkpoint 策略和性能取舍最终由 M0-D Config/SQLite Contract 冻结，不能
-仅依赖 SQLite 默认值。
+```text
+PRAGMA journal_mode = WAL
+PRAGMA synchronous = FULL
+PRAGMA foreign_keys = ON
+PRAGMA busy_timeout = 5000
+PRAGMA wal_autocheckpoint = 1000
+所有写事务保持短事务，禁止在事务内调用 Firewall、SMTP 或其他外部系统
+```
+
+每个 SQLite connection 必须设置并 read-back 校验 connection-local PRAGMA；打开 DB 后必须
+确认 `journal_mode` 实际返回 `wal`。SQLite WAL checkpoint 与 Source checkpoint 必须使用
+不同术语，WAL checkpoint 不是 SourceDurable 的条件。
+
+承诺边界：
+
+- process crash / SIGKILL：承诺已返回成功的事务可恢复，必须通过 kill/reopen 测试。
+- OS crash / reboot / power loss：只在受支持的本地 filesystem 与正确实现
+  fsync/barrier 的存储设备上承诺；对应 VM/power-cut 测试未通过前必须标记
+  `NOT VERIFIED`。
+- 不承诺磁盘损坏、控制器虚假报告 flush 或未验证网络文件系统上的掉电持久性。
 
 必须验证：
 
@@ -1373,15 +1608,20 @@ Source checkpoint 也不得越过真正持久化的 inbox/receipt，则所选 sy
 
 ### 14.1 声明式行为
 
-Backend 必须提供下列行为，但最终 Go 方法签名只能在 M0-B Spike 后冻结：
+Backend 方法集冻结为：
 
 ```text
-Probe capabilities
-Ensure managed infrastructure
-Snapshot managed state and read-only foreign context
-Converge complete Desired Firewall Snapshot
-Remove managed infrastructure
+Probe(ctx) -> FirewallCapabilities
+Snapshot(ctx) -> ManagedState + read-only ForeignContext
+Plan(current snapshot, desired snapshot) -> domain-scoped OperationPlan
+Apply(ctx, one domain-scoped OperationPlan) -> ApplyResult
+RemoveManagedInfrastructure(ctx, expected OwnerVersion) -> ApplyResult
 ```
+
+Go 的具体 struct、error type 和字段名以 M0-D 编译通过的代码为权威，但方法集、
+domain-scoped Plan、context cancellation 和“Snapshot 是外部事实”的语义不得改变。
+`ApplyResult` 必须区分 `Confirmed`、`Rejected`、`Unknown`；timeout/连接中断一律是
+`Unknown`，不得猜测失败或成功。
 
 禁止以一次性 `Add/Delete` 作为唯一抽象。
 
@@ -1504,6 +1744,16 @@ Apply-confirm 只用于可能导致管理面失联的高风险配置变化：
 回滚计划、确认截止时间和 Guard-owned 前一 `SnapshotRevision` 必须在 Apply 前持久化。
 Agent 重启后发现未确认变更时必须继续回滚。
 
+高风险 Apply 前，Agent 还必须把仅包含本次待确认 config/policy delta、反向操作、
+deadline 和 plan digest 的最小 rollback journal 交给 Enforcer 并确认已持久化。Enforcer
+watchdog 负责在 deadline 到达时执行回滚；机器重启后由 Enforcer 启动恢复或独立
+systemd rollback unit 接管，不能依赖 Agent 必须在 deadline 前恢复。
+
+回滚只能撤销待确认的 config/policy delta，禁止恢复旧的完整 Ban Snapshot。回滚后
+Agent 必须从当前 Active Decisions 重建 Desired Firewall Snapshot 并重新 Reconcile；
+确认窗口中新产生的 Decision 不得被旧 Snapshot 覆盖。Apply-confirm Gate 必须注入
+Agent crash、Enforcer crash、整机重启、deadline race 和确认窗口内新 Decision。
+
 普通自动 Ban 不需要管理员确认。
 
 ---
@@ -1520,13 +1770,16 @@ M0-D 必须产出 ownership matrix：
 |---|---|---:|---:|---:|
 | 进程监听地址 | YAML | 否 | 是 | 否 |
 | DB 路径 | YAML | 否 | 是 | 否 |
-| 日志级别 | YAML | 由 M0 冻结 | 由 M0 冻结 | 否 |
+| 日志级别 | YAML | 是，原子更新 | 否 | 否 |
 | Detection Rule | SQLite | 是 | 否 | 否 |
 | Allowlist | SQLite | 是 | 否 | 否 |
-| SMTP Credential | M8 前冻结 | M8 前冻结 | M8 前冻结 | 是 |
+| SMTP Credential | YAML 引用的 credential file 内容 | 否 | 是 | 是 |
 
 同一字段禁止同时由 YAML 和 Web/SQLite 写入。Web 对 YAML-owned 字段只能只读
 展示，除非未来引入明确的配置写回机制。
+`smtp.credential_file` 由 YAML 持有路径，文件内容是 secret 唯一权威源；文件必须
+`root:guard 0640` 或更严格，读取错误必须阻止 SMTP worker Ready，禁止回退到环境变量
+或 SQLite 明文值。
 
 ### 15.2 API 与 CLI
 
@@ -1538,20 +1791,34 @@ M0 只冻结：
 
 完整资源 API、分页和全部退出码在对应里程碑开始前冻结，不进入 M0 核心 Gate。
 
-### 15.3 进程权限 ADR
+### 15.3 进程权限 Contract
 
-M0 必须明确选择并记录以下方案之一：
+Phase 1 冻结为非特权 Agent + 最小 root Enforcer：
 
-1. root 单进程，并明确接受 Web/Parser 漏洞等同主机 root 的风险及 systemd hardening；或
-2. 非特权 Agent + 最小权限 Enforcer，并冻结 IPC、Unix Socket owner/mode、允许
-   的命令集合和身份校验。
+```text
+guard-agent (User=guard, no Linux capability)
+  ↕ versioned Unix Socket IPC
+guard-enforcer (root, CapabilityBoundingSet=CAP_NET_ADMIN)
+  ↕ nftables / netfilter
+```
 
-无论选择哪种方案：
+- Socket 使用 `/run/guard/enforcer.sock`；目录 `root:guard 0750`，socket `root:guard 0660`。
+- IPC 使用 `uint32-be length + versioned JSON`；单 frame 默认上限 1 MiB，超限直接拒绝。
+- Enforcer 必须用 `SO_PEERCRED` 校验调用者 UID，不得只相信请求字段。
+- IPC 只允许 `ProbeCapabilities`、`SnapshotManaged`、`ApplyManagedPlan`、
+  `RemoveManagedInfrastructure`；禁止传入 shell command、binary path 或任意 table/chain 名称。
+- Enforcer 必须再次校验 canonical Prefix、owner/version、Guard-owned 对象命名、
+  operation count 和请求大小，并串行执行所有 Firewall mutation。
+- Agent 可以拥有 DB；CLI/Web 只能调用 Agent 业务服务，禁止直接写 DB。
+- 该拆分降低 Web/Parser 漏洞直接获得主机 root 的风险，但不能阻止已攻陷 Agent
+  通过合法 Guard 协议滥用 Guard-owned ban 能力；这是 Phase 1 明确的残余风险。
+
+同时必须满足：
 
 - CLI 禁止绕过业务层直接写 SQLite。
 - 配置、DB、Socket 和 secret 必须有明确 owner/mode。
-- systemd 必须冻结 User/Group、Capabilities、NoNewPrivileges、ProtectSystem 和
-  ReadWritePaths。
+- 两个 systemd service 均使用 `NoNewPrivileges=yes`、`ProtectSystem=strict`、
+  `ProtectHome=yes` 和精确 `ReadWritePaths`；Enforcer 只保留 `CAP_NET_ADMIN`。
 - 日志、Audit、Doctor、Web 和 CLI 禁止输出 secret。
 
 ### 15.4 Web Security 里程碑 Gate
@@ -1588,11 +1855,19 @@ session key 存储与轮换
 | Firewall SafetyGrace | 5m |
 | Enforcement automatic retries | 5 次，1s/5s/30s/5m/15m |
 
-M0-B 只需要通过 Fake Slice 和故障测试冻结：
+Phase 1 开发默认值冻结为：
 
-- Raw/Event/Reconcile queue capacity。
-- checkpoint interval 和 record threshold。
-- graceful shutdown timeout。
+| 配置键 | 默认值 | 合法范围 | 触顶/到期行为 |
+|---|---:|---:|---|
+| `runtime.raw_queue_capacity` | 512 | 1–65536 | 可取消阻塞背压，不 drop |
+| `runtime.event_queue_capacity` | 1024 | 1–65536 | 可取消阻塞背压，不 drop |
+| `runtime.reconcile_queue_capacity` | 256 | 1–65536 | 按 domain key 合并 wakeup，worker 重读最新 Desired |
+| `source.checkpoint_interval` | 1s | 100ms–30s | interval/threshold 任一先到即尝试推进连续 checkpoint |
+| `source.checkpoint_record_threshold` | 256 | 1–10000 | 同上 |
+| `runtime.shutdown_timeout` | 30s | 5s–300s | 到期后 cancel worker 并退出，重启依靠 replay |
+
+这些值是 `Specified` 开发默认，不是性能结论。M0 Fake Slice 与 Phase 1 目标负载基准
+未通过前，对应 Gate 保持 `NOT VERIFIED`。
 
 以下数值不进入 M0 Gate，分别在 M3/M4 开始前基于实际实现和基准冻结，禁止为取得
 数值而在 M0 擅自引入依赖：
@@ -1623,35 +1898,31 @@ Health 影响
 
 至少覆盖：
 
-1. receipt pipeline：Parser/Detection 完成前 crash，SourceDurable 不成立，checkpoint 不前进。
-2. durable inbox：inbox durable commit 后、Parser/Detection 完成前 crash，checkpoint 可以按
-   contiguous SourceDurable 前进；重启后 item 仍继续直到 ProcessingComplete。
-3. durable outcome/terminal record commit 后、checkpoint flush 前 crash，重放不产生重复副作用。
+1. Parser/Detection/outcome 事务提交前 crash，SourceDurable 不成立，checkpoint 不前进。
+2. outcome/`processing_receipt` 提交后、checkpoint flush 前 crash，重放不产生重复副作用。
+3. 没有产生 Alert/Decision 的记录仍会写唯一 receipt 并安全推进 checkpoint。
 4. 两条记录乱序达到 SourceDurable，只提交最高连续 SourceDurable position。
-5. 多 Parser 中一个失败时，按冻结策略进入成功或终态拒绝；receipt pipeline 未
-   ProcessingComplete 前不得 checkpoint，durable inbox 已 SourceDurable 的 checkpoint 不回退。
+5. 多 Parser 中一个确定性失败时，该 Parser 进入终态拒绝且其他 Parser 继续；
+   系统错误则整个 attempt 不得产生 receipt/checkpoint。
 6. queue full 产生 backpressure，不静默 drop。
-7. Poison Record 进入终态后不永久阻塞 receipt pipeline checkpoint 或 durable inbox completion。
+7. `RecordPermanent` Poison 进入终态后不永久阻塞 checkpoint；`Transient/PlanBlocked/Cancelled`
+   不得被终态化。
 8. SIGTERM drain 成功时 checkpoint 与 Terminal Processing Record 正确 flush。
-9. shutdown timeout 后重启，允许重复读取/恢复处理但不丢未完成记录。
+9. shutdown timeout 后重启，允许重复读取但不丢未完成记录，持久化副作用保持幂等。
 10. rename/create 后新旧 generation 乱序完成，checkpoint 仍按 DeliverySequence 连续推进。
-11. 新 generation 第一条 RawRecord 发出前 generation 已持久化。
+11. 新 generation 第一条 outcome/receipt 提交前 generation 已持久化。
 12. 新 generation 已处理、旧 generation checkpoint 未推进时 crash，重启后 Delivery ID 不变。
-13. durable inbox 绑定可恢复 Parser Set + Rule Catalog snapshot；receipt pipeline 的未提交
-    记录按当前版本重评，两种方案都不产生重复持久化副作用。
-14. receipt pipeline 的 Critical Audit 提交失败时业务事务回滚且 checkpoint 不推进；durable
-    inbox 的 Critical Audit 提交失败时 outcome 和 ProcessingComplete 标记回滚，inbox item
-    保持可恢复，已基于 inbox commit 推进的 Source checkpoint 无需回退。
-15. copytruncate fast-regrow 能检测时产生 DataLossSuspected；不能检测时由能力测试确认
+13. crash 前未提交记录按当前 Active Parser/Rule 重评，不产生重复持久化副作用。
+14. Critical Audit 提交失败时业务 outcome/receipt 事务回滚，checkpoint 不推进。
+15. copytruncate fast-regrow 能检测时产生 DataLossSuspected；不能检测时标记
     known limitation，不伪造 at-least-once 保证。
-16. Generation registry 在 checkpoint 尚未安全越过，或仍有 inbox/terminal/replay 引用时
-    不得清理；满足全部清理条件后重启不再依赖该 row。
-17. 同一个 `EventID + RuleID/Version` 已进入 Window 后 SQLite outcome transaction 失败，
+16. Generation registry 在 checkpoint 尚未安全越过，或仍有 receipt/replay/reprocess 引用时
+    不得进入 Retired；满足全部清理条件后重启不再依赖该 row。
+17. 同一 `EventID + RuleID/Version` 已进入 Window 后 SQLite outcome transaction 失败，
     同进程 retry 不得再次增加 count/distinct_count。
-18. durable inbox Source 阶段不要求预知最终 applicable rules；SecurityEvent 产生后只能从
-    inbox 绑定的冻结 Rule Catalog 中求值。
-19. 所选 SQLite durability 配置通过声明故障域的 crash/reboot/power-loss 测试或明确标注
-    不承诺的故障域。
+18. 一次 attempt 内 Parser Set/Rule Catalog snapshot 不受 Active 版本切换影响；未提交重放重新建立当前 snapshot。
+19. SQLite durability 配置通过已声明故障域的 crash/reboot/power-loss 测试，
+    未验证故障域明确标记 `NOT VERIFIED`。
 
 ### 17.2 Decision/Enforcement Slice
 
@@ -1744,9 +2015,8 @@ Audit
 
 - 两条 Fake Vertical Slice 全部通过。
 - 第 12.3 节全部 crash points 均能够最终收敛。
-- receipt pipeline 或 durable inbox 的 SourceDurable 语义与 checkpoint 行为符合所选模型。
-- kill/restart 测试证明未持久化记录不会被 checkpoint 越过；durable inbox 已 checkpoint 的
-  未完成 item 仍可恢复到 ProcessingComplete。
+- receipt pipeline 的 SourceDurable 语义与 checkpoint 行为符合第 8 节。
+- kill/restart 测试证明未提交 outcome/receipt 的记录不会被 checkpoint 越过。
 - 重放和同进程 transaction retry 不会产生重复持久化副作用或重复 Window 贡献。
 - 并发测试证明同 Rule + Target 最多一个 Active Automatic Decision。
 - Manual Ban 重复/replace、Allowlist 可逆例外和完整 Firewall Snapshot 测试通过。
@@ -1775,11 +2045,12 @@ Audit
 
 ## 19. M0 产物清单
 
-建议产物按以下目录组织；实际代码路径由工程语言 ADR 冻结：
+产物按以下责任分层组织；若 Go 生态对具体路径有更强约定，可经 ADR 调整，
+但不得合并权威责任：
 
 ```text
 docs/contracts/
-  guard-phase-1-m0-contract-freeze.md
+  guard-phase-1-m0-contract-freeze-v0.3.md
   core-model.md
   decision-enforcement.md
   source-delivery.md
@@ -1788,14 +2059,35 @@ docs/contracts/
 docs/adr/
   ...
 
+api/openapi/
+  guard-v1.yaml
+
 schema/
   config-v1.schema.*
 
 migrations/
   ...
 
-tests/contracts/
+cmd/
+  guard-agent/
+  guard-enforcer/
+
+internal/
+  runtime/ config/ store/ source/ parser/ detection/
+  decision/ enforcement/ firewall/ reconcile/ notification/
+  auth/ web/ audit/ retention/ health/ doctor/
+
+packaging/systemd/
   ...
+
+tests/
+  contracts/ integration/ e2e/ security/ upgrade/ fixtures/
+
+benchmarks/
+  ...
+
+artifacts/evidence/
+  <milestone>/<commit>/manifest.*
 ```
 
 不要求为了满足目录清单创建空文件。只有对应产物已有可验证内容时才落盘。
@@ -1814,7 +2106,7 @@ M2 Sources
   复用 SourcePosition、SourceDurable、ProcessingComplete、checkpoint 和 replay Contract
 
 M3 Parser
-  冻结多 Parser 匹配及错误语义
+  实现已冻结的 all-match/completion 语义，并冻结 DSL 和资源限制
 
 M4 Detection
   复用稳定 Event ID，并冻结窗口触发和清理语义
@@ -1827,6 +2119,15 @@ M6 Firewall
 
 M7 Reconciliation
   实现 TargetProjectionRevision / TargetEnforcementGeneration、三类 failure domain、有界重试、Degraded 和 drift recovery
+
+M8 Notification
+  实现独立持久队列、SMTP TLS、有界重试和 Cooldown
+
+M9 Built-in Rules
+  交付 SSH/Nginx Parser + Rule 包和真实 fixture 纵向测试
+
+M10 Productization
+  完成 API/Web、Audit/Retention、安装升级、全矩阵测试和 Release Evidence
 ```
 
 ### 20.1 Maintenance Mode 的 M7 前置 Gate
@@ -1841,8 +2142,8 @@ Maintenance 不进入 M0 两条核心 Slice，但在 M7 实现前必须冻结：
 - disable 后立即执行一次完整 Desired Firewall Snapshot Reconcile。
 - Health 必须区分主动 Maintenance 与故障 Degraded。
 
-Web、Notification、Operational Audit 查询与 Retention、Upgrade 等模块仍需在相应
-里程碑前完成各自 Contract，不因 M0 Frozen 自动视为已经设计完成。
+M1–M10 的完整 Entry Gate、产物、测试和 Exit Gate 见第 22–36 节。
+M0 Frozen 只表示核心 Contract 可实现，不表示后续里程碑已完成。
 
 ---
 
@@ -1869,3 +2170,521 @@ NO-GO
 ```
 
 禁止使用“基本通过”“开发时再补”“不影响主流程”等模糊结论绕过 Gate。
+
+---
+
+## 22. Phase 1 全面开发执行规则
+
+### 22.1 使用边界
+
+- Phase 1 采用 `Standalone-first, Cluster-ready`，只交付单机 Agent 产品。
+- `NodeID` 等稳定身份可为 Phase 2 保留，但禁止实现 `guard-server`、Enrollment、
+  Cluster Rule/Decision、跨节点缓冲或一致性协议。
+- M0 Frozen 前，M1–M10 只能做不依赖未验证 Contract 的只读设计、Fake 实验或
+  第 3.3 节允许的骨架工作。
+- 每个里程碑必须先通过 Entry Gate，再实现 Required Artifacts，最后用 Exit Gate 产生证据。
+- 测试条目表示“必须实现和通过”，不代表当前已通过。
+
+### 22.2 模块边界
+
+1. `source` 只产生 RawRecord 和持久化投递状态，不调用 Firewall。
+2. `processor` / Pipeline Coordinator 是 processing attempt 的唯一事务协调者：冻结
+   Parser/Rule snapshot，开启 Store UnitOfWork，调用 transaction-aware Parser outcome、
+   Detection、Decision、Critical Audit 与 Receipt writer，并且是唯一允许 commit/rollback 的模块。
+3. `parser` 只把 RawRecord 转换为 SecurityEvent 或终态解析结果。
+4. `detection` 只消费 SecurityEvent，生成 Alert 和 Automatic Decision request。
+5. `decision` 是安全意图事实源，不直接执行 Firewall。
+6. `enforcement` 从 Active Decisions 和 Policy 构造规范化 Desired Intent。
+7. `firewall` 只负责 Probe、Snapshot 和 Guard-owned 对象变更。
+8. `reconcile` 比较 Desired/Observed，管理 Plan、fencing、重试和 Degraded。
+9. Web、API 和 CLI 必须调用同一应用服务，禁止绕过业务层直接写 DB。
+10. `notification` 与 Enforcement 解耦，通知失败不得改变 Ban 结果。
+11. 禁止为 Phase 2 创建空接口、空服务、兼容壳或假想扩展点。
+
+除 Processing Coordinator 外，所有 domain service 只能接收显式 UnitOfWork/transaction
+handle 并写入，不得内部 begin、commit 或使用独立连接绕开事务。M0-D 必须冻结
+UnitOfWork 接口；Source Slice 必须对 Parser outcome、Detection contribution、Decision、
+Audit、Receipt 任一子写失败注入错误并断言整体回滚、checkpoint 不前移。
+
+### 22.3 通用工程 Contract
+
+- 所有 IO、SQLite、HTTP、SMTP、Firewall 与 IPC 调用必须支持 timeout、cancellation
+  或明确失败传播。
+- 内部状态不合法时必须快速失败，禁止用静默 fallback、无限 retry 或猜测修复隐藏。
+- 外部边界错误使用稳定 error code；内部 error 保留 cause，对外输出必须脱敏。
+- 关键路径使用 OpenTelemetry span，命名格式 `<package>.<FuncName>`；HTTP 透传 trace context，
+  异步链路使用 `delivery_id/event_id/decision_id/reconcile_attempt_id` 关联。
+- 结构化日志至少包含 `requestID` 或 `traceID`；安全事件额外包含低基数 action/result。
+- `/metrics` 使用 Prometheus 格式；IP、CIDR、path、username、request ID、group key
+  禁止作为 label。
+- 一个功能包只有在编译、format、lint、相关 unit/contract/integration 测试和
+  `git diff --check` 都通过后才可标记完成。
+
+---
+
+## 23. M1 Runtime
+
+目标：建立后续所有里程碑共享的进程、配置、存储、权限、管理面与可观测性运行底座。
+
+### 23.1 Entry Gate
+
+- M0 已 `Frozen/GO`。
+- Go module path、toolchain、构建方式和第三方依赖已由 ADR 批准。
+- 第 15.3 节权限 Contract、Config ownership 和 SQLite durability 已 Verified。
+- Web Security Gate 已冻结 bootstrap、Argon2id 基准、Session、Cookie、CSRF/Origin、
+  登录限速、失败审计和 reverse proxy 信任边界。
+
+### 23.2 Required Artifacts
+
+- `[M1-WP1 Process]` 可编译的 `guard-agent` 和 `guard-enforcer`，统一 context cancellation 与 SIGTERM lifecycle。
+- `[M1-WP2 Config/CLI]` `run`、`config validate`、`version` 基础 CLI；Config Schema、加载器、未知字段拒绝。
+- `[M1-WP3 Store]` SQLite migration runner、空库初始化、PRAGMA read-back、单实例锁和
+  仅由 Processing Coordinator 提交的 Store UnitOfWork。
+- `[M1-WP4 Privilege]` 非特权 Agent/Enforcer IPC，systemd units，目录与文件 owner/mode。
+- `[M1-WP5 Management]` 结构化日志、tracing、基础 Metrics、`/health`、`/ready`，loopback-only HTTP 与单管理员认证。
+- `[M1-WP6 Maintenance]` Maintenance 持久化框架；完整 Firewall 行为在 M7 实现。
+
+### 23.3 Required Tests
+
+- 空库/已有库迁移、重复启动、迁移失败、DB busy、SIGKILL 和重启恢复。
+- 无效/未知配置、文件权限、secret 脱敏、非 loopback 明文监听未授权时启动失败。
+- 管理员 bootstrap、Session 过期/轮换/吊销、CSRF、Origin、登录限速和失败审计。
+- IPC 未授权 UID、畸形/超大 frame、任意对象名、命令注入、socket mode 和 Enforcer restart。
+- SIGTERM 在 30s 内 drain；超时后安全退出。Health/Ready 对 DB、Config、Enforcer 给出稳定状态码。
+
+### 23.4 Exit Gate
+
+隔离 Linux 验证环境可使用开发构建与测试 unit 完成初始化、启动、停止和重启；
+migration 可恢复；Web 写操作
+具备认证/CSRF/Critical Audit；Agent 无 `CAP_NET_ADMIN`；M2/M3/M6/M8 可复用稳定
+Runtime/Store/Config 接口。生产安装包、升级和卸载仍由 M10 负责。
+
+---
+
+## 24. M2 Sources
+
+目标：实现可恢复、可背压、可审计的 File/Journald 原始记录采集与连续 checkpoint。
+
+### 24.1 Entry Gate
+
+M1 Runtime/Store/Config 已通过 Exit Gate，receipt pipeline、RawRecord、SourcePosition、
+Delivery ID、generation 状态机与第 16 节队列/checkpoint 参数已 Frozen。
+
+### 24.2 Required Artifacts
+
+- `[M2-WP1 Source Core]` Source registry 和统一 Source 接口。
+- `[M2-WP2 File]` File Source：append、rename/create、copytruncate、symlink、restart、generation registry。
+- `[M2-WP3 Journald]` Journald Source：cursor、cursor unavailable、resume policy 和 vacuum gap。
+- `[M2-WP4 Durability]` `processing_receipts`、连续 SourceDurable checkpoint manager、Poison/Terminal record、
+  DataLossSuspected Audit/Health/Metric。
+- `[M2-WP5 Verification]` Fake Source、轮转 fixtures 和第 17.1 节 Contract Tests。
+
+### 24.3 Required Tests
+
+- 第 17.1 节全部 receipt pipeline 测试；未选 durable inbox 为 `N/A`，不实现生产路径。
+- copytruncate fast-regrow、rename/create 乱序、旧 inode EOF、symlink 重解析、
+  Journald cursor vacuum 和 Source lag 不可恢复区间。
+- queue full 必须背压；checkpoint 不越过未 SourceDurable 记录；crash/restart 不丢未持久化记录。
+- 日志内容视为不可信输入，单行上限 64 KiB，错误日志不保存完整敏感原文。
+
+### 24.4 Exit Gate
+
+File/Journald 在声明支持的恢复场景下满足 at-least-once 与 receipt 幂等语义；
+Source Slice 与第 12.3、17.3 节中 Source/receipt/checkpoint 相关 crash points 通过；
+未发现 checkpoint 越过未持久化记录的路径；M3 可稳定消费 RawRecord。完整跨模块
+Crash Matrix 仍由 M7/M10 Gate 负责。
+
+---
+
+## 25. M3 Parser
+
+目标：把 RawRecord 以确定、受限、可版本化的方式转换为一个或多个 SecurityEvent。
+
+### 25.1 Entry Gate
+
+M2 提供稳定 RawRecord 和 receipt completion 边界；Parser DSL/依赖与 Grok expansion
+经 ADR 和基准冻结。
+
+### 25.2 Required Artifacts
+
+- `[M3-WP1 Catalog]` Parser/ParserVersion、Source binding、`contains/prefix` cheap prefilter。
+- `[M3-WP2 Runtime]` JSON、logfmt、Go RE2 Regex 和 Grok 编译/执行；禁止 PCRE 危险回溯语义。
+- `[M3-WP3 Ownership]` system-owned/parser-owned 字段强制边界，IP/CIDR 使用 `netip` 严格校验。
+- `[M3-WP4 Versioning]` `Validate → Compile → Resource Check → Test → Persist → Atomic Swap` 版本更新。
+- `[M3-WP5 Tooling]` CLI/API Parser Test、Playground 后端、golden fixtures、错误码、Metric 和 Health。
+
+### 25.3 Required Tests
+
+- 每种格式的 match/unmatched/invalid/边界 fixture，超长 Regex、capture/Grok 资源超限。
+- Parser 无法覆盖 ID、NodeID、SourceID、ParserID、ObservedAt。
+- Atomic Swap 并发测试不混用版本；新版本失败时旧 Active Version 继续运行。
+- 确定性 Parser 错误按第 8.2/8.5 节终态化，系统错误不得被伪装为 Poison。
+
+### 25.4 Exit Gate
+
+JSON、logfmt、RE2 Regex、Grok 四类 Parser 格式、prefilter、all-match、版本切换及
+资源限制通过 Contract Tests；
+SecurityEvent 字段权属无旁路；M4 只依赖稳定 SecurityEvent，不依赖 Parser 实现。
+
+---
+
+## 26. M4 Detection
+
+目标：在硬资源上限内完成可重放幂等的窗口检测，并生成稳定 Alert 与 Decision request。
+
+### 26.1 Entry Gate
+
+M3 已稳定产生 SecurityEvent；Event ID 和 `EventID + RuleID + RuleVersion` 幂等边界已 Verified；
+CEL 依赖、static/runtime cost、timeout、global/per-rule groups、window 范围和 distinct
+capacity 已经 ADR/基准冻结。
+
+### 26.2 Required Artifacts
+
+- `[M4-WP1 Rule Catalog]` DetectionRule/RuleVersion/Rule Catalog，event match、group_by、Sliding Window、count、
+  exact `distinct_count`、saturated 状态和 active group 硬上限。
+- `[M4-WP2 Engine]` 基于 ObservedAt 的内存窗口、受 cost/timeout 约束的 CEL 条件、
+  Rule Exclusion、Alert 持久化，幂等 contribution ledger 或等价机制。
+- `[M4-WP3 Tooling]` Rule Validate/Test、atomic swap、Group Key/Count/Threshold/Would Trigger/Cost 输出。
+
+### 26.3 Required Tests
+
+- Timestamp 伪造、未来/旧/乱序日志不得改变 ObservedAt Window。
+- CEL 编译失败、static/runtime cost 超限与 timeout 必须快速失败或产生稳定终态，
+  不得阻塞 Pipeline Coordinator 或绕开 processing receipt。
+- 同一 Event/Rule 在事务重试、重放与同进程 retry 中最多贡献一次。
+- group 超限拒绝新 group，不使用无界 LRU；distinct 超限进入 saturated，不继续增长内存。
+- allowlisted 来源默认仍可产生 Detection/Alert/Decision，只有 Rule 显式 exclusion 时才跳过。
+- restart 后 Window 清空必须作为 Phase 1 known limitation 出现在运维文档和 Doctor 输出中。
+
+### 26.4 Exit Gate
+
+count、distinct_count、exclusion、版本切换和幂等测试通过；资源攻击测试证明
+group/distinct/window 有硬上限；M5 获得稳定、幂等的 Automatic Decision request。
+
+---
+
+## 27. M5 Decision Model
+
+目标：把检测或人工请求转换为唯一、可审计、可重建投影的安全意图事实。
+
+### 27.1 Entry Gate
+
+M4 提供幂等 Decision request；Decision state/EndReason、Automatic/Manual unique index、
+Critical Audit 原子性和 Projection 规则已 Verified。
+
+### 27.2 Required Artifacts
+
+- `[M5-WP1 Lifecycle]` 唯一 Decision 状态 `Active/Expired/Revoked`，duplicate suppression、Manual AlreadyBanned/replace。
+- `[M5-WP2 Projection]` Active Decisions → Desired Ban Projection，多 Decision 合并、EffectiveUntil、可重建投影。
+- `[M5-WP3 Expiry/Policy]` 正常运行到期调度和启动时先 Expire，Allowlist 正交 Policy Exception，
+  TargetProjectionRevision/TargetEnforcementGeneration 计算。
+- `[M5-WP4 Verification]` Fake Enforcement Adapter、Decision History、Critical Audit 和 Contract Tests。
+
+### 27.3 Required Tests
+
+- 第 17.2 节中不依赖真实 Firewall 的全部测试。
+- 同 Rule+Target 并发最多一个 Active Automatic Decision，重复命中不延长 ExpiresAt。
+- Manual replace、Decision/Projection/Audit 原子事务，非法 State/EndReason 组合和终态不可逆。
+- 临时 Allowlist 不终止 Decision，`/32` Allowlist 不错误撤销重叠 `/24` Decision。
+
+### 27.4 Exit Gate
+
+Decision→Projection Fake Slice 及并发、到期、重放、崩溃测试通过；Projection 可从
+Active Decisions 全量重建；代码、CLI、Metric 和文档中不存在 Decision
+`Pending/Revoking/Failed` 或 Decision 级 Retry。
+
+---
+
+## 28. M6 Firewall
+
+目标：在最小权限进程中安全探测、规划和变更 Guard-owned Firewall 对象。
+
+### 28.1 Entry Gate
+
+M1 权限/IPC/timeout 可用；Firewall ownership、Snapshot、Plan/Apply 接口已 Frozen；
+nftables Spike 通过。Apply-confirm Schema、状态机和跨重启回滚 Gate 未通过前，
+只允许 Probe/Snapshot 与隔离环境写测试。
+
+### 28.2 Required Artifacts
+
+- `[M6-WP1 Contract]` Firewall Backend 接口、FirewallCapabilities、Fake Backend 和通用 Golden State 套件。
+- `[M6-WP2 Backends]` nftables-native、iptables-nft/legacy + ipset、无 ipset fallback，UFW 和 Docker INPUT/FORWARD 集成。
+- `[M6-WP3 Planning]` Probe、Snapshot、domain-scoped Plan/Apply、RemoveManagedInfrastructure、owner conflict 与 drift 检测。
+- `[M6-WP4 Recovery]` native timeout = `EffectiveUntil + SafetyGrace`，Apply-confirm/rollback 能力，Doctor capability report。
+
+Phase 1 Release 必选支持矩阵如下；Release Evidence 必须把“当前受支持发行版”解析为
+确切 OS/Image/Kernel/Firewall/Docker 版本，禁止只写 `latest`：
+
+| 类别 | 环境 / Backend | Release 要求 |
+|---|---|---|
+| Required | Ubuntu 受支持 LTS + nftables-native | INPUT、IPv4/IPv6、timeout、drift 全部通过 |
+| Required | Ubuntu 受支持 LTS + UFW | 保留 foreign/UFW ownership，重载后收敛 |
+| Required | Debian stable + iptables-nft + ipset | INPUT、IPv4/IPv6、timeout、重启恢复全部通过 |
+| Required | Debian stable + iptables-legacy + ipset | Golden State 与 foreign preservation 全部通过 |
+| Required | Debian stable + iptables，无 ipset fallback | 明确能力降级、cleanup 与 Doctor 结果全部通过 |
+| Required | Docker Engine + 已支持宿主 Backend | Host INPUT 与 published-port FORWARD 链路全部通过 |
+| Detected but Unsupported | 未知 Firewall Backend、无法证明 ownership 的自定义拓扑 | Probe 后拒绝 mutation，并输出稳定原因 |
+| Future / Out of Scope | Kubernetes / CNI enforcement | 不实现、不进入 Phase 1 支持声明 |
+
+### 28.3 Required Tests
+
+- Firewall 写测试只能在 disposable VM/network namespace/专用容器环境执行，禁止修改开发机或生产 Firewall。
+- 每个 Backend 运行同一 Golden State；Allowlist 只能 `RETURN`，禁止 `ACCEPT`。
+- 只修改 Guard-owned 对象；同名 foreign 对象产生 OwnershipConflict 且保持不变。
+- timeout/unknown 后先 Probe；nftables batch 原子性、iptables 降级、IPv4/IPv6、Manual CIDR、
+  INPUT/FORWARD 和 Docker published port 全覆盖。
+- Apply-confirm 的计划持久化、超时回滚、Agent/Enforcer restart 和管理来源防自锁测试通过。
+
+### 28.4 Exit Gate
+
+上表所有 `Required` 组合都有能力、Golden State、foreign preservation、
+timeout/drift/install/uninstall 证据；任一 Required 组合未通过时，M6 与 Phase 1 Release
+均为 `NO-GO`，不得通过缩小支持矩阵规避。只有上表明确列为 `Detected but Unsupported`
+或 `Future / Out of Scope` 的组合可拒绝执行并不阻塞发布。
+
+---
+
+## 29. M7 Reconciliation
+
+目标：以持久化 fencing、隔离 retry budget 和安全顺序把 Desired Intent 收敛为真实 Firewall 状态。
+
+### 29.1 Entry Gate
+
+M5 Decision/Projection 与 M6 Backend 已通过 Exit Gate；第 11 节安全顺序、fencing、
+三个 failure domain 和 RetryEpoch 已 Frozen；Maintenance Contract 已冻结。
+
+### 29.2 Required Artifacts
+
+- `[M7-WP1 State]` Desired/Observed Firewall Snapshot builder，以及 `InfrastructureRevision`、
+  `PolicyRevision`、`TargetProjectionRevision`、`TargetEnforcementGeneration`、
+  `SnapshotRevision` 五类 revision/generation、Observed 侧的
+  `ConfirmedTargetEnforcementGeneration` 和三个 domain retry ledger。
+- `[M7-WP2 Planner]` Reconcile planner、单一 mutation executor、fencing、启动 Initial Reconcile、周期/事件唤醒。
+- `[M7-WP3 Operations]` Maintenance enable/disable/status，Degraded/NotReady，domain retry CLI/API，drift recovery。
+- `[M7-WP4 Verification]` 第 12.3、17.2、17.3 节完整故障注入和 Contract Tests。
+
+### 29.3 Required Tests
+
+- 三 domain 预算隔离，health flap/restart 不重置预算，管理员 Retry 只创建指定 RetryEpoch。
+- Infrastructure/Policy 依赖阻塞不消耗 Target attempt，Policy 未收敛时不得提前扩大 Ban。
+- 无关 Target 高频变化不得阻止稳定 Target Converged；stale result 不覆盖新 generation。
+- Maintenance 中 Source/Detection/Decision 到期/Desired 更新继续，Firewall mutation 暂停；
+  crash/restart 不自动 Full Reconcile，disable 后立即完整收敛。
+
+### 29.4 Exit Gate
+
+Fake 和所有已支持真实 Backend 可从 drift 最终收敛；Crash Matrix 的 DB Desired、
+Firewall Snapshot、Observed、History、Retry 和 Audit 结果正确；任一 domain 耗尽预算后
+只该 domain Degraded，不产生无限循环。
+
+---
+
+## 30. M8 Notification
+
+目标：在不影响 Enforcement 的前提下，可靠地持久化、发送并审计 SMTP 通知。
+
+### 30.1 Entry Gate
+
+M1 Store/Config/Auth/secret ownership 可用，M5 Decision ID 与 `DecisionActivated` 提交边界
+稳定；SMTP credential 权威源、Job 状态机、幂等键、退避、终态与 Cooldown 已冻结。
+
+### 30.2 Required Artifacts
+
+- `[M8-WP1 SMTP]` SMTP `none/starttls/tls`，默认证书验证、custom CA，secret 文件权限与脱敏。
+- `[M8-WP2 Delivery]` `notification_jobs` 持久队列、worker、有界 retry/recovery，RuleID+Target cooldown。
+- `[M8-WP3 Operations]` Notification history/API/Metric/Health 和 Fake SMTP/TLS 测试工具。
+
+Phase 1 只为新建 Active Decision 定义 `DecisionActivated` 通知触发；其 Job 幂等键为
+`node_id + decision_id + "decision_activated" + channel + template_version`。
+Processing Coordinator 必须在持久化 Decision、Projection 和 Critical Audit 的同一
+SQLite UnitOfWork 中写入 `notification_jobs`；worker 只消费
+已提交 Job。Phase 1 保证 Job 至少一次处理，不承诺 SMTP exactly-once：连接中断发生在远端
+已接收但本地未持久化成功之间时允许重复邮件。每次发送尝试必须持久化 attempt 与结构化结果；
+模板中包含稳定的 `notification_job_id`，供收件方识别重复。重复风险不得反向改变 Decision、
+Projection 或 Firewall 状态。
+
+`notification_jobs` 写入失败属于 processing outcome 事务失败：整个 UnitOfWork 回滚，
+receipt pipeline 重试该 RawRecord；它不是“通知失败不影响 Ban”的例外。只有 Job 已提交后
+发生的 SMTP 连接、协议、TLS 或远端错误不得改变已提交的 Decision、Projection 或 Firewall。
+
+### 30.3 Required Tests
+
+SMTP 失败、timeout、临时/永久错误、crash-after-send、restart recovery、cooldown 并发、
+STARTTLS downgrade、无效证书/hostname/custom CA 全部通过；credential 不进入日志/Metric/API；
+同一 Decision Event 并发入队只产生一个 Job；ambiguous send 重启后允许重复投递但沿用稳定
+`notification_job_id`；通知失败不回滚或阻塞 Ban。
+
+### 30.4 Exit Gate
+
+Notification Job 入队、发送、重试、恢复、Cooldown、TLS 与审计证据全部通过；SMTP
+Degraded 不使 Agent NotReady；API/Metric 不泄漏 credential。Phase 1 不实现其他通知渠道。
+
+---
+
+## 31. M9 Built-in Rules
+
+目标：交付经过真实发行版日志验证的 SSH/Nginx 开箱即用解析与检测闭环。
+
+### 31.1 Entry Gate
+
+M2–M5 已通过 Exit Gate 后，允许启动 `[M9-WP1]`–`[M9-WP3]`；M7 通过 Exit Gate 后
+才允许启动 `[M9-WP4]` 和 M9 Exit。Built-in manifest、版本、用户覆盖/升级/回退语义
+已冻结；每个 fixture 记录发行版/软件版本与脱敏来源。
+
+### 31.2 Required Artifacts
+
+- `[M9-WP1 SSH]` SSH Failed password、Invalid user、Authentication failure Parser，统一
+  `event_type=auth.login_failed`，默认 Rule `5/10m` + Ban `1h`。
+- `[M9-WP2 Nginx]` 单一 Nginx Access Parser，输出 source IP/method/path/status，交付 401/403/404 Rules。
+- `[M9-WP3 Safety]` Nginx client IP/trusted proxy 边界、管理路径防自锁提示、Rule Exclusion 示例。
+  默认只信任 socket `remote_addr`；只有配置非空 `trusted_proxies` 后才能启用 forwarded
+  client-IP header，来源不在 trusted proxies 时忽略该 header。缺少或非法 trust boundary
+  必须拒绝配置激活，禁止仅告警后继续运行。
+- `[M9-WP4 Packaging/E2E]` Built-in manifest/version/fixtures 和日志→Event→Alert→Decision→Firewall E2E。
+
+### 31.3 Required Tests
+
+SSH 三类消息映射一致；Nginx IP 使用 `netip`；可伪造 `X-Forwarded-For` 的配置必须拒绝激活；
+404 不默认排除整个静态目录；升级不静默覆盖用户修改。至少一条 SSH 和一条 Nginx
+真实纵向链路通过，断言具体字段与状态，不只断言“无错误”。
+
+### 31.4 Exit Gate
+
+SSH/Nginx manifest、fixtures、解析、规则、升级保护和真实 Firewall E2E 全部通过；
+发行版/软件版本证据可追溯，默认规则不会因 proxy 或管理路径配置造成已知自锁。
+
+---
+
+## 32. M10 Productization
+
+目标：把 M1–M9 的能力封装为可安全安装、操作、升级、诊断和发布的 Standalone 产品。
+
+### 32.1 Entry Gate
+
+M1–M9 各自 Exit Gate 通过；OpenAPI、CLI exit code、Retention、upgrade、uninstall/purge
+与前端技术栈/依赖已冻结并得到批准。
+
+### 32.2 Required Artifacts
+
+- `[M10-WP1 Web]` Dashboard、Sources、Parsers、Rules、Alerts、Bans、Notifications、Audit、Settings 页面。
+- `[M10-WP2 API/CLI]` `/api/v1/` OpenAPI 与 CLI 功能闭环；Decision History、append-only 应用层 Audit、Retention cleanup。
+- `[M10-WP3 Operations]` `/health`、`/ready`、`/metrics`、Doctor，service install/uninstall、purge、upgrade migration 与恢复说明。
+- `[M10-WP4 Docs/Performance]` Benchmark harness、安装/配置/安全/Firewall/Docker/备份恢复/排障文档。
+- `[M10-WP5 Release]` 版本化发布包、checksum 和绑定 commit 的 Release Evidence Manifest。
+
+### 32.3 Required Tests
+
+- 所有管理写操作经认证、CSRF/Origin 校验并写 Critical Audit；remote HTTP 必须显式开启并给出安全警告。
+- API/CLI/Web 业务语义一致；Retention 不删除 Active Decision、未完成 Notification 和恢复所需记录。
+- uninstall 仅删除服务与 Guard-owned Firewall 对象并保留 config/data；purge 二次确认后删除明确列出的 Guard-owned 数据。
+- upgrade 覆盖成功、失败、kill/断电与备份恢复；Phase 1 不承诺自动 downgrade。
+- 基准环境 `1 vCPU, 512MB–1GB RAM`，1,000 lines/s 时 Average CPU `<10%`、P95 CPU `<25%`、RSS `<100MB`；这是开发验收，不是 SLA。
+
+### 32.4 Exit Gate
+
+全部 Phase 1 测试矩阵、安装/首启/升级/重启/卸载/purge/恢复演练和性能目标通过；
+OpenAPI、CLI、Web、Config Schema 与实现一致；无 Critical/High 安全缺陷；发布包、
+migration、文档与证据绑定同一 commit。
+
+---
+
+## 33. 跨里程碑依赖图
+
+```text
+M0 Frozen → M1 Runtime → M2 Sources → M3 Parser → M4 Detection → M5 Decision ─┐
+                └─→ M6 Firewall ───────────────────────────────────├→ M7 Reconcile
+M1 Runtime → M8 Notification foundation; M5 → M8 Decision integration        │
+M2 + M3 + M4 + M5 → M9 Built-ins; M7 → M9 real Firewall E2E           │
+M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 ──────────────────────┘
+                                      ↓
+                                  M10 Release
+```
+
+M6 可与 M2–M5 并行，但 M7 必须等待 M5/M6；M8 队列/SMTP 可提前，Decision enqueue
+集成等待 M5；M10 可提前建设只读 UI/CI 骨架，Exit Gate 必须等待 M1–M9。
+任一里程碑要改变 M0 Frozen Contract，必须先走 Contract Change Review 并补 ADR/回归证据。
+
+---
+
+## 34. Phase 1 通用 Definition of Done
+
+每个 Work Package 只有同时满足以下条件才可标记 Done：
+
+1. Entry Gate 通过，接口、Schema、依赖、数据库或权限变更已按规则批准。
+2. 只实现当前范围，没有 Phase 2 空壳、假想扩展点或未请求的 fallback。
+3. 单元测试覆盖正常、错误、边界和并发路径，关键断言验证具体业务状态。
+4. Contract/integration/crash/security/upgrade 中相关测试已执行，未执行项标记 `NOT RUN`。
+5. compile、format、lint、race、migration 和派生产物 drift 检查通过。
+6. Config Schema、migration、OpenAPI、CLI help、Metric/Health/Audit 和运维文档已同步。
+7. 没有静默吞错、无限 retry、secret 泄漏、高基数 label、foreign Firewall 变更或 CLI 直写 DB。
+8. Evidence Manifest 记录 commit、环境、精确命令、数量、结果、失败项、已知限制和产物摘要。
+
+---
+
+## 35. CI 与验证证据
+
+```text
+static      → format + lint + compile + generated/schema drift
+test-fast   → unit + race + migration + fake contract slices
+test-linux  → file rotation + journald + signal/restart
+firewall    → nftables + UFW + iptables variants + Docker（隔离环境）
+security    → auth/session/CSRF + secret + permission/systemd + dependency scan
+e2e         → SSH + Nginx + maintenance/apply-confirm + notification + upgrade/purge
+benchmark   → 1,000 lines/s resource target
+package     → binaries + config/schema/migrations + systemd/docs + checksum/manifest
+```
+
+Firewall job 无隔离环境时必须标记 `NOT RUN` 并阻塞 Release，禁止改用宿主机验证。
+每个里程碑 Evidence Manifest 至少保存 Milestone、Commit、Build/Test Environment、
+Exact Command、Start/Finish Time、Passed/Failed/Skipped、Failure Summary、Artifact Checksum、
+Known Limitations 和 Reviewer。“测试文件存在”“Schema VALID”“成功构建”都不能单独代替 Gate。
+
+---
+
+## 36. Phase 1 Release Gate
+
+只有以下条件全部满足，才允许标记 `Phase 1 Released`：
+
+### 36.1 Contract 一致性
+
+- M0 保持 Frozen，所有变更均有 ADR/Contract Change 记录与回归证据。
+- Decision、Retry CLI、Metric、History 不存在被废弃的 Decision `Failed` 语义。
+- migration、Config Schema、OpenAPI、CLI golden tests、代码和行为测试无冲突。
+- Phase 1 文档不存在影响实现、安全或运维的 TBD。
+
+### 36.2 功能、故障与安全
+
+- File/Journald→Parser→Detection→Decision→Reconcile→Firewall 完整链路通过。
+- Notification 独立失败不影响 Enforcement；SSH/Nginx 真实纵向链路通过。
+- M0 Crash Matrix 和 Backend/OS 发布矩阵通过，foreign Firewall 对象保持不变。
+- Maintenance、Apply-confirm、upgrade、uninstall/purge、Auth/CSRF、权限/secret、
+  remote HTTP 和管理面自锁边界通过。
+- 不存在 Critical/High 安全缺陷或影响安全意图一致性的未解决缺陷。
+
+### 36.3 运维、性能与发布
+
+- Health/Ready/Metrics/Audit/Doctor 能定位所有声明的 Maintenance、Degraded、NotReady 和降级能力。
+- 资源上限均具备配置、默认/范围、触顶行为、错误码、Metric 和 Health 影响。
+- 性能目标、安装/备份恢复/升级演练通过，文档可执行。
+- 发布包、版本、migration、文档、checksum 和 Evidence Manifest 绑定同一 commit。
+
+### 36.4 最终结论
+
+```text
+GO
+
+M0 与 M1–M10 全部 Gate 已通过。
+Phase 1 Standalone Agent 可以发布。
+```
+
+或：
+
+```text
+NO-GO
+
+未通过项：<Gate / 证据缺口 / 责任里程碑>
+影响：<正确性 / 安全 / 一致性 / 可运维性>
+修复后重新验证：<命令 / 环境 / 期望证据>
+```
+
+禁止使用“后续补测试”“实现时处理”或未记录的人工 waiver 放行。
