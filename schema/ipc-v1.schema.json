@@ -1,0 +1,285 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://guard-wall.local/schema/ipc-v1.schema.json",
+  "title": "Guard Wall Agent/Enforcer IPC v1 Request",
+  "description": "The authoritative fail-closed request schema for the local Agent/Enforcer IPC boundary. Physical firewall object names and arbitrary commands are intentionally not representable.",
+  "x-guard-max-frame-bytes": 1048576,
+  "x-guard-max-request-bytes": 65536,
+  "x-guard-max-instance-depth": 8,
+  "x-guard-max-json-tokens": 4096,
+  "oneOf": [
+    { "$ref": "#/$defs/probeCapabilitiesRequest" },
+    { "$ref": "#/$defs/snapshotManagedRequest" },
+    { "$ref": "#/$defs/applyManagedPlanRequest" },
+    { "$ref": "#/$defs/removeManagedInfrastructureRequest" }
+  ],
+  "$defs": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "minimum": 1,
+      "maximum": 1
+    },
+    "emptyPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 0
+    },
+    "ownerVersion": {
+      "type": "string",
+      "const": "guard/v1",
+      "maxLength": 8
+    },
+    "digest": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "canonicalPrefix": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[0-9A-Fa-f:.]+/[0-9]{1,3}$",
+      "x-guard-canonical-prefix": true
+    },
+    "scope": {
+      "type": "string",
+      "enum": ["input", "forward"],
+      "maxLength": 7
+    },
+    "probeCapabilitiesRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["version", "operation", "payload"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "operation": {
+          "type": "string",
+          "const": "ProbeCapabilities",
+          "maxLength": 32
+        },
+        "payload": { "$ref": "#/$defs/emptyPayload" }
+      }
+    },
+    "snapshotManagedRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["version", "operation", "payload"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "operation": {
+          "type": "string",
+          "const": "SnapshotManaged",
+          "maxLength": 32
+        },
+        "payload": { "$ref": "#/$defs/emptyPayload" }
+      }
+    },
+    "applyManagedPlanRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["version", "operation", "payload"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "operation": {
+          "type": "string",
+          "const": "ApplyManagedPlan",
+          "maxLength": 32
+        },
+        "payload": {
+          "oneOf": [
+            { "$ref": "#/$defs/infrastructurePlan" },
+            { "$ref": "#/$defs/policyPlan" },
+            { "$ref": "#/$defs/targetPlan" }
+          ]
+        }
+      }
+    },
+    "removeManagedInfrastructureRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["version", "operation", "payload"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "operation": {
+          "type": "string",
+          "const": "RemoveManagedInfrastructure",
+          "maxLength": 32
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "maxProperties": 1,
+          "required": ["expected_owner_version"],
+          "properties": {
+            "expected_owner_version": { "$ref": "#/$defs/ownerVersion" }
+          }
+        }
+      }
+    },
+    "infrastructurePlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": ["domain", "owner_version", "basis_snapshot_digest", "infrastructure_revision", "operations"],
+      "properties": {
+        "domain": {
+          "type": "string",
+          "const": "infrastructure",
+          "maxLength": 16
+        },
+        "owner_version": { "$ref": "#/$defs/ownerVersion" },
+        "basis_snapshot_digest": { "$ref": "#/$defs/digest" },
+        "infrastructure_revision": { "$ref": "#/$defs/revision" },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/ensureInfrastructureOperation" }
+        }
+      }
+    },
+    "policyPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": ["domain", "owner_version", "basis_snapshot_digest", "policy_revision", "operations"],
+      "properties": {
+        "domain": {
+          "type": "string",
+          "const": "policy",
+          "maxLength": 16
+        },
+        "owner_version": { "$ref": "#/$defs/ownerVersion" },
+        "basis_snapshot_digest": { "$ref": "#/$defs/digest" },
+        "policy_revision": { "$ref": "#/$defs/revision" },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/replacePolicyOperation" }
+        }
+      }
+    },
+    "targetPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": ["domain", "owner_version", "basis_snapshot_digest", "target_generation", "operations"],
+      "properties": {
+        "domain": {
+          "type": "string",
+          "const": "target",
+          "maxLength": 16
+        },
+        "owner_version": { "$ref": "#/$defs/ownerVersion" },
+        "basis_snapshot_digest": { "$ref": "#/$defs/digest" },
+        "target_generation": { "$ref": "#/$defs/revision" },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/setTargetOperation" }
+        }
+      }
+    },
+    "ensureInfrastructureOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 2,
+      "required": ["kind", "schema_version"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "ensure_infrastructure",
+          "maxLength": 32
+        },
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "minimum": 1,
+          "maximum": 1
+        }
+      }
+    },
+    "replacePolicyOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["kind", "allowlist", "protected_targets"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "replace_policy",
+          "maxLength": 32
+        },
+        "allowlist": {
+          "type": "array",
+          "maxItems": 1024,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/canonicalPrefix" }
+        },
+        "protected_targets": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 1024,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/canonicalPrefix" }
+        }
+      }
+    },
+    "setTargetOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 7,
+      "required": ["kind", "target", "membership", "timeout_mode", "effective_until_unix_us", "scopes"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "set_target",
+          "maxLength": 32
+        },
+        "target": { "$ref": "#/$defs/canonicalPrefix" },
+        "membership": {
+          "type": "string",
+          "enum": ["present", "absent"],
+          "maxLength": 7
+        },
+        "timeout_mode": {
+          "type": "string",
+          "enum": ["none", "native"],
+          "maxLength": 6
+        },
+        "effective_until_unix_us": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9223372036854775807
+            }
+          ]
+        },
+        "scopes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/scope" }
+        }
+      }
+    }
+  }
+}

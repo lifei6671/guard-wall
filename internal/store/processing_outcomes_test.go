@@ -198,6 +198,12 @@ func prepareProcessingFixture(t *testing.T, database *Store) processingFixture {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	return processingFixtureValues(t)
+}
+
+func processingFixtureValues(t *testing.T) processingFixture {
+	t.Helper()
+	now := time.Unix(200, 0).UTC()
 	position, err := core.NewFilePosition(core.FilePosition{
 		Generation: processingGeneration, DeviceID: 1, Inode: 2, StartOffset: 0, EndOffset: 10,
 	})

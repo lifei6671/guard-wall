@@ -1,0 +1,3 @@
+{
+  "version":1,"operation":"ApplyManagedPlan","payload":{"domain":"target","owner_version":"guard/v1","basis_snapshot_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","target_generation":1,"operations":[{"kind":"set_target","target":"192.0.2.4/32","membership":"present","timeout_mode":"none","effective_until_unix_us":1700000000000000,"scopes":["input"]}]}
+}

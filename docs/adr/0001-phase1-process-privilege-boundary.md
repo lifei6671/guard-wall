@@ -89,7 +89,10 @@ uint32-be payload length
 - Enforcer 不得在长度校验前分配 payload 声明的任意大小内存。
 - 协议升级必须显式版本化；禁止把无法识别的请求猜测为旧版本执行。
 
-具体 Go 类型、字段名和错误码由 M0-D 可编译接口冻结，本文不复制生成代码。
+IPC v1 request 的 wire shape、字段与资源上限由
+[`schema/ipc-v1.schema.json`](../../schema/ipc-v1.schema.json) 和对应 golden vectors 冻结；
+production Go DTO/parser、response shape 与错误码仍由后续 M0-D 可编译接口冻结。本文不复制
+完整 Schema 或生成代码。
 
 ### 允许的操作
 
@@ -219,11 +222,33 @@ Ubuntu 22.04 WSL2、普通 UID 1000、kernel
 | allowlisted operation 接受 | PASS |
 | 非允许 operation 拒绝 | PASS |
 | oversized frame 拒绝 | PASS |
+| truncated length / payload 拒绝 | PASS |
+| 非法 JSON、未知字段、多 JSON value 拒绝 | PASS |
+| 未知版本拒绝 | PASS |
+| Contract 四个 allowlisted operation 接受 | PASS |
+| fuzz seed corpus：合法、超限、截断、未知字段 | PASS |
 | 临时测试二进制已移除 | PASS |
 
-这些结果只证明初步 framing、peer credential 读取和 operation allowlist 路径在该 WSL2
-环境可运行。它们不是生产 `guard` 用户、root Enforcer、systemd 或 `CAP_NET_ADMIN`
-边界的验证证据。
+B4-f 在 baseline `9eec36c` 的 dirty worktree 上补充 Linux-only table-driven test 与 fuzz
+target；Ubuntu WSL2 初跑、`count=20` 和原 Spike smoke 均通过。Windows 主机全仓 race
+受 `linux` build tag 限制，不覆盖本 Spike；本批 targeted Evidence 是 CGO-free Linux/amd64
+test binary、Linux vet 与 Linux amd64/arm64 test/main 编译，不得写成 targeted race。
+
+B4-g 在同一 baseline 的 dirty worktree 上新增正式
+[`ipc-v1.schema.json`](../../schema/ipc-v1.schema.json) request Schema 和
+[`schema/testdata/ipc-v1/`](../../schema/testdata/ipc-v1/) golden vectors。Schema 将四个 request
+建模为互斥 closed union；所有 object 递归拒绝未知字段，`ApplyManagedPlan` 一次只能携带一个
+failure domain 和一个 typed operation。wire DTO 不存在 shell、binary、env、cwd 或物理
+table/chain/set/hook/jump/object-name 字段；owner 固定为 `guard/v1`，request 为 64 KiB、深度 8、
+token 4096，policy prefix 总数为 1024。6 个 valid、23 个 invalid fixture，以及 request size、
+depth、token、prefix exact/one-over 和 fuzz seed invariants 已由 stdlib-only test evaluator 验证。
+code checkpoint 的两个 P2 经 delta 修复后，独立审查为 `COMPLETE / FRESH / APPROVED / PASSED`，
+P0/P1/P2/P3 均无。
+
+这些结果只证明初步 framing fail-closed、peer credential 读取和 operation allowlist 路径在
+该 WSL2 环境可运行，并证明 IPC v1 request Schema/golden contract 在当前 worktree 的 test-only
+evaluator 中闭合。它们不是 production IPC parser、真实 Snapshot/owner/capability validator、
+生产 `guard` 用户、root Enforcer、systemd 或 `CAP_NET_ADMIN` 边界的验证证据。
 
 ## Not Verified
 
@@ -231,10 +256,14 @@ Ubuntu 22.04 WSL2、普通 UID 1000、kernel
 
 1. 使用生产 `guard` 用户执行的跨 UID 拒绝。
 2. 两个真实 systemd unit 的 hardening 和精确 `ReadWritePaths`。
-3. 请求中的 Guard-owned object name、canonical Prefix、owner/version 和 operation count 校验。
+3. production parser 中的 canonical Prefix、owner/version、单 domain/operation count、真实 Snapshot
+   digest、capability 与 Guard-owned object-role mapping 校验；request Schema/golden 已落盘，尚未接入
+   production Enforcer。
 4. Agent/Enforcer restart、timeout、cancellation 和 unknown result 恢复。
 5. root Enforcer 的 `CAP_NET_ADMIN` bounding、Agent 无 capability 及实际 nftables 权限。
-6. IPC parser/validator fuzz、截断 frame、未知字段/版本和资源耗尽测试。
+6. production IPC parser/validator 集成与持续 fuzz campaign；当前 framing Spike 和 B4-g test-only
+   evaluator 已覆盖截断、非法 JSON、未知字段/版本/操作、资源 exact/one-over 和 seed invariants，
+   但不代表 production predecoder 或持续 fuzz。
 7. 非 WSL2 的目标 Linux 发行版、内核和 systemd 支持矩阵。
 
 完成以上生产用户、systemd、capability、validator 和恢复测试，并生成可定位 Evidence
@@ -246,10 +275,13 @@ M0-B/M0-D 必须补齐：
 
 - 真实 `guard` service UID 与另一个非授权 UID 的正反测试；
 - socket 目录创建、权限漂移、陈旧 socket 和 Enforcer restart 测试；
-- 四个 operation 的 schema、大小、数量、对象名和 canonical target 边界测试；
+- 将已冻结的四 operation request Schema/golden vectors 接入 production predecoder/typed validator，
+  并在调用 executor 前验证大小、深度、token、canonical target、owner、Snapshot、capability 和
+  Guard-owned object-role mapping；
 - Agent 无 capability、Enforcer 仅 `CAP_NET_ADMIN` 的运行时检查；
 - systemd security 属性和精确文件写权限测试；
-- malformed/truncated/oversized/version mismatch 的 table-driven test 与 fuzz target；
+- 将已在 Spike 通过的 malformed/truncated/oversized/version mismatch table/fuzz seed
+  合入 production parser/validator，并执行持续 fuzz campaign；
 - timeout/cancel 后 Probe-first 的 Reconcile 集成测试；
 - 在 Phase 1 发布支持 Linux 环境中的重复验证。
 

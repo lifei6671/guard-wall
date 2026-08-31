@@ -287,7 +287,7 @@ Target Domain
 | 配置字段 | Config Schema |
 | HTTP API | OpenAPI 文档及其生成 drift check |
 | CLI 参数、输出和退出码 | CLI Contract/golden tests |
-| Agent/Enforcer IPC frame 与操作 | versioned IPC Protocol Schema/golden tests |
+| Agent/Enforcer IPC v1 request frame 与操作 | `schema/ipc-v1.schema.json` 与 `schema/testdata/ipc-v1/` golden tests |
 | 行为验收 | 自动化 Contract Tests |
 
 Markdown 不得复制完整 DDL、完整生成代码或测试实现，避免多份内容漂移。
@@ -1781,6 +1781,12 @@ M0-D 必须产出 ownership matrix：
 `smtp.credential_file` 由 YAML 持有路径，文件内容是 secret 唯一权威源；文件必须
 `root:guard 0640` 或更严格，读取错误必须阻止 SMTP worker Ready，禁止回退到环境变量
 或 SQLite 明文值。
+
+配置 loader 必须在 Schema validation 前 fail-closed 执行固定资源上限：原始 YAML 文档
+（包括注释和尾随空白）不得超过 64 KiB；解码后的 YAML AST 最多包含 512 个唯一 Node，
+其中 `DocumentNode` 计入总数；`DocumentNode` 深度为 0，任一 Node 深度不得超过 32。
+任何超限错误都不得回显配置内容。这些是 loader 安全边界，不是 Config 字段，不在
+Config Schema 中复制定义。
 
 ### 15.2 API 与 CLI
 

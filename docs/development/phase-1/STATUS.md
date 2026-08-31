@@ -20,7 +20,8 @@
 | 最近更新 | `2026-08-31` |
 
 当前仓库已有 M0-A Contract、Crash Matrix manifest、两份 ADR、Go Core、SQLite
-migration/Store、Config Schema、安全 credential reader，以及增强后的 C1/C2 preliminary
+migration/Store、Config Schema、安全 credential reader、single-document YAML loader、SMTP credential
+readiness gate，以及增强后的 C1/C2 preliminary
 Slice；C1 已接通 Parser→SecurityEvent→Rule→Window→SQLite receipt 的成功/Rule poison 编排，
 并补充 fixed accepted set 的 drain/checkpoint/Close 与 cancellation/reopen/replay primitive tests；
 C2 已接通 Automatic Decision 创建/重复抑制、SQLite Manual create/replace、expiry，且三条
@@ -30,8 +31,10 @@ confirmed commit 后仅 Wake 语义变化 Target；同进程 Backend availabilit
 首次 Apply expiry fence、production Desired PlanProvider、共享虚拟时钟与 expiration runtime owner 已通过，
 且真实 SQLite→Fake Snapshot 的 62s 虚拟时间闭环已验证；完整三域 Observed SQLite authority、
 Probe/Unknown fencing 回写与 fresh startup Probe 原语已获用户 Code Review 通过；Dispatcher-owned Backend
-health lifecycle、双 context Probe、精确 capped backoff、mutation gate 与 Health/Metric read model 已进入 Review；但仍缺真实 Enforcer/IPC health 事件源、
-可执行进程 composition/runtime startup、shutdown/crash、C3、正式 Contract Tests、
+health lifecycle、双 context Probe、精确 capped backoff、mutation gate 与 Health/Metric read model 已获用户
+Code Review 通过；C1 signal-aware lifecycle owner 也已获用户 Code Review 通过，但仍缺真实
+Source reader/management intake、Enforcer/IPC health 事件源、可执行进程 composition/runtime startup、
+真实 shutdown/crash、C3、正式 Contract Tests、
 目标 Linux durability 与 commit-bound Evidence Manifest。
 
 ## 2. 状态字段
@@ -56,16 +59,16 @@ health lifecycle、双 context Probe、精确 capped backoff、mutation gate 与
 | A2 | Source delivery 与事务协调 | `COMPLETE` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-a/contract-review.md` | 运行级验证留给 C1/D1/D2/D5 |
 | A3 | Decision / Enforcement / Reconcile | `COMPLETE` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-a/contract-review.md` | 运行级验证留给 C2/D1/D2/D5/D6 |
 | A4 | Crash Matrix | `COMPLETE` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-a/contract-review.md` | manifest 已审查；runner 执行留给 C3/D5 |
-| B1 | SQLite 并发、事务与 durability Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | Go driver/PRAGMA/migration 已通过；缺目标 Linux SIGKILL/reboot/filesystem 与 power-loss 证据 |
-| B2 | Source identity 与 replay Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/source-slice/result.md` | 独立 Go golden tests 已通过；缺 restart、generation/replay 证据 |
+| B1 | SQLite 并发、事务与 durability Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/sqlite-result.json` | Go driver/PRAGMA/migration 与 Ubuntu WSL2 cross-process SIGKILL→reopen committed/uncommitted matrix 已通过；缺 OS reboot、filesystem barrier 与 power-loss 证据 |
+| B2 | Source identity 与 replay Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/identity-result.json`、`m0-c/source-slice/result.md` | golden vectors、Ubuntu WSL2 clean restart-replay、两个 committed-boundary generation transition SIGKILL 窗口、真实 opaque Journald cursor reopen 与 processing UnitOfWork transaction-internal SIGKILL rollback/direct replay 已通过；缺真实 File/Journald reader、copytruncate、Source-state internal crash、cursor invalidation/vacuum/resume 与 replay/reprocess refs |
 | B3 | nftables Backend Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/nftables-result.json` | 缺 production hook/priority、packet path、Snapshot/Plan、ownership 与恢复证据 |
-| B4 | Agent/Enforcer 权限与 IPC Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json` | 缺跨 UID、systemd hardening、capability、对象校验与恢复证据 |
-| C1 | Source Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/source-slice/result.md` | shutdown primitives 与 cancellation/reopen/replay 已通过；缺真实 intake/drain owner、30s timeout、SIGTERM/crash/durability |
+| B4 | Agent/Enforcer 权限与 IPC Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json` | WSL2 framing fail-closed、四操作 allowlist、正式 IPC v1 request Schema、29 个 golden vectors、资源 exact/one-over 与 seed invariants 已通过；缺 production predecoder/typed validator、真实 Snapshot/owner/capability/object-role 校验、跨 UID、systemd hardening、持续 fuzz 与恢复证据 |
+| C1 | Source Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/source-slice/result.md` | Queue Seal fixed accepted set、单 Source runtime owner、drain/Flush/Audit/Close、timeout 不提前 Close 与 commit-unknown readback 已通过 race；缺真实 Source reader/management intake、signal executable、进程 restart 与 Linux durability |
 | C2 | Decision/Enforcement Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | Automatic/Manual/expiry generation/SnapshotRevision/Wake、retry/pending-Probe SQLite 恢复、60s scheduler、62s SQLite→Fake 闭环、完整三域 Observed 与 Dispatcher-owned Backend health lifecycle 原语已通过用户 Review；仍缺真实 Enforcer/IPC health 源、可执行进程 composition/runtime startup 与真实进程 restart |
 | C3 | 完整 Crash Matrix | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 C1、C2 Verified |
-| D1 | Go 类型与接口 | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | Desired finalizer、typed commit-unknown/post-commit Wake、共享 Clock、Desired PlanProvider/runtime owner、完整 Observed 端口与 process-local Backend health read model 通过 race/vet；缺可执行进程 composition/真实 IPC health source wiring |
+| D1 | Go 类型与接口 | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | Desired/Reconcile 端口及 Source Queue Seal/RunSourceRuntime 已通过 race/vet；缺真实 executable composition、Source reader/management intake 与 IPC health source wiring |
 | D2 | SQLite migration | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | migration 0001–0005、Target Desired/retry/probe/Observed 原子性、v4 cache 安全失效与 SQLite close/reopen 已通过；缺 replay/reprocess refs、真实进程/runtime restart 与目标 Linux durability |
-| D3 | Config Schema | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md` | Schema/default/range/ownership/drift 与 credential reader 已通过；缺完整 YAML、SMTP Ready、hot-reload/restart 和目标 Linux 权限验证 |
+| D3 | Config Schema | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md` | Schema/default/range/ownership/drift、credential reader、YAML loader/resource cap、SMTP readiness、atomic logging owner 与 Ubuntu WSL2 native file-to-Ready library integration 已实现并通过；缺真实 SMTP worker、production packaging/systemd/parent trust、config watcher/executable wiring 和目标 Linux 安装验证 |
 | D4 | ADR | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/adr-review.md` | ADR-0001/0002 已接受；delivery/durability/firewall/retry ADR 尚未齐全 |
 | D5 | Contract Tests | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 C1–C3 可执行用例 |
 | D6 | V0.4 同步 | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待新语义 Verified 后清理旧模型 |
@@ -76,7 +79,7 @@ health lifecycle、双 context Probe、精确 capped backoff、mutation gate 与
 | Gate | Contract | 当前结果 | Evidence | 未通过原因 | 解锁条件 |
 |---|---|---|---|---|---|
 | G18.1 Contract 完整性 | §18.1 | `FAIL` | `artifacts/evidence/M0/worktree/` | A 与 D1/D4 部分 Implemented；B 仍 preliminary，D6 未完成 | M0-B 与 D1/D4/D6 对应证据通过 |
-| G18.2 可执行验证 | §18.2 | `FAIL` | `artifacts/evidence/M0/worktree/m0-c/` | C1 shutdown primitives 与 C2 generation/snapshot/post-commit wake/60s scheduler/first-Apply fence/62s Fake/Backend health lifecycle 已增强；真实可执行 runtime/IPC health source/restart、C3、firewall/durability 仍未运行 | M0-C、migration 和 Contract Tests 全部通过 |
+| G18.2 可执行验证 | §18.2 | `FAIL` | `artifacts/evidence/M0/worktree/` | C1/C2 preliminary runtime 原语与 B1 Linux process-level SIGKILL→reopen 已运行；真实 executable/IPC health source/service restart、C3、firewall、OS reboot/filesystem barrier/power-loss durability 与完整 Contract Tests 仍未完成 | M0-C、migration、剩余 durability 域和 Contract Tests 全部通过 |
 | G18.3 产物一致性 | §18.3 | `FAIL` | `artifacts/evidence/M0/worktree/m0-d/` | migration/代码/Config Schema 已落盘；D5–D7 与 commit-bound Manifest 缺失 | M0-D 全部责任产物通过 drift/一致性检查 |
 
 M0 只有在 G18.1、G18.2、G18.3 全部为 `PASS` 后，才可改为
@@ -192,14 +195,114 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
 | 2026-08-31 | C2 complete Observed persistence/startup primitive | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；migration 0005、完整三域 Observed authority、Probe/Unknown fencing、fresh startup Probe 与 commit-unknown readback 原语已接受；C2 总项仍为 `IN_PROGRESS`，不代表生产 health monitor/executable、真实 Backend/process restart 或 Linux durability |
 | 2026-08-31 | C2 Backend health monitor + runtime ownership primitive | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | Dispatcher-owned startup Degraded/backoff/recovery、双 context Probe、fatal persistence split、Health/Metric read model 与并发交错测试已实现；独立审查修复 startup/timer/event ordering 3 个 P1，fresh code/test/evidence/integration 终审 P0/P1/P2/P3 均无，等待用户 Code Review；不代表真实 IPC health source、executable 或 process restart |
 | 2026-08-31 | C2 Backend health monitor + runtime ownership primitive | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；process-local Backend health lifecycle、双 context Probe、fatal persistence split 与 Health/Metric read model 原语已接受；C2 总项仍为 `IN_PROGRESS / Implemented`，不代表真实 IPC health source、executable、process restart 或 Linux durability |
+| 2026-08-31 | C2 stale completion / receipt replay / Evidence 修复 | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；旧 generation completion stale 清理、base adapter 无 wake receipt replay 与实际执行日期修复已接受。证据仍为 worktree preliminary，不提升 C2 总项或 M0 Gate |
+| 2026-08-31 | C1 signal-aware lifecycle owner | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-c/source-slice/result.md`、`m0-d/code-migration/result.md` | 用户批准导出内部 Go 边界；Queue Seal、单 worker drain、final Flush/Audit barrier/Close、timeout 与 commit-unknown readback 不提前 Close 已实现并通过 targeted/full race、vet、module 与双架构构建；final Tier-3 独立终审完整覆盖且 P0/P1/P2/P3 均无，等待用户 Code Review |
+| 2026-08-31 | C1 signal-aware lifecycle owner | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-c/source-slice/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；Queue Seal、单 worker fixed-set drain、final Flush/Audit barrier/Close、timeout 与 commit-unknown readback 不提前 Close 已接受；C1 总项仍为 `IN_PROGRESS / Implemented`，不代表真实 Source reader/management intake、signal executable、进程 restart 或 Linux durability |
+| 2026-08-31 | D3-a single-document YAML loader | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md`、`m0-d/code-migration/result.md` | 用户批准 `go.yaml.in/yaml/v3 v3.0.5` 与 `config.Load` 行为扩展；普通 block/flow YAML、注释、quoted/folded strings 与 JSON compatibility 已实现，duplicate/non-string key、多文档、alias/merge/tag、隐式高风险类型已拒绝；targeted/full race、vet、module、双架构构建通过，final Tier-3 独立终审完整覆盖且 P0/P1/P2/P3 均无，等待用户 Code Review |
+| 2026-08-31 | D3-a single-document YAML loader | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；受限对象图语义的 single-document YAML loader 与依赖边界已接受。D3 总项仍为 `IN_PROGRESS / Implemented`，不代表 SMTP Ready、hot-reload/restart owner、YAML resource cap 或目标 Linux credential 权限验证 |
+| 2026-08-31 | D3-b SMTP credential readiness gate | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md`、`m0-d/code-migration/result.md` | 用户批准导出内部 Go 组合契约；secure read 后才可由 active worker 宣布 Ready，失败/取消/重复 Run/late callback 不越过屏障，secret 全路径清零。checkpoint/final review 分别修复 worker error 泄密与 post-Ready sentinel collision 两个 P1；repair round 2 fresh delta review 通过，final P0/P1/P2/P3 均无，等待用户 Code Review。仅为 preliminary runtime gate，不代表真实 SMTP/TLS/队列或目标 Linux file-to-Ready |
+| 2026-08-31 | D3-b SMTP credential readiness gate | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；secure credential read 后的 active-worker Ready barrier、secret 清零与两轮 P1 repair 已接受。D3 总项仍为 `IN_PROGRESS / Implemented`，不代表真实 SMTP/TLS/队列或目标 Linux file-to-Ready |
+| 2026-08-31 | D3-c atomic logging reload/restart owner primitive | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md`、`m0-d/code-migration/result.md` | 用户批准导出内部 Go Runtime 契约；`slog.LevelVar` 原子发布 level，Reload 在同一临界区拒绝任一 restart-bound delta 且不部分更新。11 个 restart 字段、Schema policy drift、并发与 slog handler 集成测试通过；final CHILD_AGENT full+delta 复审 P0/P1/P2/P3 均无，等待用户 Code Review。不代表 production watcher/executable wiring 或目标 Linux native reload/restart |
+| 2026-08-31 | D3-c atomic logging reload/restart owner primitive | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；原子日志级别发布、restart-bound delta 整体拒绝、FieldPolicy drift 与并发/slog 集成测试已接受。D3 总项仍为 `IN_PROGRESS / Implemented`，不代表 production watcher/executable wiring、目标 Linux native reload/restart、YAML resource cap 或目标 Linux credential 权限验证 |
+| 2026-08-31 | D3-d YAML resource cap | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md`、`m0-d/code-migration/result.md` | 用户批准 64 KiB / 512 unique Nodes / maximum Node depth 32 的导出 `config.Load` 与 Contract 边界；exact/one-over 测试、targeted/full race、vet、module、Linux 双架构 build 通过，独立 Tier-3 full-scope review P0/P1/P2/P3 均无，等待用户 Code Review。不代表 parser benchmark、CI、commit-bound Evidence 或目标 Linux runtime |
+| 2026-08-31 | D3-d YAML resource cap | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；64 KiB 输入、512 unique Nodes、maximum Node depth 32 与 fixed sanitized failure 已接受。D3 总项仍为 `IN_PROGRESS / Implemented`，不代表 parser benchmark、CI、commit-bound Evidence、production wiring 或目标 Linux runtime |
+| 2026-08-31 | D3-e Linux native credential file-to-Ready integration | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md`、`m0-d/code-migration/result.md` | Ubuntu 22.04.5 WSL2 以 non-root `guard` 通过 production reader 的 0640/0440 Ready 与七项拒绝矩阵；临时 user/group、fixture、binary/script 均清理。初次 full-scope review 代码/测试 P0-P3 均无，Evidence repair round 1 补齐可复现记录后，fresh delta review 将缺口标为 resolved，最终 Coverage `COMPLETE`、Freshness `FRESH`、Gate `PASSED`；等待用户 Code Review。不代表 production packaging/systemd、persistent identity、parent trust、真实 SMTP 或 executable wiring |
+| 2026-08-31 | D3-e Linux native credential file-to-Ready integration | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；Ubuntu WSL2 non-root production-reader integration、九项 fixture matrix、cleanup 与 Evidence repair 已接受。D3 总项仍为 `IN_PROGRESS / Implemented`，不代表 production packaging/systemd、persistent identity、parent trust、真实 SMTP、installed file-to-Ready 或 executable wiring |
+| 2026-08-31 | B1-f Linux native SQLite SIGKILL→reopen integration | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-b/sqlite-result.json`、`m0-d/code-migration/result.md` | Ubuntu WSL2 production `Store.Open` committed/uncommitted matrix 初跑与 `count=20` 通过；targeted/full race、vet/module、双架构 build 与 cleanup 通过。Tier-3 checkpoint 无 findings；final review 的 Evidence P1/HANDOFF P2 经 repair round 1 fresh delta 标为 resolved，最终 P0-P3 均无、Coverage `COMPLETE`、Freshness `FRESH`、Gate `PASSED`，等待用户 Code Review。不代表 service/OS reboot、filesystem barrier、power loss、production executable 或 commit-bound Evidence |
+| 2026-08-31 | B1-f Linux native SQLite SIGKILL→reopen integration | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-b/sqlite-result.json`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；process SIGKILL committed/uncommitted reopen matrix 与 Evidence repair 已接受。B1 总项仍为 `IN_PROGRESS / Implemented`；不代表 service/OS reboot、filesystem barrier、power loss、production executable 或 commit-bound Evidence |
+| 2026-08-31 | B2-f Linux native Source generation restart/replay integration | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-b/identity-result.json`、`m0-c/source-slice/result.md`、`m0-d/code-migration/result.md` | 两个 fresh Linux helper 通过 production Store/Source adapter 验证旧 Draining+新 Open、双 receipt、连续 checkpoint、Delivery/Event ID 跨 clean restart 稳定且跨 generation 不碰撞；Ubuntu WSL2 初跑/count=20、全套验证与 Tier-3 code checkpoint/final review 通过。最终 `APPROVED_WITH_FOLLOWUPS`：无 P0/P1/P3，Windows Temp binary cleanup 为非阻断 P2；等待用户 Code Review。不代表真实 reader、copytruncate、Journald、crash、replay/reprocess refs、OS/power loss 或 executable |
+| 2026-08-31 | B2-f Linux native Source generation restart/replay integration | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-b/identity-result.json`、`m0-c/source-slice/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；clean cross-process generation/receipt/checkpoint restart-replay 与已声明的非阻断 Temp cleanup P2 已接受。B2 总项仍为 `IN_PROGRESS / Implemented`；真实 reader、copytruncate、Journald、transition crash、replay/reprocess refs、OS/power loss 与 executable 仍未验证 |
+| 2026-08-31 | B2-g Source generation transition SIGKILL/recovery integration | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-b/identity-result.json`、`m0-c/source-slice/result.md`、`m0-d/code-migration/result.md` | 两个 committed-boundary crash 窗口、session-local sequence reset、跨进程稳定 ID 与连续 checkpoint 已通过 Ubuntu WSL2 初跑/count=20 和全套验证。code checkpoint repair round 1 与 final Evidence repair round 2 最终均 `COMPLETE / FRESH / PASSED`，P0-P3 全无；等待用户 Code Review。不代表 transaction-internal crash、真实 reader/copytruncate、Coordinator replay/Parser 重评、Journald、refs、OS/power loss 或 executable |
+| 2026-08-31 | B2-g Source generation transition SIGKILL/recovery integration | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-b/identity-result.json`、`m0-c/source-slice/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；两个 committed-boundary SIGKILL 窗口、session-local sequence reset、跨进程稳定 ID、连续 checkpoint 与 Evidence repair 已接受。B2 总项仍为 `IN_PROGRESS / Implemented`；所有 transaction-internal crash、真实 reader/copytruncate、Coordinator replay/Parser 重评、Journald、refs、OS/power loss 与 executable 边界不变 |
+| 2026-08-31 | B2-h Linux native Journald cursor restart/replay integration | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-b/identity-result.json`、`m0-c/source-slice/result.md`、`m0-d/code-migration/result.md` | Ubuntu WSL2 两个真实 opaque cursor 经 production position/Delivery identity、双 terminal receipt、连续 checkpoint 与 fresh-process reopen 精确回读；初跑/count=20 无 SKIP，全套 race/vet/module/双架构 integration-test build 与 cleanup 通过。code repair round 1 与 final Evidence repair round 1 最终均 `COMPLETE / FRESH / PASSED`，P0-P3 全无；等待用户 Code Review。不代表 production Journald reader/Coordinator replay、cursor invalidation/vacuum/resume、完整 at-least-once、service/OS/power loss 或 commit-bound Evidence |
+| 2026-08-31 | B2-h Linux native Journald cursor restart/replay integration | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-b/identity-result.json`、`m0-c/source-slice/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；真实 opaque cursor 的 production identity/receipt/checkpoint fresh-process reopen、无 SKIP WSL matrix 与两轮 repair 已接受。B2 总项仍为 `IN_PROGRESS / Implemented`；production Journald reader/Coordinator replay、cursor invalidation/vacuum/resume、完整 at-least-once、service/OS/power loss 与 commit-bound Evidence 仍未验证 |
+| 2026-08-31 | B2-i Linux native processing transaction-internal SIGKILL/replay integration | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-b/identity-result.json`、`m0-c/source-slice/result.md`、`m0-d/code-migration/result.md` | production UnitOfWork 八项未提交写在精确 SIGKILL/fresh reopen 后全部不可见，receipt/checkpoint 不前进；direct UoW replay 后八表各一并直接推进 sequence-1 checkpoint。Ubuntu WSL2 初跑/count=20、全套验证、独立 code checkpoint 与 final full-scope review 均 `COMPLETE / FRESH / PASSED`，P0-P3 全无；等待用户 Code Review。不代表 Coordinator/Parser+Rule 重评、真实 reader、commit-unknown、Source-state internal crash、production checkpoint manager、完整 at-least-once、service/OS/power loss 或 commit-bound Evidence |
+| 2026-08-31 | B2-i Linux native processing transaction-internal SIGKILL/replay integration | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-b/identity-result.json`、`m0-c/source-slice/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；production UnitOfWork transaction-internal SIGKILL rollback、direct replay、direct sequence-1 checkpoint 与完整终审已接受。B2 总项仍为 `IN_PROGRESS / Implemented`；Coordinator/Parser+Rule 重评、真实 reader、commit-unknown、Source-state internal crash、production checkpoint manager、完整 at-least-once、service/OS/power loss 与 commit-bound Evidence 仍未验证 |
+| 2026-08-31 | B4-f IPC framing fail-closed matrix | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 现有 Linux Spike 的 allocation-before-cap、截断、严格 JSON、未知字段/版本/operation、多 JSON value、四操作 allowlist 与 fuzz seeds 已通过 Ubuntu WSL2 初跑/count=20、原 socket/`SO_PEERCRED` smoke、Linux vet、双架构编译和全仓回归。独立 code checkpoint 无 findings；final Evidence exact-recipe P1 经 repair round 1 fresh delta 标为 resolved，最终 `COMPLETE / FRESH / PASSED`、P0-P3 全无，等待用户 Code Review。不代表 production parser/object/Plan validator、跨 UID、systemd/capability、持续 fuzz、恢复、非 WSL Linux、executable 或 commit-bound Evidence |
+| 2026-08-31 | B4-f IPC framing fail-closed matrix | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 用户 Code Review 明确通过；framing fail-closed、四操作 allowlist、fuzz seeds 与 Evidence repair 已接受。用户同时重申 Enforcer 用于限制已攻陷 Agent 的权限，后续协议和实现不得接受任意命令，必须独立严格校验语义操作。B4 总项仍为 `IN_PROGRESS / Implemented`；production Schema/parser/object/Plan validator、跨 UID、systemd/capability、持续 fuzz、恢复、非 WSL Linux、executable 与 commit-bound Evidence 仍未验证 |
+| 2026-08-31 | B4-g formal IPC v1 request Schema 与安全 golden vectors | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `schema/ipc-v1.schema.json`、`schema/testdata/ipc-v1/`、`artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 四个 request operation 已冻结为递归 closed union；`ApplyManagedPlan` 仅能表达一个 domain 和一个 typed operation，协议不存在 command/args/binary/env/cwd 或任意 nftables 物理对象名。6 valid + 23 invalid golden、64 KiB/depth 8/token 4096/prefix 1024 exact/one-over、targeted/full race/vet/module 与 Linux 双架构 test compile 均通过；code checkpoint 两个 P2 已修复，final full-scope review 为 `COMPLETE / FRESH / APPROVED / PASSED`，P0-P3 全无，等待用户 Code Review。不代表 production predecoder/DTO/validator/socket/executor、真实 Snapshot/owner/capability/object-role 校验、跨 UID/systemd/root/capability、持续 fuzz 或 commit-bound Evidence |
 
 ## 7. 下一步队列
 
-1. C2 Backend health monitor + runtime ownership primitive 已获用户通过，状态为 `DONE / Implemented`；
-   该批只提供 process-local health lifecycle/read model，不代表真实 Enforcer/IPC source 或 executable。
-2. 回到 M0 下一条已满足依赖的 preliminary 工作；生产 intake/drain owner、30s timeout、
-   SIGTERM/crash/durability、真实 health source/可执行进程 composition/runtime startup 与真实进程 restart 仍需分别评估授权；
-   已完成的 62s SQLite→Fake 虚拟时间证据不替代这些生产验证。
-3. 补齐 D3 runtime：完整 YAML、SMTP Ready、hot-reload/restart 与目标 Linux
-   credential 权限；随后执行 C3、D5–D7 和 Linux SIGKILL/restart/durability。
-4. B3/B4 继续补齐生产等价隔离证据；保持 G18.1–G18.3 `FAIL`、M0 `NO-GO`。
+1. 当前 stale completion、receipt replay 与 Evidence 修复已获用户通过，状态为 `DONE / Implemented`；
+   C2 总项保持 `IN_PROGRESS / Implemented`，worktree Evidence 不冒充 commit-bound、CI 或 Linux runtime Evidence。
+2. C1 signal-aware lifecycle owner 已获用户 Code Review 通过，当前批为 `DONE / Implemented`；
+   C1 总项仍为 `IN_PROGRESS / Implemented`。该批不代表真实 Source reader/management intake、signal executable、
+   真实 30 秒墙钟 SIGTERM、进程 restart 或 Linux durability。
+3. D3-a single-document YAML loader 已获用户 Code Review 通过，当前为 `DONE / Implemented`。
+4. D3-b SMTP credential readiness gate 已获用户 Code Review 通过，当前为 `DONE / Implemented`；
+   D3 总项仍为 `IN_PROGRESS / Implemented`，不代表真实 SMTP/TLS/队列或目标 Linux file-to-Ready。
+5. D3-c atomic logging reload/restart owner primitive 已获用户 Code Review 通过，当前为
+   `DONE / Implemented`；D3 总项仍为 `IN_PROGRESS / Implemented`，不代表 production
+   watcher/executable wiring 或目标 Linux native reload/restart。
+6. D3-d YAML resource cap 已获用户 Code Review 通过，当前为 `DONE / Implemented`；D3 总项仍为
+   `IN_PROGRESS / Implemented`，不代表 parser benchmark、CI、commit-bound Evidence 或目标 Linux runtime。
+   D3-e Linux native credential file-to-Ready 已在 Ubuntu 22.04.5 WSL2 以 non-root `guard`
+   通过 9 项 production-reader integration；临时 user/group、fixture 与 binary 均已清理。targeted
+   package race、Linux integration vet、full race rerun/vet/module 与双架构 build 已通过。初次独立
+   full-scope review 对代码/测试未发现 P0/P1/P2/P3，但要求补全临时 fixture 的可复现 Evidence；
+   Evidence-only repair round 1 的 fresh delta review 已将缺口标为 resolved，最终 delivery gate
+   `PASSED`；用户 Code Review 已明确通过，当前批为 `DONE / Implemented`。D3 总项仍为
+   `IN_PROGRESS / Implemented`。B3/B4 与 production
+   packaging/systemd/parent trust 继续保持未验证；G18.1–G18.3 `FAIL`、M0 `NO-GO`。
+7. B1-f Linux native SQLite SIGKILL→reopen 已完成 test-only 实现与验证：Ubuntu WSL2
+   committed/uncommitted 两项在初跑及 `count=20` 均通过，targeted/full race、vet/module、
+   双架构 build、格式与 cleanup 通过；独立 final review repair round 1 后最终 gate `PASSED`，
+   用户 Code Review 已明确通过，当前为 `DONE / Implemented`。该批不代表 service/OS reboot、
+   filesystem barrier、power-loss durability、production executable 或 commit-bound Evidence。
+8. B2-f Linux native Source generation restart/replay 已完成 test-only 实现和独立终审：
+   两个 fresh helper 使用 production Store/Source adapter，Ubuntu WSL2 初跑与 `count=20`、全套
+   race/vet/module/双架构 build、格式和 diff-check 通过；final review 为
+   `APPROVED_WITH_FOLLOWUPS`，无 P0/P1/P3，唯一 P2 是 host policy 阻止删除的 Windows Temp
+   test binary。用户 Code Review 已明确通过，当前为 `DONE / Implemented`。
+   真实 File reader、copytruncate、Journald、crash、replay/reprocess refs、OS/power loss 与
+   production executable 保持未验证；B2 总项不提升为 Verified。
+9. B2-g Source generation transition SIGKILL/recovery 已完成 test-only 实现、Ubuntu WSL2
+   初跑/count=20 与全套验证。两个 committed-boundary 窗口均由父进程精确 SIGKILL 并 fresh
+   reopen；crash 前 checkpoint 不越过旧 generation，重启 session 从 sequence 1 开始。
+   Tier-3 checkpoint repair round 1 与 final Evidence repair round 2 已清零 P0-P3，当前为
+   用户 Code Review 已明确通过，当前为 `DONE / Implemented`。
+   transaction-internal crash、真实 reader/copytruncate、Coordinator replay/Parser 重评、Journald、
+   refs、OS/power loss 与 executable 仍未验证；B2 总项保持 `IN_PROGRESS / Implemented`。
+10. B2-h Linux native Journald cursor restart/replay 已完成 test-only 实现。Ubuntu WSL2
+    初跑与 `count=20` 均使用真实 opaque cursor 且无 SKIP；production identity/receipt/checkpoint
+    primitives 的 fresh-process reopen、全套 race/vet/module/双架构 integration-test build 与 cleanup
+    已通过。code checkpoint repair round 1 已清零 P0-P3；final full-scope review 的 cross-build
+    recipe P1 与 command-context P2 经 fixed-fixture Evidence repair round 1 后，fresh delta review
+    为 `COMPLETE / FRESH / APPROVED` 且 P0-P3 全无。用户 Code Review 已明确通过，当前为
+    `DONE / Implemented`。
+    production Journald reader/Coordinator replay、cursor invalidation/vacuum/resume、完整 at-least-once、
+    Parser 重评、Audit/Metric/Health、service/OS/power loss 与 commit-bound Evidence 仍未验证；
+    B2 总项保持 `IN_PROGRESS / Implemented`。
+11. B2-i Linux native processing transaction-internal SIGKILL/replay 已完成 test-only 实现。
+    fresh writer 在八类 production UnitOfWork writes staged、Commit 前由父进程精确 SIGKILL；
+    fresh reopen 断言八表/receipt/checkpoint 全空，直接 UoW replay 后八表各一、receipt 精确且
+    checkpoint sequence 1。Ubuntu WSL2 初跑/count=20 无 SKIP，全套 race/vet/module/双架构
+    integration-test build 与 cleanup 已通过；Tier-3 code checkpoint 与 final full-scope review 均为
+    `COMPLETE / FRESH / PASSED`，P0-P3 全无；用户 Code Review 已明确通过，当前为
+    `DONE / Implemented`。
+    Coordinator/current Parser+Rule 重评、真实 reader、commit-unknown、Source-state
+    internal crash、production checkpoint manager、OS/power loss 与 commit-bound Evidence 仍未验证；
+    B2/C1 总项均保持 `IN_PROGRESS / Implemented`。
+12. B4-f IPC framing fail-closed matrix 已完成现有 Linux Spike 的内部 decoder 重构与 test-only
+    增量。12 项 table case 覆盖截断 prefix/payload、非法 JSON、未知字段/版本/operation、多 JSON
+    value、四个允许 operation 与超限分配前拒绝；4 个 fuzz seed、Ubuntu WSL2 初跑/count=20、
+    原 socket/`SO_PEERCRED` smoke、Linux vet、双架构 test/main compile、全仓回归与 cleanup 已通过。
+    独立 Tier-3 code checkpoint 为 `COMPLETE / FRESH / PASSED`，P0-P3 全无；首次 final
+    full-scope review 的 exact PowerShell→WSL recipe P1 已用固定新 fixture 完整重跑并修复，
+    fresh Evidence-only delta review 将其标为 resolved；最终 `COMPLETE / FRESH / APPROVED / PASSED`，
+    用户 Code Review 已明确通过，当前为 `DONE / Implemented`。Windows 全仓 race 因 `linux` build
+    tag 不覆盖本 Spike，不记为 targeted race。
+    production IPC Schema/parser/object/Plan validator、跨 UID、systemd/capability、持续 fuzz、
+    timeout/cancel/restart、非 WSL Linux 与 commit-bound Evidence 仍未验证；B4 总项保持
+    `IN_PROGRESS / Implemented`，G18.1–G18.3 保持 `FAIL`，M0 保持 `NO-GO`。
+13. B4-g formal IPC v1 request Schema 与安全 golden vectors 已完成：四个 operation 均为递归
+    closed typed union；`ApplyManagedPlan` 一次仅允许一个 domain 和一个 typed operation，Agent 无法在
+    request 中携带 shell command、binary/env/cwd 或任意 nftables 物理对象名。6 个 valid、23 个
+    invalid fixture，以及 request bytes、depth、token、prefix exact/one-over 与 fuzz seed invariants
+    已通过 targeted/full race、vet、module 和 Linux amd64/arm64 test compile。code checkpoint 的两个
+    P2 已修复；final full-scope review 为 `COMPLETE / FRESH / APPROVED / PASSED`，P0-P3 全无，
+    当前为 `REVIEW / Implemented`，等待用户 Code Review。
+    production predecoder/DTO/validator/socket/executor、真实 Snapshot digest/owner/capability/object-role
+    enforcement、跨 UID/systemd/root capability、持续 fuzz 与 commit-bound Evidence 仍未验证；B4 总项、
+    G18.1–G18.3 与 M0 结论不变。

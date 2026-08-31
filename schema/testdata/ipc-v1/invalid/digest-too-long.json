@@ -1,0 +1,3 @@
+{
+  "version":1,"operation":"ApplyManagedPlan","payload":{"domain":"infrastructure","owner_version":"guard/v1","basis_snapshot_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","infrastructure_revision":1,"operations":[{"kind":"ensure_infrastructure","schema_version":1}]}
+}

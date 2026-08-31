@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "operation": "RemoveManagedInfrastructure",
+  "payload": {"expected_owner_version": "guard/v1"}
+}

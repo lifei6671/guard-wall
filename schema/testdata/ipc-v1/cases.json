@@ -1,0 +1,35 @@
+{
+  "valid": [
+    "valid/probe-capabilities.json",
+    "valid/snapshot-managed.json",
+    "valid/apply-infrastructure.json",
+    "valid/apply-policy.json",
+    "valid/apply-target.json",
+    "valid/remove-managed-infrastructure.json"
+  ],
+  "invalid": [
+    {"path": "invalid/execute-shell.json", "layer": "schema"},
+    {"path": "invalid/command-field.json", "layer": "schema"},
+    {"path": "invalid/binary-env-cwd.json", "layer": "schema"},
+    {"path": "invalid/arbitrary-object-names.json", "layer": "schema"},
+    {"path": "invalid/unknown-nested-field.json", "layer": "schema"},
+    {"path": "invalid/version-2.json", "layer": "schema"},
+    {"path": "invalid/missing-payload.json", "layer": "schema"},
+    {"path": "invalid/mixed-domain-plan.json", "layer": "schema"},
+    {"path": "invalid/zero-operations.json", "layer": "schema"},
+    {"path": "invalid/two-operations.json", "layer": "schema"},
+    {"path": "invalid/invalid-owner.json", "layer": "schema"},
+    {"path": "invalid/duplicate-policy-prefix.json", "layer": "schema"},
+    {"path": "invalid/digest-too-long.json", "layer": "schema"},
+    {"path": "invalid/duplicate-scope.json", "layer": "schema"},
+    {"path": "invalid/duplicate-key.json", "layer": "decoder", "error_code": "duplicate_key"},
+    {"path": "invalid/noncanonical-target.json", "layer": "semantic", "error_code": "noncanonical_prefix"},
+    {"path": "invalid/noncanonical-policy-prefix.json", "layer": "semantic", "error_code": "noncanonical_prefix"},
+    {"path": "invalid/unsorted-policy-prefixes.json", "layer": "semantic", "error_code": "noncanonical_order"},
+    {"path": "invalid/mandatory-protected-missing.json", "layer": "semantic", "error_code": "protected_policy_missing"},
+    {"path": "invalid/absent-native-timeout.json", "layer": "semantic", "error_code": "invalid_timeout"},
+    {"path": "invalid/native-without-expiry.json", "layer": "semantic", "error_code": "invalid_timeout"},
+    {"path": "invalid/none-with-expiry.json", "layer": "semantic", "error_code": "invalid_timeout"},
+    {"path": "invalid/protected-loopback-target.json", "layer": "semantic", "error_code": "protected_target"}
+  ]
+}

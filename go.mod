@@ -2,7 +2,10 @@ module github.com/lifei6671/guard-wall
 
 go 1.27.0
 
-require modernc.org/sqlite v1.57.0
+require (
+	go.yaml.in/yaml/v3 v3.0.5
+	modernc.org/sqlite v1.57.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

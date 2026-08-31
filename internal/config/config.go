@@ -83,9 +83,9 @@ type Config struct {
 	SMTP          SMTP    `json:"smtp"`
 }
 
-// Load reads one JSON configuration document. JSON is also a valid YAML 1.2
-// document, so this provides the dependency-free M0 loader without claiming
-// support for the wider YAML syntax surface.
+// Load reads one YAML configuration document, applies the authoritative JSON
+// Schema defaults and validation, then returns the typed Phase 1 config. JSON
+// remains accepted as a YAML 1.2 subset.
 func Load(ctx context.Context, reader io.Reader) (Config, error) {
 	if ctx == nil {
 		return Config{}, fmt.Errorf("load config: context is required")
@@ -97,18 +97,9 @@ func Load(ctx context.Context, reader io.Reader) (Config, error) {
 		return Config{}, fmt.Errorf("load config: %w", err)
 	}
 
-	decoder := json.NewDecoder(reader)
-	decoder.UseNumber()
-	var document any
-	if err := decoder.Decode(&document); err != nil {
+	document, err := decodeYAMLDocument(reader)
+	if err != nil {
 		return Config{}, fmt.Errorf("load config: decode document: %w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			err = fmt.Errorf("multiple JSON values")
-		}
-		return Config{}, fmt.Errorf("load config: trailing content: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return Config{}, fmt.Errorf("load config: %w", err)

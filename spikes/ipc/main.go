@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,13 @@ import (
 )
 
 const maxFrame = 1 << 20
+
+var allowedOperations = map[string]struct{}{
+	"ProbeCapabilities":           {},
+	"SnapshotManaged":             {},
+	"ApplyManagedPlan":            {},
+	"RemoveManagedInfrastructure": {},
+}
 
 type request struct {
 	Version   int    `json:"version"`
@@ -51,6 +59,39 @@ func peerUID(connection *net.UnixConn) (uint32, error) {
 	return credential.Uid, nil
 }
 
+func decodeFrame(reader io.Reader) (uint32, request, string) {
+	var length uint32
+	if err := binary.Read(reader, binary.BigEndian, &length); err != nil {
+		return 0, request{}, "truncated_length"
+	}
+	if length > maxFrame {
+		return length, request{}, "frame_too_large"
+	}
+
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return length, request{}, "truncated_payload"
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	var decoded request
+	if err := decoder.Decode(&decoded); err != nil {
+		return length, request{}, "invalid_json"
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return length, request{}, "invalid_json"
+	}
+	if decoded.Version != 1 {
+		return length, decoded, "unsupported_version"
+	}
+	if _, ok := allowedOperations[decoded.Operation]; !ok {
+		return length, decoded, "operation_rejected"
+	}
+	return length, decoded, "operation_allowed"
+}
+
 func acceptOne(listener *net.UnixListener, name string) caseResult {
 	connection, err := listener.AcceptUnix()
 	if err != nil {
@@ -68,41 +109,18 @@ func acceptOne(listener *net.UnixListener, name string) caseResult {
 		return result
 	}
 
-	var length uint32
-	if err := binary.Read(connection, binary.BigEndian, &length); err != nil {
-		result.Reason = err.Error()
-		return result
-	}
+	length, decoded, reason := decodeFrame(connection)
 	result.FrameLength = length
-	if length > maxFrame {
-		result.Passed = name == "oversized_frame"
-		result.Reason = "frame_too_large"
-		return result
-	}
-
-	payload := make([]byte, length)
-	if _, err := io.ReadFull(connection, payload); err != nil {
-		result.Reason = err.Error()
-		return result
-	}
-	var decoded request
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		result.Reason = "invalid_json"
-		return result
-	}
 	result.Operation = decoded.Operation
-	if decoded.Version != 1 {
-		result.Reason = "unsupported_version"
-		return result
+	result.Reason = reason
+	switch name {
+	case "allowed_operation":
+		result.Passed = reason == "operation_allowed"
+	case "disallowed_operation":
+		result.Passed = reason == "operation_rejected"
+	case "oversized_frame":
+		result.Passed = reason == "frame_too_large"
 	}
-	if decoded.Operation != "ProbeCapabilities" {
-		result.Passed = name == "disallowed_operation"
-		result.Reason = "operation_rejected"
-		return result
-	}
-
-	result.Passed = name == "allowed_operation"
-	result.Reason = "operation_allowed"
 	return result
 }
 
