@@ -75,6 +75,113 @@ func TestInfrastructureAndPolicyRequirePhysicalPostcondition(t *testing.T) {
 	}
 }
 
+func TestExpiredPresentTargetIsFencedBeforeProbeOrAttempt(t *testing.T) {
+	tests := []struct {
+		name        string
+		expiryDelta time.Duration
+		wantExpired bool
+	}{
+		{name: "before expiry", expiryDelta: time.Nanosecond},
+		{name: "at expiry", wantExpired: true},
+		{name: "after expiry", expiryDelta: -time.Nanosecond, wantExpired: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clock := newManualClock()
+			backend := fake.NewBackend()
+			controller := newTestController(t, backend, clock, &memoryAudit{})
+			target := netip.MustParsePrefix("192.0.2.4/32")
+			intent := targetIntent(target, 1)
+			expiresAt := clock.Now().Add(test.expiryDelta)
+			intent.EffectiveUntil = &expiresAt
+			intent.TimeoutMode = core.TimeoutNative
+			desired := desiredSnapshot(intent)
+			setDesired(t, controller, desired)
+
+			result, err := controller.Execute(context.Background(), targetPlan(desired, target))
+			if test.wantExpired {
+				if !errors.Is(err, errTargetIntentExpired) {
+					t.Fatalf("Execute() error=%v, want expired target sentinel", err)
+				}
+				if result != (ExecutionResult{}) {
+					t.Fatalf("Execute() result=%+v, want empty result", result)
+				}
+				probes, applies := backend.Counts()
+				if probes != 0 || applies != 0 {
+					t.Fatalf("expired target crossed mutation boundary: probes=%d applies=%d", probes, applies)
+				}
+				if _, _, exists := controller.TargetState(target); exists {
+					t.Fatal("expired target consumed retry budget")
+				}
+				return
+			}
+
+			if err != nil || result.Apply.Kind != fake.ResultConfirmed {
+				t.Fatalf("Execute() before expiry: result=%+v err=%v", result, err)
+			}
+			probes, applies := backend.Counts()
+			if probes != 1 || applies != 1 {
+				t.Fatalf("allowed target calls: probes=%d applies=%d, want 1/1", probes, applies)
+			}
+			_, state, exists := controller.TargetState(target)
+			if !exists || state.AttemptCount != 1 || state.Status != core.ReconcileConverged {
+				t.Fatalf("allowed target retry state=%+v exists=%t", state, exists)
+			}
+		})
+	}
+}
+
+func TestExpiredStaleTargetReturnsStalePlan(t *testing.T) {
+	clock := newManualClock()
+	backend := fake.NewBackend()
+	controller := newTestController(t, backend, clock, &memoryAudit{})
+	target := netip.MustParsePrefix("192.0.2.4/32")
+	current := desiredSnapshot(targetIntent(target, 2))
+	setDesired(t, controller, current)
+	staleIntent := targetIntent(target, 1)
+	expiresAt := clock.Now()
+	staleIntent.EffectiveUntil = &expiresAt
+	staleIntent.TimeoutMode = core.TimeoutNative
+	stale := desiredSnapshot(staleIntent)
+
+	if _, err := controller.Execute(context.Background(), targetPlan(stale, target)); !errors.Is(err, ErrStalePlan) {
+		t.Fatalf("Execute() error=%v, want stale Plan", err)
+	}
+	probes, applies := backend.Counts()
+	if probes != 0 || applies != 0 {
+		t.Fatalf("stale expired target crossed mutation boundary: probes=%d applies=%d", probes, applies)
+	}
+}
+
+func TestTargetExpiringAfterAttemptPersistenceDoesNotApply(t *testing.T) {
+	clock := newExpirationStepClock(4)
+	backend := fake.NewBackend()
+	controller := newTestController(t, backend, clock, &memoryAudit{})
+	target := netip.MustParsePrefix("192.0.2.4/32")
+	intent := targetIntent(target, 1)
+	expiresAt := clock.base.Add(time.Second)
+	intent.EffectiveUntil = &expiresAt
+	intent.TimeoutMode = core.TimeoutNative
+	desired := desiredSnapshot(intent)
+	setDesired(t, controller, desired)
+
+	if _, err := controller.Execute(context.Background(), targetPlan(desired, target)); !errors.Is(err, errTargetIntentExpired) {
+		t.Fatalf("Execute() error=%v, want expired target sentinel", err)
+	}
+	probes, applies := backend.Counts()
+	if probes != 0 || applies != 0 {
+		t.Fatalf("post-persistence expiry crossed mutation boundary: probes=%d applies=%d", probes, applies)
+	}
+	_, state, exists := controller.TargetState(target)
+	if !exists || state.AttemptCount != 1 || state.Status != core.ReconcileDegraded || state.LastErrorCode != "expired_before_apply" {
+		t.Fatalf("post-persistence expiry state=%+v exists=%t", state, exists)
+	}
+	if controller.ProbeRequired() {
+		t.Fatal("expiry before Apply retained a false Probe requirement")
+	}
+}
+
 func TestConfirmedWithoutPhysicalPostconditionDoesNotConverge(t *testing.T) {
 	backend := &confirmedWithoutMutationBackend{Backend: fake.NewBackend()}
 	controller := newTestController(t, backend, newManualClock(), &memoryAudit{})
@@ -172,6 +279,49 @@ func TestUnknownNotAppliedResultBuildsFreshPlanAfterProbe(t *testing.T) {
 	probes, applies := backend.Counts()
 	if probes != 2 || applies != 2 {
 		t.Fatalf("unexpected retry sequence: probes=%d applies=%d", probes, applies)
+	}
+}
+
+func TestTargetExpiringDuringRequiredProbeDoesNotBeginAnotherAttempt(t *testing.T) {
+	clock := newManualClock()
+	backend := newBlockingProbeBackend(fake.NewBackend())
+	controller := newTestController(t, backend, clock, &memoryAudit{})
+	target := netip.MustParsePrefix("192.0.2.4/32")
+	intent := targetIntent(target, 1)
+	expiresAt := clock.Now().Add(2 * time.Second)
+	intent.EffectiveUntil = &expiresAt
+	intent.TimeoutMode = core.TimeoutNative
+	desired := desiredSnapshot(intent)
+	setDesired(t, controller, desired)
+	plan := targetPlan(desired, target)
+	if err := backend.Backend.QueueOutcome(fake.DomainTarget, fake.QueuedOutcome{Kind: fake.ResultUnknown, ErrorCode: "timeout"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.Execute(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(time.Second)
+	done := make(chan error, 1)
+	go func() {
+		_, err := controller.Execute(context.Background(), plan)
+		done <- err
+	}()
+	<-backend.entered
+	clock.Advance(time.Second)
+	close(backend.release)
+	if err := <-done; !errors.Is(err, errTargetIntentExpired) {
+		t.Fatalf("Execute() error=%v, want expired target sentinel", err)
+	}
+	probes, applies := backend.Backend.Counts()
+	if probes != 1 || applies != 1 {
+		t.Fatalf("expiry during Probe calls: probes=%d applies=%d, want 1/1", probes, applies)
+	}
+	_, state, exists := controller.TargetState(target)
+	if !exists || state.AttemptCount != 1 || state.Status != core.ReconcileRetryWaiting {
+		t.Fatalf("expiry during Probe changed retry budget: state=%+v exists=%t", state, exists)
+	}
+	if !controller.ProbeRequired() {
+		t.Fatal("expiry during Probe cleared the existing ambiguous-result barrier")
 	}
 }
 
@@ -519,6 +669,30 @@ type manualClock struct {
 	now time.Time
 }
 
+type expirationStepClock struct {
+	mu           sync.Mutex
+	base         time.Time
+	calls        int
+	expireAtCall int
+}
+
+func newExpirationStepClock(expireAtCall int) *expirationStepClock {
+	return &expirationStepClock{
+		base:         time.Unix(1_700_000_000, 0).UTC(),
+		expireAtCall: expireAtCall,
+	}
+}
+
+func (c *expirationStepClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if c.calls >= c.expireAtCall {
+		return c.base.Add(time.Second)
+	}
+	return c.base
+}
+
 func newManualClock() *manualClock {
 	return &manualClock{now: time.Unix(1_700_000_000, 0).UTC()}
 }
@@ -708,12 +882,13 @@ func targetIntent(target netip.Prefix, generation core.TargetEnforcementGenerati
 
 func targetIntentWithScope(target netip.Prefix, generation core.TargetEnforcementGeneration, scope core.EnforcementScope) core.NormalizedTargetEnforcementIntent {
 	return core.NormalizedTargetEnforcementIntent{
-		NodeID:          testNodeID,
-		CanonicalTarget: target,
-		BanMembership:   core.BanPresent,
-		Scopes:          scope,
-		AddressFamily:   core.AddressFamilyIPv4,
-		Generation:      generation,
+		NodeID:                  testNodeID,
+		CanonicalTarget:         target,
+		BanMembership:           core.BanPresent,
+		Scopes:                  scope,
+		AddressFamily:           core.AddressFamilyIPv4,
+		BackendAttributesDigest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Generation:              generation,
 	}
 }
 

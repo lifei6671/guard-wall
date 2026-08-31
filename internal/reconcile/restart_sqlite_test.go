@@ -74,7 +74,7 @@ func TestPersistentControllerRecoversUnknownTargetAcrossSQLiteReopen(t *testing.
 
 			database := openRestartStore(t, ctx, databasePath, clock.Now())
 			controller := newPersistentTestController(t, ctx, database, backend, clock, audit)
-			setDesired(t, controller, desired)
+			setPersistentDesired(t, ctx, database, controller, desired)
 			if err := backend.QueueOutcome(test.domain, fake.QueuedOutcome{
 				Kind: fake.ResultUnknown, Mutate: test.mutate, ErrorCode: "timeout",
 			}); err != nil {
@@ -94,7 +94,7 @@ func TestPersistentControllerRecoversUnknownTargetAcrossSQLiteReopen(t *testing.
 			clock.Advance(time.Second)
 			database = openRestartStore(t, ctx, databasePath, clock.Now())
 			controller = newPersistentTestController(t, ctx, database, backend, clock, audit)
-			setDesired(t, controller, desired)
+			setPersistentDesired(t, ctx, database, controller, desired)
 			if !controller.ProbeRequired() {
 				t.Fatal("SQLite reopen lost the Probe barrier")
 			}
@@ -124,7 +124,7 @@ func TestPersistentControllerRecoversUnknownTargetAcrossSQLiteReopen(t *testing.
 			database = openRestartStore(t, ctx, databasePath, clock.Now())
 			defer database.Close()
 			controller = newPersistentTestController(t, ctx, database, backend, clock, audit)
-			setDesired(t, controller, desired)
+			setPersistentDesired(t, ctx, database, controller, desired)
 			durable, ok := retryStateForPlan(controller, plan)
 			if !ok || durable.Status != core.ReconcileConverged || durable.AttemptCount != test.wantAttempts {
 				t.Fatalf("second reopen ledger = %+v, exists=%v", durable, ok)
@@ -162,7 +162,7 @@ func TestPersistentControllerKeepsAmbiguousProbeAcrossAdministratorRetry(t *test
 
 	database := openRestartStore(t, ctx, databasePath, clock.Now())
 	controller := newPersistentTestController(t, ctx, database, backend, clock, audit)
-	setDesired(t, controller, desired)
+	setPersistentDesired(t, ctx, database, controller, desired)
 	if err := backend.QueueOutcome(fake.DomainTarget, fake.QueuedOutcome{Kind: fake.ResultUnknown, ErrorCode: "timeout"}); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestPersistentControllerKeepsAmbiguousProbeAcrossAdministratorRetry(t *test
 	database = openRestartStore(t, ctx, databasePath, clock.Now())
 	defer database.Close()
 	controller = newPersistentTestController(t, ctx, database, backend, clock, audit)
-	setDesired(t, controller, desired)
+	setPersistentDesired(t, ctx, database, controller, desired)
 	key, pending, ok := controller.TargetState(target)
 	if !ok || key.Epoch != 1 || pending.Status != core.ReconcilePending || pending.AttemptCount != 0 {
 		t.Fatalf("reopened administrator retry ledger: key=%+v state=%+v exists=%v", key, pending, ok)
@@ -218,7 +218,7 @@ func TestPersistentControllerDoesNotResetExhaustedBudgetAcrossSQLiteReopen(t *te
 
 	database := openRestartStore(t, ctx, databasePath, clock.Now())
 	controller := newPersistentTestController(t, ctx, database, backend, clock, &memoryAudit{})
-	setDesired(t, controller, desired)
+	setPersistentDesired(t, ctx, database, controller, desired)
 	for attempt := uint32(1); attempt <= maxMutationAttempts; attempt++ {
 		if attempt > 1 {
 			clock.Advance(retryBackoff[attempt-2])
@@ -244,7 +244,7 @@ func TestPersistentControllerDoesNotResetExhaustedBudgetAcrossSQLiteReopen(t *te
 	database = openRestartStore(t, ctx, databasePath, clock.Now())
 	defer database.Close()
 	controller = newPersistentTestController(t, ctx, database, backend, clock, &memoryAudit{})
-	setDesired(t, controller, desired)
+	setPersistentDesired(t, ctx, database, controller, desired)
 	if _, err := controller.Execute(ctx, plan); !errors.Is(err, ErrBudgetExhausted) {
 		t.Fatalf("post-reopen Execute() error = %v, want budget exhausted", err)
 	}
@@ -268,7 +268,7 @@ func TestPersistentControllerClearsOlderEpochProbeAfterDesiredGenerationAdvances
 
 	database := openRestartStore(t, ctx, databasePath, clock.Now())
 	controller := newPersistentTestController(t, ctx, database, backend, clock, &memoryAudit{})
-	setDesired(t, controller, desiredV1)
+	setPersistentDesired(t, ctx, database, controller, desiredV1)
 	if err := backend.QueueOutcome(fake.DomainTarget, fake.QueuedOutcome{Kind: fake.ResultUnknown, ErrorCode: "timeout"}); err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +290,7 @@ func TestPersistentControllerClearsOlderEpochProbeAfterDesiredGenerationAdvances
 	database = openRestartStore(t, ctx, databasePath, clock.Now())
 	defer database.Close()
 	controller = newPersistentTestController(t, ctx, database, backend, clock, &memoryAudit{})
-	setDesired(t, controller, desiredV2)
+	setPersistentDesired(t, ctx, database, controller, desiredV2)
 	result, err := controller.Execute(ctx, targetPlan(desiredV2, target))
 	if err != nil || result.Apply.Kind != fake.ResultConfirmed {
 		t.Fatalf("generation-advanced Execute(): result=%+v err=%v", result, err)
@@ -313,7 +313,7 @@ func TestPersistentControllerClearsSupersededProbeAfterGenerationAdvancesWithout
 	database := openRestartStore(t, ctx, filepath.Join(t.TempDir(), "guard.db"), clock.Now())
 	defer database.Close()
 	controller := newPersistentTestController(t, ctx, database, backend, clock, &memoryAudit{})
-	setDesired(t, controller, desiredV1)
+	setPersistentDesired(t, ctx, database, controller, desiredV1)
 	if err := backend.QueueOutcome(fake.DomainTarget, fake.QueuedOutcome{Kind: fake.ResultUnknown, ErrorCode: "timeout"}); err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestPersistentControllerClearsSupersededProbeAfterGenerationAdvancesWithout
 	desiredV2.Targets = []core.NormalizedTargetEnforcementIntent{
 		targetIntentWithScope(target, 2, core.ScopeForward),
 	}
-	setDesired(t, controller, desiredV2)
+	setPersistentDesired(t, ctx, database, controller, desiredV2)
 
 	result, err := controller.Execute(ctx, targetPlan(desiredV2, target))
 	if err != nil || result.Apply.Kind != fake.ResultConfirmed {
@@ -362,14 +362,14 @@ func TestPersistentControllerResolvesPostApplyCommitUnknownByReadback(t *testing
 			database := openRestartStore(t, ctx, filepath.Join(t.TempDir(), "guard.db"), clock.Now())
 			defer database.Close()
 			unknown := &commitUnknownTransitionStore{
-				RetryStateStore: database,
-				unknownOnCall:   2,
-				commit:          test.commitFinal,
+				PersistentStateStore: database,
+				unknownOnCall:        2,
+				commit:               test.commitFinal,
 			}
 			controller := newPersistentTestController(t, ctx, unknown, backend, clock, &memoryAudit{})
 			target := netip.MustParsePrefix("192.0.2.4/32")
 			desired := desiredSnapshot(targetIntent(target, 1))
-			setDesired(t, controller, desired)
+			setPersistentDesired(t, ctx, database, controller, desired)
 
 			first, err := controller.Execute(ctx, targetPlan(desired, target))
 			if test.wantFirstError {
@@ -407,16 +407,16 @@ func TestPersistentControllerReloadsCommitUnknownWhenImmediateReadbackFails(t *t
 	database := openRestartStore(t, ctx, filepath.Join(t.TempDir(), "guard.db"), clock.Now())
 	defer database.Close()
 	unknown := &commitUnknownTransitionStore{
-		RetryStateStore: database,
-		unknownOnCall:   2,
-		commit:          true,
-		failLoadOnCall:  2,
-		loadErr:         context.Canceled,
+		PersistentStateStore: database,
+		unknownOnCall:        2,
+		commit:               true,
+		failLoadOnCall:       2,
+		loadErr:              context.Canceled,
 	}
 	controller := newPersistentTestController(t, ctx, unknown, backend, clock, &memoryAudit{})
 	target := netip.MustParsePrefix("192.0.2.4/32")
 	desired := desiredSnapshot(targetIntent(target, 1))
-	setDesired(t, controller, desired)
+	setPersistentDesired(t, ctx, database, controller, desired)
 
 	if _, err := controller.Execute(ctx, targetPlan(desired, target)); !errors.Is(err, core.ErrReconcileCommitUnknown) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("first Execute() error = %v, want commit unknown plus canceled readback", err)
@@ -467,7 +467,7 @@ func TestPersistentControllerRestoresBackoffForPreApplyCrash(t *testing.T) {
 	database = openRestartStore(t, ctx, databasePath, clock.Now())
 	defer database.Close()
 	controller := newPersistentTestController(t, ctx, database, backend, clock, &memoryAudit{})
-	setDesired(t, controller, desired)
+	setPersistentDesired(t, ctx, database, controller, desired)
 	if _, err := controller.Execute(ctx, targetPlan(desired, target)); !errors.Is(err, ErrRetryNotReady) {
 		t.Fatalf("immediate recovery error = %v, want retry not ready", err)
 	}
@@ -525,7 +525,7 @@ func TestPersistentControllerRestoresExhaustedPreApplyCrashAsDegraded(t *testing
 	database = openRestartStore(t, ctx, databasePath, clock.Now())
 	defer database.Close()
 	controller := newPersistentTestController(t, ctx, database, backend, clock, &memoryAudit{})
-	setDesired(t, controller, desired)
+	setPersistentDesired(t, ctx, database, controller, desired)
 	if _, err := controller.Execute(ctx, targetPlan(desired, target)); !errors.Is(err, ErrBudgetExhausted) {
 		t.Fatalf("exhausted Applying recovery error = %v", err)
 	}
@@ -545,11 +545,11 @@ func TestPersistentControllerDoesNotApplyWhenPreMutationPersistenceFails(t *test
 	backend := fake.NewBackend()
 	database := openRestartStore(t, ctx, filepath.Join(t.TempDir(), "guard.db"), clock.Now())
 	defer database.Close()
-	failing := &failingTransitionStore{RetryStateStore: database, err: errors.New("disk unavailable")}
+	failing := &failingTransitionStore{PersistentStateStore: database, err: errors.New("disk unavailable")}
 	controller := newPersistentTestController(t, ctx, failing, backend, clock, &memoryAudit{})
 	target := netip.MustParsePrefix("192.0.2.4/32")
 	desired := desiredSnapshot(targetIntent(target, 1))
-	setDesired(t, controller, desired)
+	setPersistentDesired(t, ctx, database, controller, desired)
 
 	if _, err := controller.Execute(ctx, targetPlan(desired, target)); err == nil {
 		t.Fatal("Execute() succeeded despite failed pre-mutation persistence")
@@ -560,13 +560,117 @@ func TestPersistentControllerDoesNotApplyWhenPreMutationPersistenceFails(t *test
 	}
 }
 
+func TestPersistentControllerPersistsCompleteObservedAndProbeFailureUnknown(t *testing.T) {
+	ctx := context.Background()
+	clock := newManualClock()
+	backend := newHealthFlapBackend()
+	database := openRestartStore(t, ctx, filepath.Join(t.TempDir(), "guard.db"), clock.Now())
+	defer database.Close()
+	controller := newPersistentTestController(t, ctx, database, backend, clock, &memoryAudit{})
+	target := netip.MustParsePrefix("192.0.2.40/32")
+	desired := desiredSnapshot(targetIntent(target, 1))
+	setPersistentDesired(t, ctx, database, controller, desired)
+
+	for _, plan := range []fake.OperationPlan{
+		infrastructurePlan(desired),
+		policyPlan(desired),
+		targetPlan(desired, target),
+	} {
+		result, err := controller.Execute(ctx, plan)
+		if err != nil || result.Apply.Kind != fake.ResultConfirmed {
+			t.Fatalf("converge domain %d: result=%+v err=%v", plan.Domain, result, err)
+		}
+	}
+
+	observed, err := database.LoadObservedFirewallSnapshot(ctx, testNodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Infrastructure == nil || observed.Infrastructure.Presence != core.ObservedPresencePresent ||
+		observed.Infrastructure.ConfirmedRevision != desired.InfrastructureRevision {
+		t.Fatalf("infrastructure Observed = %+v", observed.Infrastructure)
+	}
+	if observed.Policy == nil || observed.Policy.Presence != core.ObservedPresencePresent ||
+		observed.Policy.ConfirmedRevision != desired.PolicyRevision {
+		t.Fatalf("policy Observed = %+v", observed.Policy)
+	}
+	if len(observed.Targets) != 1 || observed.Targets[0].BanMembership != core.ObservedMembershipPresent ||
+		observed.Targets[0].ConfirmedGeneration != desired.Targets[0].Generation {
+		t.Fatalf("target Observed = %+v", observed.Targets)
+	}
+
+	backend.healthy.Store(false)
+	outcome, err := controller.probeRecovery(ctx, backendHealthProbeTimeout)
+	if err != nil || !errors.Is(outcome.backendErr, errBackendUnavailable) {
+		t.Fatalf("failed recovery Probe outcome = %+v, error = %v", outcome, err)
+	}
+	observed, err = database.LoadObservedFirewallSnapshot(ctx, testNodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Infrastructure == nil || observed.Infrastructure.Presence != core.ObservedPresenceUnknown ||
+		observed.Infrastructure.ConfirmedRevision != 0 || observed.Infrastructure.LastErrorCode != probeFailureErrorCode {
+		t.Fatalf("failed-Probe infrastructure Observed = %+v", observed.Infrastructure)
+	}
+	if observed.Policy == nil || observed.Policy.Presence != core.ObservedPresenceUnknown ||
+		observed.Policy.ConfirmedRevision != 0 || observed.Policy.LastErrorCode != probeFailureErrorCode {
+		t.Fatalf("failed-Probe policy Observed = %+v", observed.Policy)
+	}
+	if len(observed.Targets) != 1 || observed.Targets[0].BanMembership != core.ObservedMembershipUnknown ||
+		observed.Targets[0].ConfirmedGeneration != 0 || observed.Targets[0].LastErrorCode != probeFailureErrorCode {
+		t.Fatalf("failed-Probe target Observed = %+v", observed.Targets)
+	}
+}
+
+func TestPersistentControllerPersistsAmbiguousApplyAndScopedUnknownAtomically(t *testing.T) {
+	ctx := context.Background()
+	clock := newManualClock()
+	backend := fake.NewBackend()
+	database := openRestartStore(t, ctx, filepath.Join(t.TempDir(), "guard.db"), clock.Now())
+	defer database.Close()
+	controller := newPersistentTestController(t, ctx, database, backend, clock, &memoryAudit{})
+	target := netip.MustParsePrefix("198.51.100.40/32")
+	desired := desiredSnapshot(targetIntent(target, 1))
+	setPersistentDesired(t, ctx, database, controller, desired)
+	if err := backend.QueueOutcome(fake.DomainTarget, fake.QueuedOutcome{
+		Kind: fake.ResultUnknown, ErrorCode: "timeout_after_dispatch",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := controller.Execute(ctx, targetPlan(desired, target))
+	if err != nil || result.Apply.Kind != fake.ResultUnknown {
+		t.Fatalf("ambiguous Execute: result=%+v err=%v", result, err)
+	}
+	observed, err := database.LoadObservedFirewallSnapshot(ctx, testNodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Infrastructure != nil || observed.Policy != nil {
+		t.Fatalf("domain-scoped ambiguity overwrote unrelated Observed state: %+v", observed)
+	}
+	if len(observed.Targets) != 1 || observed.Targets[0].CanonicalTarget != target ||
+		observed.Targets[0].BanMembership != core.ObservedMembershipUnknown ||
+		observed.Targets[0].LastErrorCode != "timeout_after_dispatch" {
+		t.Fatalf("ambiguous target Observed = %+v", observed.Targets)
+	}
+	recovery, err := database.LoadReconcileRecovery(ctx, testNodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovery.States) != 1 || recovery.States[0].RetryState.Status != core.ReconcileRetryWaiting ||
+		len(recovery.ProbeRequirements) != 1 {
+		t.Fatalf("ambiguous transition recovery = %+v", recovery)
+	}
+}
+
 type failingTransitionStore struct {
-	RetryStateStore
+	PersistentStateStore
 	err error
 }
 
 type commitUnknownTransitionStore struct {
-	RetryStateStore
+	PersistentStateStore
 	unknownOnCall  int
 	commit         bool
 	calls          int
@@ -578,10 +682,10 @@ type commitUnknownTransitionStore struct {
 func (s *commitUnknownTransitionStore) ApplyReconcileTransition(ctx context.Context, transition core.ReconcileStateTransition) error {
 	s.calls++
 	if s.calls != s.unknownOnCall {
-		return s.RetryStateStore.ApplyReconcileTransition(ctx, transition)
+		return s.PersistentStateStore.ApplyReconcileTransition(ctx, transition)
 	}
 	if s.commit {
-		if err := s.RetryStateStore.ApplyReconcileTransition(ctx, transition); err != nil {
+		if err := s.PersistentStateStore.ApplyReconcileTransition(ctx, transition); err != nil {
 			return err
 		}
 	}
@@ -593,7 +697,7 @@ func (s *commitUnknownTransitionStore) LoadReconcileRecovery(ctx context.Context
 	if s.loadCalls == s.failLoadOnCall {
 		return core.ReconcileRecoverySnapshot{}, s.loadErr
 	}
-	return s.RetryStateStore.LoadReconcileRecovery(ctx, nodeID)
+	return s.PersistentStateStore.LoadReconcileRecovery(ctx, nodeID)
 }
 
 func (s *failingTransitionStore) ApplyReconcileTransition(context.Context, core.ReconcileStateTransition) error {
@@ -613,10 +717,36 @@ func openRestartStore(t *testing.T, ctx context.Context, path string, createdAt 
 	return database
 }
 
+func setPersistentDesired(
+	t *testing.T,
+	ctx context.Context,
+	database *storepkg.Store,
+	controller *Controller,
+	desired core.DesiredFirewallSnapshot,
+) {
+	t.Helper()
+	if len(desired.Targets) != 0 {
+		uow, err := database.BeginProcessing(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, intent := range desired.Targets {
+			if err := uow.PutTargetEnforcementIntent(ctx, intent); err != nil {
+				_ = uow.Rollback()
+				t.Fatal(err)
+			}
+		}
+		if err := uow.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setDesired(t, controller, desired)
+}
+
 func newPersistentTestController(
 	t *testing.T,
 	ctx context.Context,
-	persistence RetryStateStore,
+	persistence PersistentStateStore,
 	backend Backend,
 	clock Clock,
 	audit CriticalAuditWriter,

@@ -32,7 +32,7 @@ func TestShutdownPrimitives_DrainFixedAcceptedSetBeforeCheckpointAndClose(t *tes
 	}
 	events := []string{"accepted_set_frozen"}
 	runner := &shutdownSequenceRunner{}
-	coordinator := NewCoordinator(NewSQLiteStoreAdapter(database), runner)
+	coordinator := NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), runner)
 	completions := make([]core.DurableCompletion, 0, len(deliveries))
 	drainContext, cancelDrain := context.WithCancel(context.Background())
 	defer cancelDrain()
@@ -142,7 +142,7 @@ func TestShutdownPrimitives_CancellationLeavesAttemptForReplay(t *testing.T) {
 	}
 
 	runner := &shutdownBlockingRunner{started: make(chan struct{})}
-	coordinator := NewCoordinator(NewSQLiteStoreAdapter(database), runner)
+	coordinator := NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), runner)
 	workerContext, cancelWorker := context.WithCancel(context.Background())
 	defer cancelWorker()
 	workerResult := make(chan error, 1)
@@ -193,7 +193,7 @@ func TestShutdownPrimitives_CancellationLeavesAttemptForReplay(t *testing.T) {
 	}
 	replayCheckpoints := source.NewCheckpointManager(replayTracker, replayState)
 	replayRunner := &zeroOutcomeRunner{}
-	replayCoordinator := NewCoordinator(NewSQLiteStoreAdapter(reopened), replayRunner)
+	replayCoordinator := NewCoordinator(newEnforcingSQLiteStoreAdapter(t, reopened), replayRunner)
 	completion, err := replayCoordinator.Process(context.Background(), delivery)
 	if err != nil {
 		t.Fatalf("replay Process(): %v", err)

@@ -7,9 +7,14 @@ import (
 	"time"
 )
 
-// ErrReconcileCommitUnknown means SQLite did not prove whether a reconcile
-// transition committed. Callers must resolve it by authoritative readback.
-var ErrReconcileCommitUnknown = errors.New("reconcile transition commit outcome is unknown")
+var (
+	// ErrReconcileCommitUnknown means SQLite did not prove whether a reconcile
+	// transition committed. Callers must resolve it by authoritative readback.
+	ErrReconcileCommitUnknown = errors.New("reconcile transition commit outcome is unknown")
+	// ErrReconcileStateRegression means a durable transition targeted an older
+	// revision, generation, retry epoch, or attempt than the current ledger.
+	ErrReconcileStateRegression = errors.New("reconcile state would regress")
+)
 
 // ReconcileCommitUnknownError preserves the physical commit error while
 // exposing a stable classification for readback recovery.
@@ -77,6 +82,7 @@ type ReconcileStateTransition struct {
 	State       PersistedReconcileState
 	UpsertProbe *PersistedProbeRequirement
 	DeleteProbe *PersistedProbeRequirement
+	Observed    *ObservedFirewallUpdate
 	// DeleteOnly clears a stale exact Probe requirement without rewriting a
 	// singleton/current ledger row that may already contain a newer key.
 	DeleteOnly bool

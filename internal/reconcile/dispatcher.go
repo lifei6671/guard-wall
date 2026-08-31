@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	appclock "github.com/lifei6671/guard-wall/internal/clock"
 	"github.com/lifei6671/guard-wall/internal/core"
 	"github.com/lifei6671/guard-wall/internal/firewall/fake"
 )
@@ -16,6 +17,45 @@ import (
 var (
 	ErrDispatcherRunning = errors.New("reconcile dispatcher is already running")
 	ErrDispatcherStopped = errors.New("reconcile dispatcher is stopped")
+)
+
+const backendHealthProbeTimeout = 5 * time.Second
+
+var backendHealthProbeBackoff = [...]time.Duration{
+	time.Second,
+	5 * time.Second,
+	30 * time.Second,
+	5 * time.Minute,
+	15 * time.Minute,
+}
+
+// BackendHealthState is the process-local availability state of the physical Backend.
+type BackendHealthState string
+
+const (
+	BackendHealthNotReady BackendHealthState = "not_ready"
+	BackendHealthHealthy  BackendHealthState = "healthy"
+	BackendHealthDegraded BackendHealthState = "degraded"
+)
+
+// BackendHealthStatus is the stable Health/Metric read model exposed by Dispatcher.
+type BackendHealthStatus struct {
+	State               BackendHealthState
+	ConsecutiveFailures uint64
+	TotalFailures       uint64
+}
+
+type backendHealthPolicy struct {
+	probeTimeout time.Duration
+	backoff      []time.Duration
+}
+
+type startupRecoveryGate uint8
+
+const (
+	startupRecoveryImmediate startupRecoveryGate = iota
+	startupRecoveryHealthyEvent
+	startupRecoveryDue
 )
 
 // ReconcileKey is the stable queue coalescing key for one failure domain.
@@ -28,9 +68,9 @@ type ReconcileKey struct {
 // PlanProvider rebuilds the current Plan after a wakeup reaches the worker.
 // ok=false means the key no longer has actionable Desired work.
 type PlanProvider interface {
-	// ReconcileKeys returns current startup recovery work. It may include a
-	// hydrated Converged key whose physical state has not yet been confirmed,
-	// but must omit ordinary Converged keys after startup observation.
+	// ReconcileKeys returns every current Desired key plus durable startup
+	// recovery work. Dispatcher probes them as one authoritative snapshot before
+	// deciding which domains require mutation.
 	ReconcileKeys(context.Context) ([]ReconcileKey, error)
 	CurrentPlan(context.Context, ReconcileKey) (plan fake.OperationPlan, ok bool, err error)
 }
@@ -38,26 +78,51 @@ type PlanProvider interface {
 // Dispatcher owns the bounded keyed wakeup queue and the single retry scheduler.
 // Backend health recovery uses BackendHealthy and is intentionally observation-only.
 type Dispatcher struct {
-	controller *Controller
-	plans      PlanProvider
-	clock      dispatcherClock
-	queue      chan ReconcileKey
-	done       chan struct{}
+	controller    *Controller
+	plans         PlanProvider
+	clock         appclock.Clock
+	healthPolicy  backendHealthPolicy
+	queue         chan ReconcileKey
+	done          chan struct{}
+	healthChanged chan struct{}
+	startupReady  chan struct{}
 
-	queueMu sync.Mutex
-	queued  map[ReconcileKey]*wakeReservation
+	queueMu           sync.Mutex
+	queued            map[ReconcileKey]*wakeReservation
+	healthOperationMu sync.Mutex
+	healthMu          sync.Mutex
+	health            BackendHealthStatus
+	nextHealthProbeAt time.Time
 
-	runMu   sync.Mutex
-	started bool
-	stopped atomic.Bool
+	runMu            sync.Mutex
+	startupReadyOnce sync.Once
+	started          bool
+	stopped          atomic.Bool
 }
 
 // NewDispatcher constructs a single-worker dispatcher with bounded, cancelable backpressure.
 func NewDispatcher(controller *Controller, plans PlanProvider, queueCapacity int) (*Dispatcher, error) {
-	return newDispatcher(controller, plans, queueCapacity, systemDispatcherClock{})
+	return NewDispatcherWithClock(controller, plans, queueCapacity, appclock.NewWallClock())
 }
 
-func newDispatcher(controller *Controller, plans PlanProvider, queueCapacity int, clock dispatcherClock) (*Dispatcher, error) {
+// NewDispatcherWithClock constructs a single-worker dispatcher using
+// dispatcherClock for retry deadlines and timers.
+func NewDispatcherWithClock(
+	controller *Controller,
+	plans PlanProvider,
+	queueCapacity int,
+	dispatcherClock appclock.Clock,
+) (*Dispatcher, error) {
+	return newDispatcher(controller, plans, queueCapacity, dispatcherClock, defaultBackendHealthPolicy())
+}
+
+func newDispatcher(
+	controller *Controller,
+	plans PlanProvider,
+	queueCapacity int,
+	dispatcherClock appclock.Clock,
+	healthPolicy backendHealthPolicy,
+) (*Dispatcher, error) {
 	if controller == nil {
 		return nil, fmt.Errorf("controller is required")
 	}
@@ -67,17 +132,51 @@ func newDispatcher(controller *Controller, plans PlanProvider, queueCapacity int
 	if queueCapacity <= 0 {
 		return nil, fmt.Errorf("queue capacity must be positive")
 	}
-	if clock == nil {
+	if dispatcherClock == nil {
 		return nil, fmt.Errorf("dispatcher clock is required")
 	}
+	preparedPolicy, err := prepareBackendHealthPolicy(healthPolicy)
+	if err != nil {
+		return nil, err
+	}
 	return &Dispatcher{
-		controller: controller,
-		plans:      plans,
-		clock:      clock,
-		queue:      make(chan ReconcileKey, queueCapacity),
-		done:       make(chan struct{}),
-		queued:     make(map[ReconcileKey]*wakeReservation),
+		controller:    controller,
+		plans:         plans,
+		clock:         dispatcherClock,
+		healthPolicy:  preparedPolicy,
+		queue:         make(chan ReconcileKey, queueCapacity),
+		done:          make(chan struct{}),
+		healthChanged: make(chan struct{}, 1),
+		startupReady:  make(chan struct{}),
+		queued:        make(map[ReconcileKey]*wakeReservation),
+		health:        BackendHealthStatus{State: BackendHealthNotReady},
 	}, nil
+}
+
+func defaultBackendHealthPolicy() backendHealthPolicy {
+	return backendHealthPolicy{
+		probeTimeout: backendHealthProbeTimeout,
+		backoff:      backendHealthProbeBackoff[:],
+	}
+}
+
+func prepareBackendHealthPolicy(policy backendHealthPolicy) (backendHealthPolicy, error) {
+	if policy.probeTimeout <= 0 {
+		return backendHealthPolicy{}, fmt.Errorf("Backend health Probe timeout must be positive")
+	}
+	if len(policy.backoff) == 0 {
+		return backendHealthPolicy{}, fmt.Errorf("Backend health Probe backoff is required")
+	}
+	prepared := backendHealthPolicy{probeTimeout: policy.probeTimeout, backoff: append([]time.Duration(nil), policy.backoff...)}
+	for index, delay := range prepared.backoff {
+		if delay <= 0 {
+			return backendHealthPolicy{}, fmt.Errorf("Backend health Probe backoff %d must be positive", index)
+		}
+		if index != 0 && delay < prepared.backoff[index-1] {
+			return backendHealthPolicy{}, fmt.Errorf("Backend health Probe backoff must be nondecreasing")
+		}
+	}
+	return prepared, nil
 }
 
 // Wake coalesces a key already waiting in the queue. A distinct key applies
@@ -137,6 +236,16 @@ type wakeReservation struct {
 	err  error
 }
 
+// BackendHealthStatus returns a consistent process-local Health/Metric snapshot.
+func (d *Dispatcher) BackendHealthStatus() BackendHealthStatus {
+	if d == nil {
+		return BackendHealthStatus{State: BackendHealthNotReady}
+	}
+	d.healthMu.Lock()
+	defer d.healthMu.Unlock()
+	return d.health
+}
+
 // BackendHealthy starts with one authoritative Probe. Matching physical state
 // converges observation-only; unresolved keys are woken only after the Probe and
 // continue under their existing absolute deadline, attempt count, and retry epoch.
@@ -147,16 +256,44 @@ func (d *Dispatcher) BackendHealthy(ctx context.Context) (int, error) {
 	if d.stopped.Load() {
 		return 0, ErrDispatcherStopped
 	}
-	resolved, unresolved, err := d.controller.probeRecovery(ctx)
-	if err != nil {
-		return resolved, err
-	}
-	for _, key := range unresolved {
-		if err := d.Wake(ctx, key); err != nil {
-			return resolved, err
+	d.runMu.Lock()
+	started := d.started
+	d.runMu.Unlock()
+	if started {
+		select {
+		case <-d.startupReady:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-d.done:
+			return 0, ErrDispatcherStopped
+		}
+		if d.stopped.Load() {
+			return 0, ErrDispatcherStopped
 		}
 	}
-	return resolved, nil
+	d.healthOperationMu.Lock()
+	outcome, err := d.controller.probeRecovery(ctx, d.healthPolicy.probeTimeout)
+	if ctx.Err() != nil {
+		d.healthOperationMu.Unlock()
+		return outcome.resolved, ctx.Err()
+	}
+	if err != nil {
+		d.healthOperationMu.Unlock()
+		return outcome.resolved, err
+	}
+	if outcome.backendErr != nil {
+		d.recordBackendUnavailable(true)
+		d.healthOperationMu.Unlock()
+		return outcome.resolved, outcome.backendErr
+	}
+	d.recordBackendHealthy(true)
+	d.healthOperationMu.Unlock()
+	for _, key := range outcome.unresolved {
+		if err := d.Wake(ctx, key); err != nil {
+			return outcome.resolved, err
+		}
+	}
+	return outcome.resolved, nil
 }
 
 // Run processes wakeups with one worker and one absolute-deadline timer.
@@ -171,18 +308,20 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	}
 	d.started = true
 	d.runMu.Unlock()
+	defer func() {
+		d.stopped.Store(true)
+		d.closeStartupReady()
+		close(d.done)
+	}()
+
 	startupKeys, err := d.plans.ReconcileKeys(ctx)
 	if err != nil {
-		d.stopped.Store(true)
-		close(d.done)
 		return fmt.Errorf("load startup reconcile keys: %w", err)
 	}
 	uniqueStartup := make([]ReconcileKey, 0, len(startupKeys))
 	seenStartup := make(map[ReconcileKey]struct{}, len(startupKeys))
 	for _, key := range startupKeys {
 		if err := validateReconcileKey(key); err != nil {
-			d.stopped.Store(true)
-			close(d.done)
 			return fmt.Errorf("validate startup reconcile key: %w", err)
 		}
 		if _, exists := seenStartup[key]; exists {
@@ -191,61 +330,49 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		seenStartup[key] = struct{}{}
 		uniqueStartup = append(uniqueStartup, key)
 	}
-	if len(uniqueStartup) != 0 {
-		uniqueStartup, err = d.controller.probeStartupRecovery(ctx, uniqueStartup)
-		if err != nil {
-			d.stopped.Store(true)
-			close(d.done)
-			return err
-		}
-	}
-	startupWakes := make([]dispatchWake, 0, len(uniqueStartup))
-	for _, key := range uniqueStartup {
-		state, exists := d.retryState(key)
-		startupWakes = append(startupWakes, dispatchWake{
-			key:     key,
-			startup: exists && state.Status == core.ReconcileConverged,
-		})
-	}
-	startupCtx, cancelStartup := context.WithCancel(ctx)
-	var startupWG sync.WaitGroup
-	startupWake := make(chan dispatchWake)
-	startupWG.Add(1)
-	go func() {
-		defer startupWG.Done()
-		defer close(startupWake)
-		for _, wake := range startupWakes {
-			select {
-			case startupWake <- wake:
-			case <-startupCtx.Done():
-				return
-			case <-d.done:
-				return
-			}
-		}
-	}()
-	defer func() {
-		cancelStartup()
-		d.stopped.Store(true)
-		close(d.done)
-		startupWG.Wait()
-	}()
 
 	deadlines := make(map[ReconcileKey]time.Time)
-	ready := make([]dispatchWake, 0, 1)
-	startupC := (<-chan dispatchWake)(startupWake)
+	ready := make([]dispatchWake, 0, len(uniqueStartup))
+	startupPending := false
+	if len(uniqueStartup) == 0 {
+		// With no startup work, no authoritative Probe has occurred yet. Keep the
+		// public health state NotReady until the first real Backend observation.
+	} else {
+		startupWakes, recovered, err := d.recoverStartup(ctx, uniqueStartup, startupRecoveryImmediate)
+		if err != nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		startupPending = !recovered
+		ready = append(ready, startupWakes...)
+	}
+	d.closeStartupReady()
+
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if len(ready) != 0 {
+		healthDegraded := d.backendHealthState() == BackendHealthDegraded
+		if !startupPending && !healthDegraded && len(ready) != 0 {
+			d.healthOperationMu.Lock()
+			if d.backendHealthState() == BackendHealthDegraded {
+				d.healthOperationMu.Unlock()
+				continue
+			}
 			wake := ready[0]
 			ready = ready[1:]
-			rerun, err := d.dispatch(ctx, wake, deadlines)
+			result, err := d.dispatch(ctx, wake, deadlines)
 			if err != nil {
+				d.healthOperationMu.Unlock()
 				return err
 			}
-			if rerun {
+			if result.backendUnavailable {
+				d.recordBackendUnavailable(false)
+			}
+			d.healthOperationMu.Unlock()
+			if result.rerun {
 				if wake.staleReruns != 0 {
 					return fmt.Errorf("current Plan for %s remained stale after refresh", reconcileKeyName(wake.key))
 				}
@@ -254,33 +381,69 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 			continue
 		}
 
-		timer := d.nextTimer(deadlines)
-		var timerC <-chan time.Time
-		if timer != nil {
-			timerC = timer.C()
+		var retryTimer appclock.Timer
+		var retryTimerC <-chan time.Time
+		var queueC <-chan ReconcileKey
+		if !startupPending && !healthDegraded {
+			retryTimer = d.nextTimer(deadlines)
+			if retryTimer != nil {
+				retryTimerC = retryTimer.C()
+			}
+			queueC = d.queue
+		}
+		healthTimer := d.nextHealthTimer()
+		var healthTimerC <-chan time.Time
+		if healthTimer != nil {
+			healthTimerC = healthTimer.C()
 		}
 		select {
 		case <-ctx.Done():
-			if timer != nil {
-				timer.Stop()
-			}
+			stopDispatcherTimer(retryTimer)
+			stopDispatcherTimer(healthTimer)
 			return nil
-		case wake, ok := <-startupC:
-			if timer != nil {
-				timer.Stop()
+		case <-d.healthChanged:
+			stopDispatcherTimer(retryTimer)
+			stopDispatcherTimer(healthTimer)
+			if startupPending {
+				startupWakes, recovered, err := d.recoverStartup(ctx, uniqueStartup, startupRecoveryHealthyEvent)
+				if err != nil {
+					return err
+				}
+				if ctx.Err() != nil {
+					return nil
+				}
+				startupPending = !recovered
+				ready = append(ready, startupWakes...)
 			}
-			if !ok {
-				startupC = nil
+		case <-healthTimerC:
+			stopDispatcherTimer(retryTimer)
+			if startupPending {
+				startupWakes, recovered, err := d.recoverStartup(ctx, uniqueStartup, startupRecoveryDue)
+				if err != nil {
+					return err
+				}
+				if ctx.Err() != nil {
+					return nil
+				}
+				startupPending = !recovered
+				ready = append(ready, startupWakes...)
 				continue
 			}
-			ready = append(ready, wake)
-		case key := <-d.queue:
-			if timer != nil {
-				timer.Stop()
+			healthWakes, err := d.recoverBackendHealth(ctx, true)
+			if err != nil {
+				return err
 			}
+			if ctx.Err() != nil {
+				return nil
+			}
+			ready = append(ready, healthWakes...)
+		case key := <-queueC:
+			stopDispatcherTimer(retryTimer)
+			stopDispatcherTimer(healthTimer)
 			d.markDequeued(key)
 			ready = append(ready, dispatchWake{key: key})
-		case <-timerC:
+		case <-retryTimerC:
+			stopDispatcherTimer(healthTimer)
 			now := d.clock.Now()
 			for key, deadline := range deadlines {
 				if deadline.After(now) {
@@ -294,6 +457,143 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	}
 }
 
+func (d *Dispatcher) recoverStartup(ctx context.Context, keys []ReconcileKey, gate startupRecoveryGate) ([]dispatchWake, bool, error) {
+	d.healthOperationMu.Lock()
+	defer d.healthOperationMu.Unlock()
+	switch gate {
+	case startupRecoveryImmediate:
+	case startupRecoveryHealthyEvent:
+		if d.backendHealthState() != BackendHealthHealthy {
+			return nil, false, nil
+		}
+	case startupRecoveryDue:
+		if !d.healthProbeDue() {
+			return nil, false, nil
+		}
+	default:
+		return nil, false, fmt.Errorf("invalid startup recovery gate %d", gate)
+	}
+	outcome, err := d.controller.probeStartupRecovery(ctx, keys, d.healthPolicy.probeTimeout)
+	if ctx.Err() != nil {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if outcome.backendErr != nil {
+		d.recordBackendUnavailable(false)
+		return nil, false, nil
+	}
+	d.recordBackendHealthy(false)
+	wakes := make([]dispatchWake, 0, len(outcome.unresolved))
+	for _, key := range outcome.unresolved {
+		state, exists := d.retryState(key)
+		wakes = append(wakes, dispatchWake{
+			key:     key,
+			startup: exists && state.Status == core.ReconcileConverged,
+		})
+	}
+	return wakes, true, nil
+}
+
+func (d *Dispatcher) recoverBackendHealth(ctx context.Context, requireDue bool) ([]dispatchWake, error) {
+	d.healthOperationMu.Lock()
+	defer d.healthOperationMu.Unlock()
+	if requireDue && !d.healthProbeDue() {
+		return nil, nil
+	}
+	outcome, err := d.controller.probeRecovery(ctx, d.healthPolicy.probeTimeout)
+	if ctx.Err() != nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if outcome.backendErr != nil {
+		d.recordBackendUnavailable(false)
+		return nil, nil
+	}
+	d.recordBackendHealthy(false)
+	wakes := make([]dispatchWake, 0, len(outcome.unresolved))
+	for _, key := range outcome.unresolved {
+		wakes = append(wakes, dispatchWake{key: key})
+	}
+	return wakes, nil
+}
+
+func (d *Dispatcher) recordBackendUnavailable(notify bool) {
+	d.healthMu.Lock()
+	d.health.State = BackendHealthDegraded
+	d.health.ConsecutiveFailures++
+	d.health.TotalFailures++
+	index := d.health.ConsecutiveFailures - 1
+	if index >= uint64(len(d.healthPolicy.backoff)) {
+		index = uint64(len(d.healthPolicy.backoff) - 1)
+	}
+	d.nextHealthProbeAt = d.clock.Now().Add(d.healthPolicy.backoff[index])
+	d.healthMu.Unlock()
+	if notify {
+		d.notifyHealthChanged()
+	}
+}
+
+func (d *Dispatcher) recordBackendHealthy(notify bool) {
+	d.healthMu.Lock()
+	d.health.State = BackendHealthHealthy
+	d.health.ConsecutiveFailures = 0
+	d.nextHealthProbeAt = time.Time{}
+	d.healthMu.Unlock()
+	if notify {
+		d.notifyHealthChanged()
+	}
+}
+
+func (d *Dispatcher) notifyHealthChanged() {
+	select {
+	case d.healthChanged <- struct{}{}:
+	default:
+	}
+}
+
+func (d *Dispatcher) closeStartupReady() {
+	d.startupReadyOnce.Do(func() { close(d.startupReady) })
+}
+
+func (d *Dispatcher) nextHealthTimer() appclock.Timer {
+	d.healthMu.Lock()
+	state := d.health.State
+	nextProbeAt := d.nextHealthProbeAt
+	d.healthMu.Unlock()
+	if state != BackendHealthDegraded || nextProbeAt.IsZero() {
+		return nil
+	}
+	delay := nextProbeAt.Sub(d.clock.Now())
+	if delay < 0 {
+		delay = 0
+	}
+	return d.clock.NewTimer(delay)
+}
+
+func (d *Dispatcher) backendHealthState() BackendHealthState {
+	d.healthMu.Lock()
+	defer d.healthMu.Unlock()
+	return d.health.State
+}
+
+func (d *Dispatcher) healthProbeDue() bool {
+	d.healthMu.Lock()
+	state := d.health.State
+	nextProbeAt := d.nextHealthProbeAt
+	d.healthMu.Unlock()
+	return state == BackendHealthDegraded && !nextProbeAt.IsZero() && !nextProbeAt.After(d.clock.Now())
+}
+
+func stopDispatcherTimer(timer appclock.Timer) {
+	if timer != nil {
+		timer.Stop()
+	}
+}
+
 type dispatchWake struct {
 	key         ReconcileKey
 	deadline    *time.Time
@@ -301,59 +601,70 @@ type dispatchWake struct {
 	startup     bool
 }
 
-func (d *Dispatcher) dispatch(ctx context.Context, wake dispatchWake, deadlines map[ReconcileKey]time.Time) (bool, error) {
+type dispatchResult struct {
+	rerun              bool
+	backendUnavailable bool
+}
+
+func (d *Dispatcher) dispatch(ctx context.Context, wake dispatchWake, deadlines map[ReconcileKey]time.Time) (dispatchResult, error) {
+	plan, ok, err := d.plans.CurrentPlan(ctx, wake.key)
+	if err != nil {
+		return dispatchResult{}, fmt.Errorf("load current Plan for %s: %w", reconcileKeyName(wake.key), err)
+	}
+	if !ok {
+		delete(deadlines, wake.key)
+		return dispatchResult{}, nil
+	}
+	if plan.Domain != wake.key.Domain || plan.Target != wake.key.Target {
+		return dispatchResult{}, fmt.Errorf("current Plan does not match queued key %s", reconcileKeyName(wake.key))
+	}
+
+	// CurrentPlan also publishes the fresh authoritative Desired snapshot. Read
+	// retry state only after that publication so a wake for a new Target
+	// generation cannot be discarded because the previous generation converged.
 	state, exists := d.retryState(wake.key)
 	if wake.deadline != nil {
 		if !exists || state.Status != core.ReconcileRetryWaiting || state.NextAttemptAt == nil || !state.NextAttemptAt.Equal(*wake.deadline) {
-			return false, nil
+			return dispatchResult{}, nil
 		}
 	} else if exists && !wake.startup {
 		switch state.Status {
 		case core.ReconcileConverged, core.ReconcileDegraded:
 			delete(deadlines, wake.key)
-			return false, nil
+			return dispatchResult{}, nil
 		case core.ReconcileRetryWaiting:
 			if state.NextAttemptAt == nil {
-				return false, fmt.Errorf("retry waiting key %s has no deadline", reconcileKeyName(wake.key))
+				return dispatchResult{}, fmt.Errorf("retry waiting key %s has no deadline", reconcileKeyName(wake.key))
 			}
 			if state.NextAttemptAt.After(d.clock.Now()) {
 				deadlines[wake.key] = *state.NextAttemptAt
-				return false, nil
+				return dispatchResult{}, nil
 			}
 		}
 	}
 
-	plan, ok, err := d.plans.CurrentPlan(ctx, wake.key)
-	if err != nil {
-		return false, fmt.Errorf("load current Plan for %s: %w", reconcileKeyName(wake.key), err)
-	}
-	if !ok {
-		delete(deadlines, wake.key)
-		return false, nil
-	}
-	if plan.Domain != wake.key.Domain || plan.Target != wake.key.Target {
-		return false, fmt.Errorf("current Plan does not match queued key %s", reconcileKeyName(wake.key))
-	}
-
-	_, executeErr := d.controller.Execute(ctx, plan)
+	execution, executeErr := d.controller.Execute(ctx, plan)
 	d.updateDeadline(wake.key, deadlines)
 	if executeErr == nil {
-		return false, nil
+		return dispatchResult{backendUnavailable: execution.Apply.Kind == fake.ResultUnknown}, nil
+	}
+	if errors.Is(executeErr, errTargetIntentExpired) {
+		return dispatchResult{}, nil
 	}
 	if errors.Is(executeErr, ErrStalePlan) || errors.Is(executeErr, ErrStaleCompletion) {
-		return true, nil
+		return dispatchResult{rerun: true}, nil
 	}
 	if errors.Is(executeErr, ErrRetryNotReady) || errors.Is(executeErr, ErrBudgetExhausted) {
-		return false, nil
+		return dispatchResult{}, nil
 	}
 	if errors.Is(executeErr, ErrInvalidPlan) {
-		return false, executeErr
+		return dispatchResult{}, executeErr
 	}
-	state, exists = d.retryState(wake.key)
-	if exists && (state.Status == core.ReconcileRetryWaiting || state.Status == core.ReconcileDegraded) && state.LastErrorCode != "" {
-		return false, nil
+	var backendErr *backendOperationError
+	if errors.As(executeErr, &backendErr) {
+		return dispatchResult{backendUnavailable: true}, nil
 	}
-	return false, fmt.Errorf("execute %s: %w", reconcileKeyName(wake.key), executeErr)
+	return dispatchResult{}, fmt.Errorf("execute %s: %w", reconcileKeyName(wake.key), executeErr)
 }
 
 func (d *Dispatcher) updateDeadline(key ReconcileKey, deadlines map[ReconcileKey]time.Time) {
@@ -381,7 +692,7 @@ func (d *Dispatcher) retryState(key ReconcileKey) (core.RetryState, bool) {
 	}
 }
 
-func (d *Dispatcher) nextTimer(deadlines map[ReconcileKey]time.Time) dispatcherTimer {
+func (d *Dispatcher) nextTimer(deadlines map[ReconcileKey]time.Time) appclock.Timer {
 	var earliest time.Time
 	for _, deadline := range deadlines {
 		if earliest.IsZero() || deadline.Before(earliest) {
@@ -428,27 +739,3 @@ func reconcileKeyName(key ReconcileKey) string {
 	}
 	return fmt.Sprintf("domain/%d", key.Domain)
 }
-
-type dispatcherClock interface {
-	Now() time.Time
-	NewTimer(time.Duration) dispatcherTimer
-}
-
-type dispatcherTimer interface {
-	C() <-chan time.Time
-	Stop() bool
-}
-
-type systemDispatcherClock struct{}
-
-func (systemDispatcherClock) Now() time.Time { return time.Now() }
-
-func (systemDispatcherClock) NewTimer(delay time.Duration) dispatcherTimer {
-	return systemDispatcherTimer{Timer: time.NewTimer(delay)}
-}
-
-type systemDispatcherTimer struct {
-	*time.Timer
-}
-
-func (t systemDispatcherTimer) C() <-chan time.Time { return t.Timer.C }

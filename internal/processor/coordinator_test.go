@@ -41,6 +41,8 @@ func (s *fakeStore) findReceipt(_ context.Context, id core.DeliveryID) (core.Pro
 	return receipt, found, nil
 }
 
+func (*fakeStore) notifyReceiptReplay(context.Context) error { return nil }
+
 func (s *fakeStore) beginProcessing(context.Context) (processingUnitOfWork, error) {
 	s.beginCount++
 	s.last = &fakeUnitOfWork{store: s}
@@ -119,6 +121,9 @@ func (tx *fakeUnitOfWork) writeReceipt(_ context.Context, receipt core.Processin
 	tx.stagedReceipt = &receipt
 	return nil
 }
+
+func (*fakeUnitOfWork) finalizeDesiredState(context.Context) error { return nil }
+func (*fakeUnitOfWork) notifyCommitted(context.Context) error      { return nil }
 
 func (tx *fakeUnitOfWork) fail(stage string) error {
 	if tx.store.failStage == stage {

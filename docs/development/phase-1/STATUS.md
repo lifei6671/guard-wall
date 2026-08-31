@@ -17,18 +17,21 @@
 | M0 证据状态 | `Implemented`（worktree preliminary；尚未 `Verified`） |
 | Phase 1 发布状态 | `Not Released` |
 | 当前 Evidence | `artifacts/evidence/M0/worktree/m0-a/`、`m0-b/`、`m0-c/`、`m0-d/` |
-| 最近更新 | `2026-08-30` |
+| 最近更新 | `2026-08-31` |
 
 当前仓库已有 M0-A Contract、Crash Matrix manifest、两份 ADR、Go Core、SQLite
 migration/Store、Config Schema、安全 credential reader，以及增强后的 C1/C2 preliminary
 Slice；C1 已接通 Parser→SecurityEvent→Rule→Window→SQLite receipt 的成功/Rule poison 编排，
 并补充 fixed accepted set 的 drain/checkpoint/Close 与 cancellation/reopen/replay primitive tests；
-C2 已接通 Automatic Decision 创建/重复抑制，以及 preliminary SQLite Manual create/replace、
-expiry Decision/Projection/Audit 与 Fake SafetyGrace。仍缺 generation/snapshot 同事务更新、
-expiry scheduler/wakeup；同进程 Backend availability recovery 与 retry/pending-Probe SQLite
-关闭重开恢复及 health-event/wakeup Dispatcher primitives 已通过，
-但仍缺生产事件源/monitor、post-commit producer、完整 Observed/runtime
-startup、shutdown/crash、C3、正式 Contract Tests、
+C2 已接通 Automatic Decision 创建/重复抑制、SQLite Manual create/replace、expiry，且三条
+入口都在原事务内统一物化 Target generation、全局 SnapshotRevision、retry reset 与 Audit，
+confirmed commit 后仅 Wake 语义变化 Target；同进程 Backend availability recovery 与 retry/pending-Probe SQLite
+关闭重开恢复、health-event/wakeup Dispatcher primitives、60s expiration scheduler、启动 due sweep、
+首次 Apply expiry fence、production Desired PlanProvider、共享虚拟时钟与 expiration runtime owner 已通过，
+且真实 SQLite→Fake Snapshot 的 62s 虚拟时间闭环已验证；完整三域 Observed SQLite authority、
+Probe/Unknown fencing 回写与 fresh startup Probe 原语已获用户 Code Review 通过；Dispatcher-owned Backend
+health lifecycle、双 context Probe、精确 capped backoff、mutation gate 与 Health/Metric read model 已进入 Review；但仍缺真实 Enforcer/IPC health 事件源、
+可执行进程 composition/runtime startup、shutdown/crash、C3、正式 Contract Tests、
 目标 Linux durability 与 commit-bound Evidence Manifest。
 
 ## 2. 状态字段
@@ -58,10 +61,10 @@ startup、shutdown/crash、C3、正式 Contract Tests、
 | B3 | nftables Backend Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/nftables-result.json` | 缺 production hook/priority、packet path、Snapshot/Plan、ownership 与恢复证据 |
 | B4 | Agent/Enforcer 权限与 IPC Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json` | 缺跨 UID、systemd hardening、capability、对象校验与恢复证据 |
 | C1 | Source Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/source-slice/result.md` | shutdown primitives 与 cancellation/reopen/replay 已通过；缺真实 intake/drain owner、30s timeout、SIGTERM/crash/durability |
-| C2 | Decision/Enforcement Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | Automatic create/suppress、preliminary SQLite Manual replace/expiry、Fake SafetyGrace、同进程 recovery、六次 budget、exhausted observation-only、retry/pending-Probe SQLite 关闭重开恢复及 health-event/wakeup Dispatcher primitives 已通过；缺 generation/snapshot、expiry scheduler、生产 health monitor/post-commit producer、完整 Observed/runtime startup 与真实进程 restart |
+| C2 | Decision/Enforcement Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | Automatic/Manual/expiry generation/SnapshotRevision/Wake、retry/pending-Probe SQLite 恢复、60s scheduler、62s SQLite→Fake 闭环、完整三域 Observed 与 Dispatcher-owned Backend health lifecycle 原语已通过用户 Review；仍缺真实 Enforcer/IPC health 源、可执行进程 composition/runtime startup 与真实进程 restart |
 | C3 | 完整 Crash Matrix | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 C1、C2 Verified |
-| D1 | Go 类型与接口 | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | Automatic + preliminary Manual/expiry transaction port、typed commit-unknown 与 Window Ledger 通过 race/vet；缺完整 enforcement/runtime 端口 |
-| D2 | SQLite migration | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | migration/checkpoint/generation/outcome 与 retry/pending-Probe state transition 原子性已通过；缺 replay/reprocess refs、完整 runtime/Observed restart 与目标 Linux durability |
+| D1 | Go 类型与接口 | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | Desired finalizer、typed commit-unknown/post-commit Wake、共享 Clock、Desired PlanProvider/runtime owner、完整 Observed 端口与 process-local Backend health read model 通过 race/vet；缺可执行进程 composition/真实 IPC health source wiring |
+| D2 | SQLite migration | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | migration 0001–0005、Target Desired/retry/probe/Observed 原子性、v4 cache 安全失效与 SQLite close/reopen 已通过；缺 replay/reprocess refs、真实进程/runtime restart 与目标 Linux durability |
 | D3 | Config Schema | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md` | Schema/default/range/ownership/drift 与 credential reader 已通过；缺完整 YAML、SMTP Ready、hot-reload/restart 和目标 Linux 权限验证 |
 | D4 | ADR | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/adr-review.md` | ADR-0001/0002 已接受；delivery/durability/firewall/retry ADR 尚未齐全 |
 | D5 | Contract Tests | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 C1–C3 可执行用例 |
@@ -73,7 +76,7 @@ startup、shutdown/crash、C3、正式 Contract Tests、
 | Gate | Contract | 当前结果 | Evidence | 未通过原因 | 解锁条件 |
 |---|---|---|---|---|---|
 | G18.1 Contract 完整性 | §18.1 | `FAIL` | `artifacts/evidence/M0/worktree/` | A 与 D1/D4 部分 Implemented；B 仍 preliminary，D6 未完成 | M0-B 与 D1/D4/D6 对应证据通过 |
-| G18.2 可执行验证 | §18.2 | `FAIL` | `artifacts/evidence/M0/worktree/m0-c/` | C1 shutdown primitives 与 C2 preliminary lifecycle/availability recovery 已增强；真实 runtime/generation/scheduler/health event/restart、C3、firewall/durability 仍未运行 | M0-C、migration 和 Contract Tests 全部通过 |
+| G18.2 可执行验证 | §18.2 | `FAIL` | `artifacts/evidence/M0/worktree/m0-c/` | C1 shutdown primitives 与 C2 generation/snapshot/post-commit wake/60s scheduler/first-Apply fence/62s Fake/Backend health lifecycle 已增强；真实可执行 runtime/IPC health source/restart、C3、firewall/durability 仍未运行 | M0-C、migration 和 Contract Tests 全部通过 |
 | G18.3 产物一致性 | §18.3 | `FAIL` | `artifacts/evidence/M0/worktree/m0-d/` | migration/代码/Config Schema 已落盘；D5–D7 与 commit-bound Manifest 缺失 | M0-D 全部责任产物通过 drift/一致性检查 |
 
 M0 只有在 G18.1、G18.2、G18.3 全部为 `PASS` 后，才可改为
@@ -179,12 +182,24 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
 | 2026-08-30 | C2 retry/pending-Probe SQLite recovery | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；SQLite close/reopen retry/pending-Probe recovery 原语已接受，C2 总项仍为 `IN_PROGRESS`；不代表 health-event/wakeup、真实进程 restart、完整 Observed/runtime startup 或 Linux durability |
 | 2026-08-30 | C2 health-event/wakeup Dispatcher primitive | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | bounded key-coalescing queue、latest-Plan reread、Backend healthy observation Probe、persisted absolute deadline 与多键 startup snapshot 已实现；race/vet/交叉构建和独立复审通过，等待用户 Code Review；不代表生产 monitor、post-commit producer、expiry scheduler 或真实进程 restart |
 | 2026-08-30 | C2 health-event/wakeup Dispatcher primitive | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | 用户 Code Review 明确通过；Dispatcher 调度与恢复原语已接受，C2 总项仍为 `IN_PROGRESS`；不代表生产 monitor、post-commit producer、expiry scheduler、完整 runtime startup 或真实进程 restart |
+| 2026-08-30 | C2 Desired generation/snapshot + post-commit Wake | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | migration 0004、Automatic/Manual/expiry 事务末尾统一 Intent finalization、一次 SnapshotRevision、仅变更 Target retry reset 与 confirmed/readback-proven commit Wake 已实现；race/vet/交叉构建通过，等待用户 Code Review；不代表 expiry scheduler、生产 health monitor/runtime owner 或真实进程 restart |
+| 2026-08-30 | C2 Desired generation/snapshot + post-commit Wake | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；事务末尾 Desired authority、generation/SnapshotRevision 与 confirmed/readback-proven post-commit Wake 原语已接受，C2 总项仍为 `IN_PROGRESS`；不代表 expiry scheduler、生产 health monitor/runtime owner 或真实进程 restart |
+| 2026-08-30 | C2 expiration scheduler + first-Apply fence | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | 启动立即 Expire、60s 绝对周期、慢 sweep 追赶、durable pending 恢复、首次 Apply/Probe/持久化前 expiry fence 与 stale fresh reread 已实现；race/vet/交叉构建及三路独立复审通过，等待用户 Code Review；62s 端到端、production PlanProvider/runtime owner 与真实 restart 仍为 `NOT_VERIFIED` |
+| 2026-08-30 | C2 expiration scheduler + first-Apply fence | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；60s scheduler、startup due sweep/pending recovery 与 first-Apply expiry fence 原语已接受，C2 总项仍为 `IN_PROGRESS`；62s 端到端、production PlanProvider/runtime owner 与真实 restart 仍为 `NOT_VERIFIED` |
+| 2026-08-30 | C2 expiry 62s runtime composition | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | transaction-consistent Desired read、共享 Clock、production Desired PlanProvider、ordered expiration runtime owner 与真实 SQLite→Fake 62s 虚拟时间测试已实现；全仓 race/vet/双架构构建和独立复审通过，等待用户 Code Review；不代表生产 executable wiring、health monitor、真实 Backend/restart |
+| 2026-08-30 | C2 expiry 62s runtime composition | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；transaction-consistent Desired read、共享 Clock、production Desired PlanProvider、ordered expiration runtime owner 与 SQLite→Fake 62s 虚拟时间闭环已接受；C2 总项仍为 `IN_PROGRESS`，不代表生产 executable wiring、health monitor、真实 Backend/restart |
+| 2026-08-31 | C2 complete Observed persistence/startup primitive | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | migration 0005、Infrastructure/Policy/Target 完整 Observed、逐 key/时间/Desired fences、Probe 成功/失败/歧义写回、fresh startup Probe 与 commit-unknown 双 readback 已实现；两路 Tier-3 审查修复 1 个 schema P2 后 P0/P1/P2/P3 均无，等待用户 Code Review；不代表生产 health monitor/executable、真实 Backend/process restart 或 Linux durability |
+| 2026-08-31 | C2 complete Observed persistence/startup primitive | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；migration 0005、完整三域 Observed authority、Probe/Unknown fencing、fresh startup Probe 与 commit-unknown readback 原语已接受；C2 总项仍为 `IN_PROGRESS`，不代表生产 health monitor/executable、真实 Backend/process restart 或 Linux durability |
+| 2026-08-31 | C2 Backend health monitor + runtime ownership primitive | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | Dispatcher-owned startup Degraded/backoff/recovery、双 context Probe、fatal persistence split、Health/Metric read model 与并发交错测试已实现；独立审查修复 startup/timer/event ordering 3 个 P1，fresh code/test/evidence/integration 终审 P0/P1/P2/P3 均无，等待用户 Code Review；不代表真实 IPC health source、executable 或 process restart |
+| 2026-08-31 | C2 Backend health monitor + runtime ownership primitive | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md`、`m0-d/code-migration/result.md` | 用户 Code Review 明确通过；process-local Backend health lifecycle、双 context Probe、fatal persistence split 与 Health/Metric read model 原语已接受；C2 总项仍为 `IN_PROGRESS / Implemented`，不代表真实 IPC health source、executable、process restart 或 Linux durability |
 
 ## 7. 下一步队列
 
-1. 补齐 C1/C2 剩余闭环：生产 intake/drain owner、30s timeout、SIGTERM/crash/durability、
-   生产 health monitor/post-commit wake producer、完整 Observed/runtime startup 与真实进程 restart，以及 expiry 的 generation/snapshot 同事务更新、
-   scheduler/wakeup 与 60s/62s 虚拟时间验证。
-2. 补齐 D3 runtime：完整 YAML、SMTP Ready、hot-reload/restart 与目标 Linux
+1. C2 Backend health monitor + runtime ownership primitive 已获用户通过，状态为 `DONE / Implemented`；
+   该批只提供 process-local health lifecycle/read model，不代表真实 Enforcer/IPC source 或 executable。
+2. 回到 M0 下一条已满足依赖的 preliminary 工作；生产 intake/drain owner、30s timeout、
+   SIGTERM/crash/durability、真实 health source/可执行进程 composition/runtime startup 与真实进程 restart 仍需分别评估授权；
+   已完成的 62s SQLite→Fake 虚拟时间证据不替代这些生产验证。
+3. 补齐 D3 runtime：完整 YAML、SMTP Ready、hot-reload/restart 与目标 Linux
    credential 权限；随后执行 C3、D5–D7 和 Linux SIGKILL/restart/durability。
-3. B3/B4 继续补齐生产等价隔离证据；保持 G18.1–G18.3 `FAIL`、M0 `NO-GO`。
+4. B3/B4 继续补齐生产等价隔离证据；保持 G18.1–G18.3 `FAIL`、M0 `NO-GO`。

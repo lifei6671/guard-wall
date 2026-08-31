@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/fs"
+	"math"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
+	"github.com/lifei6671/guard-wall/internal/decision"
 )
 
 func TestPragmasOnEveryPhysicalConnection(t *testing.T) {
@@ -87,7 +89,7 @@ func TestMigrationEmptyAndIdempotent(t *testing.T) {
 				&migrationCount, &checksum); err != nil {
 				t.Fatalf("read migration ledger: %v", err)
 			}
-			if migrationCount != 3 || len(checksum) != 64 {
+			if migrationCount != 5 || len(checksum) != 64 {
 				t.Fatalf("migration ledger = count %d checksum %q", migrationCount, checksum)
 			}
 
@@ -182,6 +184,181 @@ func TestMigrationRejectsNonPrefixHistory(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMigrationV4UpgradesLegacyDesiredStateWithoutRevisionOrRetryRegression(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	migrations, err := loadMigrations(migrationFileSystem())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migrations) != 5 {
+		t.Fatalf("migration count = %d, want 5", len(migrations))
+	}
+	db, err := openDatabase(ctx, filepath.Join(t.TempDir(), "guard.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := applyMigrations(ctx, db, migrations[:3]); err != nil {
+		t.Fatalf("apply legacy migrations: %v", err)
+	}
+	now := time.Unix(1_700_000_000, 0).UTC().UnixMicro()
+	target := "192.0.2.90/32"
+	orphanTarget := "192.0.2.91/32"
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO node_identity(singleton, node_id, created_at_us) VALUES (1, ?, ?)`,
+		testNodeID, now); err != nil {
+		t.Fatalf("seed legacy node: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO enforcement_states(
+			node_id, canonical_target, desired_membership, observed_membership,
+			timeout_mode, scopes, address_family, policy_coverage,
+			policy_relation_digest, backend_attributes_digest,
+			target_enforcement_generation, confirmed_snapshot_revision
+		) VALUES (?, ?, 'absent', 'unknown', 'none', 1, 4, 'none', ?, ?, 0, 7)`,
+		testNodeID, target, strings.Repeat("1", 64), strings.Repeat("2", 64)); err != nil {
+		t.Fatalf("seed legacy intent: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO target_reconcile_state(
+			node_id, canonical_target, target_enforcement_generation, retry_epoch,
+			status, attempt_count, last_error_code, updated_at_us
+		) VALUES (?, ?, 9, 3, 'degraded', 6, 'legacy', ?)`,
+		testNodeID, target, now); err != nil {
+		t.Fatalf("seed legacy target retry: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO target_reconcile_state(
+			node_id, canonical_target, target_enforcement_generation, retry_epoch,
+			status, attempt_count, last_error_code, updated_at_us
+		) VALUES (?, ?, 9, 4, 'degraded', 6, 'orphan', ?)`,
+		testNodeID, orphanTarget, now); err != nil {
+		t.Fatalf("seed legacy orphan target retry: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reconcile_probe_requirements(
+			node_id, domain, canonical_target, infrastructure_revision,
+			policy_revision, target_enforcement_generation, snapshot_revision,
+			fence_snapshot_revision, retry_epoch, attempt_count, recorded_at_us
+		) VALUES (?, 'infrastructure', '', 1, 0, 0, 9, 1, 0, 1, ?)`,
+		testNodeID, now); err != nil {
+		t.Fatalf("seed legacy probe: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reconcile_probe_requirements(
+			node_id, domain, canonical_target, infrastructure_revision,
+			policy_revision, target_enforcement_generation, snapshot_revision,
+			fence_snapshot_revision, retry_epoch, attempt_count, recorded_at_us
+		) VALUES (?, 'target', ?, 0, 0, 9, 0, 0, 3, 6, ?)`,
+		testNodeID, target, now); err != nil {
+		t.Fatalf("seed legacy matched target probe: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reconcile_probe_requirements(
+			node_id, domain, canonical_target, infrastructure_revision,
+			policy_revision, target_enforcement_generation, snapshot_revision,
+			fence_snapshot_revision, retry_epoch, attempt_count, recorded_at_us
+		) VALUES (?, 'target', ?, 0, 0, 9, 0, 0, 4, 6, ?)`,
+		testNodeID, orphanTarget, now); err != nil {
+		t.Fatalf("seed legacy orphan probe: %v", err)
+	}
+	if err := applyMigrations(ctx, db, migrations); err != nil {
+		t.Fatalf("upgrade through migration v5: %v", err)
+	}
+	var snapshot, generation, retryGeneration, retryEpoch, attempts int64
+	var relationDigest, status string
+	if err := db.QueryRowContext(ctx, `
+		SELECT d.snapshot_revision, e.target_enforcement_generation,
+			e.policy_relation_digest, r.target_enforcement_generation,
+			r.retry_epoch, r.attempt_count, r.status
+		FROM desired_firewall_state d
+		JOIN enforcement_states e ON e.node_id = ? AND e.canonical_target = ?
+		JOIN target_reconcile_state r
+			ON r.node_id = e.node_id AND r.canonical_target = e.canonical_target
+		WHERE d.singleton = 1`, testNodeID, target).Scan(
+		&snapshot, &generation, &relationDigest, &retryGeneration, &retryEpoch, &attempts, &status,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot != 9 || generation != 9 || relationDigest != "" || retryGeneration != 9 ||
+		retryEpoch != 3 || attempts != 6 || status != "degraded" {
+		t.Fatalf("upgraded desired state = snapshot:%d generation:%d digest:%q retry-generation:%d retry:%d attempts:%d status:%s",
+			snapshot, generation, relationDigest, retryGeneration, retryEpoch, attempts, status)
+	}
+	var orphanCount int
+	var orphanGeneration, orphanRetryEpoch, orphanAttempts int64
+	var orphanStatus string
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*), max(target_enforcement_generation), max(retry_epoch),
+			max(attempt_count), max(status)
+		FROM target_reconcile_state
+		WHERE node_id = ? AND canonical_target = ?`, testNodeID, orphanTarget).Scan(
+		&orphanCount, &orphanGeneration, &orphanRetryEpoch, &orphanAttempts, &orphanStatus,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if orphanCount != 1 || orphanGeneration != 9 || orphanRetryEpoch != 4 ||
+		orphanAttempts != 6 || orphanStatus != "degraded" {
+		t.Fatalf("legacy unmaterialized retry = count:%d generation:%d retry:%d attempts:%d status:%s",
+			orphanCount, orphanGeneration, orphanRetryEpoch, orphanAttempts, orphanStatus)
+	}
+	database := &Store{db: db}
+	service := newDecisionLifecycleService(t, database)
+	if _, err := service.BanManual(ctx, decision.ManualRequest{
+		DecisionID: "manual-after-v4-matched", NodeID: testNodeID,
+		Target: netip.MustParsePrefix(target), CreatedAt: time.Unix(1_700_000_050, 0).UTC(),
+	}, false); err != nil {
+		t.Fatalf("first Decision after matched migration: %v", err)
+	}
+	assertDesiredTargetState(
+		t, database, netip.MustParsePrefix(target), "present", 10, 10, "pending", 3, 0,
+	)
+	if _, err := service.BanManual(ctx, decision.ManualRequest{
+		DecisionID: "manual-after-v4-orphan", NodeID: testNodeID,
+		Target: netip.MustParsePrefix(orphanTarget), CreatedAt: time.Unix(1_700_000_100, 0).UTC(),
+	}, false); err != nil {
+		t.Fatalf("first Decision after orphan migration: %v", err)
+	}
+	assertDesiredTargetState(
+		t, database, netip.MustParsePrefix(orphanTarget), "present", 10, 11, "pending", 4, 0,
+	)
+	var retainedProbeGeneration, retainedProbeAttempts int64
+	if err := db.QueryRowContext(ctx, `
+		SELECT target_enforcement_generation, attempt_count
+		FROM reconcile_probe_requirements
+		WHERE node_id = ? AND domain = 'target' AND canonical_target = ?`,
+		testNodeID, orphanTarget).Scan(&retainedProbeGeneration, &retainedProbeAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if retainedProbeGeneration != 9 || retainedProbeAttempts != 6 {
+		t.Fatalf("legacy probe = generation:%d attempts:%d", retainedProbeGeneration, retainedProbeAttempts)
+	}
+}
+
+func TestPutTargetEnforcementIntentRejectsGenerationBeyondSQLiteInteger(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	seedNodeAndRule(t, ctx, database)
+	uow, err := database.BeginProcessing(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := netip.MustParsePrefix("192.0.2.92/32")
+	err = uow.PutTargetEnforcementIntent(ctx, core.NormalizedTargetEnforcementIntent{
+		NodeID: testNodeID, CanonicalTarget: target, BanMembership: core.BanPresent,
+		TimeoutMode: core.TimeoutNone, Scopes: core.ScopeInput, AddressFamily: core.AddressFamilyIPv4,
+		PolicyCoverage: core.PolicyCoverageNone, BackendAttributesDigest: strings.Repeat("f", 64),
+		Generation: core.TargetEnforcementGeneration(uint64(math.MaxInt64) + 1),
+	})
+	if err == nil || !strings.Contains(err.Error(), "generation is exhausted") {
+		t.Fatalf("PutTargetEnforcementIntent() error = %v", err)
+	}
+	if rollbackErr := uow.Rollback(); rollbackErr != nil {
+		t.Fatal(rollbackErr)
 	}
 }
 
@@ -566,7 +743,10 @@ var m0Tables = []string{
 	"alerts",
 	"decisions",
 	"desired_ban_projections",
+	"desired_firewall_state",
 	"enforcement_states",
+	"infrastructure_observed_state",
+	"policy_observed_state",
 	"infrastructure_reconcile_state",
 	"policy_reconcile_state",
 	"target_reconcile_state",

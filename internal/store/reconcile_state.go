@@ -12,7 +12,8 @@ import (
 	"github.com/lifei6671/guard-wall/internal/core"
 )
 
-var ErrReconcileStateRegression = errors.New("reconcile state would regress")
+// ErrReconcileStateRegression is retained as the Store-facing classification.
+var ErrReconcileStateRegression = core.ErrReconcileStateRegression
 
 const maxPersistedReconcileAttempts uint32 = 6
 
@@ -164,6 +165,11 @@ func (s *Store) ApplyReconcileTransition(ctx context.Context, transition core.Re
 	if transition.UpsertProbe != nil {
 		if err := upsertProbeRequirement(ctx, tx, *transition.UpsertProbe); err != nil {
 			return fmt.Errorf("apply reconcile transition: upsert probe requirement: %w", err)
+		}
+	}
+	if transition.Observed != nil {
+		if err := writeObservedFirewallUpdate(ctx, tx, *transition.Observed); err != nil {
+			return fmt.Errorf("apply reconcile transition: write Observed state: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -507,10 +513,21 @@ func validateReconcileTransition(transition core.ReconcileStateTransition) error
 		if err := validateProbeRequirement(*transition.DeleteProbe); err != nil {
 			return fmt.Errorf("delete probe: %w", err)
 		}
+		if transition.Observed != nil {
+			return fmt.Errorf("delete-only transition cannot contain Observed state")
+		}
 		return nil
 	}
 	if err := validatePersistedReconcileState(transition.State); err != nil {
 		return err
+	}
+	if transition.Observed != nil {
+		if err := validateObservedFirewallUpdate(*transition.Observed); err != nil {
+			return fmt.Errorf("Observed state: %w", err)
+		}
+		if transition.Observed.NodeID != transition.State.NodeID {
+			return fmt.Errorf("Observed state node does not match reconcile state")
+		}
 	}
 	if transition.UpsertProbe != nil {
 		if err := validateProbeRequirement(*transition.UpsertProbe); err != nil {

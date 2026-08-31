@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	appclock "github.com/lifei6671/guard-wall/internal/clock"
 	"github.com/lifei6671/guard-wall/internal/core"
 	"github.com/lifei6671/guard-wall/internal/firewall/fake"
 )
@@ -150,6 +151,88 @@ func TestDispatcherQueueCoalescesAndBackpressureIsCancelable(t *testing.T) {
 	assertNoRunError(t, runErr)
 }
 
+func TestDispatcherTreatsExpiredTargetAsNoOpAndContinues(t *testing.T) {
+	clock := newDispatcherManualClock()
+	backend := fake.NewBackend()
+	controller := newTestController(t, backend, clock, &memoryAudit{})
+	expiredTarget := netip.MustParsePrefix("192.0.2.4/32")
+	liveTarget := netip.MustParsePrefix("192.0.2.5/32")
+	expiredIntent := targetIntent(expiredTarget, 1)
+	expiresAt := clock.Now()
+	expiredIntent.EffectiveUntil = &expiresAt
+	expiredIntent.TimeoutMode = core.TimeoutNative
+	desired := desiredSnapshot(expiredIntent, targetIntent(liveTarget, 1))
+	setDesired(t, controller, desired)
+	provider := &staticPlanProvider{plans: map[ReconcileKey]fake.OperationPlan{
+		targetKey(expiredTarget): targetPlan(desired, expiredTarget),
+		targetKey(liveTarget):    targetPlan(desired, liveTarget),
+	}}
+	dispatcher := newTestDispatcher(t, controller, provider, clock, 2)
+	if err := dispatcher.Wake(context.Background(), targetKey(expiredTarget)); err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatcher.Wake(context.Background(), targetKey(liveTarget)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel, runErr := runDispatcher(t, dispatcher)
+	defer cancel()
+
+	waitForRetryState(t, controller, liveTarget, func(state core.RetryState) bool {
+		return state.Status == core.ReconcileConverged && state.AttemptCount == 1
+	})
+	assertNoRunError(t, runErr)
+	if _, _, exists := controller.TargetState(expiredTarget); exists {
+		t.Fatal("expired target consumed retry budget")
+	}
+	if provider.CallCount(targetKey(expiredTarget)) != 1 || provider.CallCount(targetKey(liveTarget)) != 1 {
+		t.Fatalf("Plan reads: expired=%d live=%d, want 1/1",
+			provider.CallCount(targetKey(expiredTarget)), provider.CallCount(targetKey(liveTarget)))
+	}
+	probes, applies := backend.Counts()
+	if probes != 1 || applies != 1 {
+		t.Fatalf("dispatcher crossed expired mutation boundary: probes=%d applies=%d, want 1/1 from live target", probes, applies)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("dispatcher context ended while processing expired target: %v", err)
+	}
+}
+
+func TestDispatcherRefreshesExpiredStalePlanBeforeNoOp(t *testing.T) {
+	clock := newDispatcherManualClock()
+	backend := fake.NewBackend()
+	controller := newTestController(t, backend, clock, &memoryAudit{})
+	target := netip.MustParsePrefix("192.0.2.4/32")
+	current := desiredSnapshot(targetIntent(target, 2))
+	setDesired(t, controller, current)
+	staleIntent := targetIntent(target, 1)
+	expiresAt := clock.Now()
+	staleIntent.EffectiveUntil = &expiresAt
+	staleIntent.TimeoutMode = core.TimeoutNative
+	stale := desiredSnapshot(staleIntent)
+	provider := &refreshingPlanProvider{
+		first: targetPlan(stale, target),
+		fresh: targetPlan(current, target),
+	}
+	dispatcher := newTestDispatcher(t, controller, provider, clock, 1)
+	ctx, cancel, runErr := runDispatcher(t, dispatcher)
+	defer cancel()
+	if err := dispatcher.Wake(ctx, targetKey(target)); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForRetryState(t, controller, target, func(state core.RetryState) bool {
+		return state.Status == core.ReconcileConverged && state.AttemptCount == 1
+	})
+	assertNoRunError(t, runErr)
+	if provider.CallCount() != 2 {
+		t.Fatalf("Plan reads=%d, want stale plus fresh", provider.CallCount())
+	}
+	probes, applies := backend.Counts()
+	if probes != 1 || applies != 1 {
+		t.Fatalf("fresh current Plan did not converge: probes=%d applies=%d", probes, applies)
+	}
+}
+
 func TestDispatcherBlockedReservationDoesNotDefeatDuplicateCancellation(t *testing.T) {
 	clock := newDispatcherManualClock()
 	controller := newTestController(t, fake.NewBackend(), clock, &memoryAudit{})
@@ -191,7 +274,7 @@ func TestDispatcherRestoresPersistedAbsoluteDeadlineOnRun(t *testing.T) {
 
 	firstStore := openRestartStore(t, ctx, path, clock.Now())
 	first := newPersistentTestController(t, ctx, firstStore, backend, clock, &memoryAudit{})
-	setDesired(t, first, desired)
+	setPersistentDesired(t, ctx, firstStore, first, desired)
 	backend.healthy.Store(false)
 	if _, err := first.Execute(ctx, plan); !errors.Is(err, errBackendUnavailable) {
 		t.Fatalf("first Execute error=%v", err)
@@ -204,7 +287,7 @@ func TestDispatcherRestoresPersistedAbsoluteDeadlineOnRun(t *testing.T) {
 	secondStore := openRestartStore(t, ctx, path, clock.Now())
 	defer secondStore.Close()
 	second := newPersistentTestController(t, ctx, secondStore, backend, clock, &memoryAudit{})
-	setDesired(t, second, desired)
+	setPersistentDesired(t, ctx, secondStore, second, desired)
 	provider := &staticPlanProvider{
 		keys:  []ReconcileKey{targetKey(target)},
 		plans: map[ReconcileKey]fake.OperationPlan{targetKey(target): plan},
@@ -248,7 +331,7 @@ func TestDispatcherRestartRetainsProbeBarrierUntilFutureDeadline(t *testing.T) {
 
 	firstStore := openRestartStore(t, ctx, path, clock.Now())
 	first := newPersistentTestController(t, ctx, firstStore, backend, clock, &memoryAudit{})
-	setDesired(t, first, desired)
+	setPersistentDesired(t, ctx, firstStore, first, desired)
 	backend.healthy.Store(false)
 	if _, err := first.Execute(ctx, plan); !errors.Is(err, errBackendUnavailable) {
 		t.Fatalf("first Execute error=%v", err)
@@ -261,7 +344,7 @@ func TestDispatcherRestartRetainsProbeBarrierUntilFutureDeadline(t *testing.T) {
 	secondStore := openRestartStore(t, ctx, path, clock.Now())
 	defer secondStore.Close()
 	second := newPersistentTestController(t, ctx, secondStore, backend, clock, &memoryAudit{})
-	setDesired(t, second, desired)
+	setPersistentDesired(t, ctx, secondStore, second, desired)
 	provider := &staticPlanProvider{
 		keys:  []ReconcileKey{targetKey(target)},
 		plans: map[ReconcileKey]fake.OperationPlan{targetKey(target): plan},
@@ -308,7 +391,7 @@ func TestDispatcherStartupProbeConvergesPersistedAmbiguousMutation(t *testing.T)
 
 	firstStore := openRestartStore(t, ctx, path, clock.Now())
 	first := newPersistentTestController(t, ctx, firstStore, backend, clock, &memoryAudit{})
-	setDesired(t, first, desired)
+	setPersistentDesired(t, ctx, firstStore, first, desired)
 	result, err := first.Execute(ctx, plan)
 	if err != nil || result.Apply.Kind != fake.ResultUnknown {
 		t.Fatalf("first Execute: result=%+v err=%v", result, err)
@@ -320,7 +403,7 @@ func TestDispatcherStartupProbeConvergesPersistedAmbiguousMutation(t *testing.T)
 	secondStore := openRestartStore(t, ctx, path, clock.Now())
 	defer secondStore.Close()
 	second := newPersistentTestController(t, ctx, secondStore, backend, clock, &memoryAudit{})
-	setDesired(t, second, desired)
+	setPersistentDesired(t, ctx, secondStore, second, desired)
 	provider := &staticPlanProvider{
 		keys:  []ReconcileKey{targetKey(target)},
 		plans: map[ReconcileKey]fake.OperationPlan{targetKey(target): plan},
@@ -360,7 +443,7 @@ func TestDispatcherStartupProbeConfirmsMultipleConvergedKeysWithoutMutation(t *t
 
 	firstStore := openRestartStore(t, ctx, path, clock.Now())
 	first := newPersistentTestController(t, ctx, firstStore, backend, clock, &memoryAudit{})
-	setDesired(t, first, desired)
+	setPersistentDesired(t, ctx, firstStore, first, desired)
 	for _, target := range []netip.Prefix{targetA, targetB} {
 		if _, err := first.Execute(ctx, plans[targetKey(target)]); err != nil {
 			t.Fatalf("converge %s: %v", target, err)
@@ -374,7 +457,7 @@ func TestDispatcherStartupProbeConfirmsMultipleConvergedKeysWithoutMutation(t *t
 	secondStore := openRestartStore(t, ctx, path, clock.Now())
 	defer secondStore.Close()
 	second := newPersistentTestController(t, ctx, secondStore, backend, clock, &memoryAudit{})
-	setDesired(t, second, desired)
+	setPersistentDesired(t, ctx, secondStore, second, desired)
 	provider := &staticPlanProvider{
 		keys:  []ReconcileKey{targetKey(targetA), targetKey(targetB)},
 		plans: plans,
@@ -435,7 +518,7 @@ func TestDispatcherWakeDuringPlanLoadTriggersASecondFreshRead(t *testing.T) {
 	assertNoRunError(t, runErr)
 }
 
-func TestDispatcherExpiredDeadlineProbeFailureDoesNotHotLoop(t *testing.T) {
+func TestDispatcherExpiredDeadlineProbeFailureUsesHealthBackoffWithoutHotLoop(t *testing.T) {
 	clock := newDispatcherManualClock()
 	backend := newHealthFlapBackend()
 	controller := newTestController(t, backend, clock, &memoryAudit{})
@@ -462,8 +545,8 @@ func TestDispatcherExpiredDeadlineProbeFailureDoesNotHotLoop(t *testing.T) {
 	}
 	clock.Advance(time.Hour)
 	time.Sleep(10 * time.Millisecond)
-	if backend.probeAttempts.Load() != 1 {
-		t.Fatalf("past deadline entered a Probe hot loop: probes=%d", backend.probeAttempts.Load())
+	if backend.probeAttempts.Load() != 2 {
+		t.Fatalf("health backoff Probe count=%d, want 2", backend.probeAttempts.Load())
 	}
 	_, state, _ := controller.TargetState(target)
 	if state.AttemptCount != 1 || state.Status != core.ReconcileRetryWaiting {
@@ -559,6 +642,33 @@ type blockingPlanProvider struct {
 	release   chan struct{}
 }
 
+type refreshingPlanProvider struct {
+	mu    sync.Mutex
+	first fake.OperationPlan
+	fresh fake.OperationPlan
+	calls int
+}
+
+func (p *refreshingPlanProvider) ReconcileKeys(context.Context) ([]ReconcileKey, error) {
+	return nil, nil
+}
+
+func (p *refreshingPlanProvider) CurrentPlan(context.Context, ReconcileKey) (fake.OperationPlan, bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	if p.calls == 1 {
+		return p.first, true, nil
+	}
+	return p.fresh, true, nil
+}
+
+func (p *refreshingPlanProvider) CallCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
 func newBlockingPlanProvider(plan fake.OperationPlan) *blockingPlanProvider {
 	return &blockingPlanProvider{plan: plan, firstRead: make(chan struct{}), release: make(chan struct{})}
 }
@@ -607,9 +717,9 @@ func (p *staticPlanProvider) CallCount(key ReconcileKey) int {
 	return p.calls[key]
 }
 
-func newTestDispatcher(t *testing.T, controller *Controller, plans PlanProvider, clock dispatcherClock, capacity int) *Dispatcher {
+func newTestDispatcher(t *testing.T, controller *Controller, plans PlanProvider, schedulerClock appclock.Clock, capacity int) *Dispatcher {
 	t.Helper()
-	dispatcher, err := newDispatcher(controller, plans, capacity, clock)
+	dispatcher, err := NewDispatcherWithClock(controller, plans, capacity, schedulerClock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -723,7 +833,7 @@ func (c *dispatcherManualClock) Now() time.Time {
 	return c.now
 }
 
-func (c *dispatcherManualClock) NewTimer(delay time.Duration) dispatcherTimer {
+func (c *dispatcherManualClock) NewTimer(delay time.Duration) appclock.Timer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	timer := &dispatcherManualTimer{clock: c, ch: make(chan time.Time, 1)}

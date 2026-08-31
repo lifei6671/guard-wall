@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	appclock "github.com/lifei6671/guard-wall/internal/clock"
 	"github.com/lifei6671/guard-wall/internal/core"
 )
 
@@ -52,7 +53,7 @@ type LifecycleAudit struct {
 // LifecycleTransaction is the narrow SQLite transaction port used by Manual
 // and expiration application-service operations.
 type LifecycleTransaction interface {
-	ProjectionTransaction
+	DesiredStateTransaction
 	InsertManualDecision(context.Context, core.Decision) (bool, error)
 	FindDecisionByID(context.Context, core.DecisionID) (core.Decision, bool, error)
 	FindActiveManualDecision(context.Context, core.NodeID, netip.Prefix) (core.Decision, bool, error)
@@ -66,20 +67,48 @@ type TransactionRunner interface {
 	RunDecisionTransaction(context.Context, func(LifecycleTransaction) error) error
 }
 
-// LifecycleService is the preliminary application-service boundary for Manual
-// and expiry Decision/Projection/Audit writes. It must not be wired into the
-// runtime until the same transaction also owns enforcement generation and
-// snapshot revision updates. Callers never receive a transaction handle.
+// LifecycleService owns Manual and expiry Decision, Projection, normalized
+// Intent, SnapshotRevision, retry reset, Audit, and post-commit Target wake.
+// Callers never receive a transaction handle.
 type LifecycleService struct {
-	runner TransactionRunner
+	runner          TransactionRunner
+	finalizer       *DesiredStateFinalizer
+	wake            TargetWakeSink
+	expirationClock appclock.Clock
 }
 
 // NewLifecycleService constructs a Decision lifecycle application service.
-func NewLifecycleService(runner TransactionRunner) (*LifecycleService, error) {
+func NewLifecycleService(
+	runner TransactionRunner,
+	finalizer *DesiredStateFinalizer,
+	wake TargetWakeSink,
+) (*LifecycleService, error) {
+	return NewLifecycleServiceWithClock(runner, finalizer, wake, appclock.NewWallClock())
+}
+
+// NewLifecycleServiceWithClock constructs a Decision lifecycle application
+// service using schedulerClock for expiration scheduling.
+func NewLifecycleServiceWithClock(
+	runner TransactionRunner,
+	finalizer *DesiredStateFinalizer,
+	wake TargetWakeSink,
+	schedulerClock appclock.Clock,
+) (*LifecycleService, error) {
 	if runner == nil {
 		return nil, fmt.Errorf("decision transaction runner is required")
 	}
-	return &LifecycleService{runner: runner}, nil
+	if finalizer == nil {
+		return nil, fmt.Errorf("desired state finalizer is required")
+	}
+	if wake == nil {
+		return nil, fmt.Errorf("target wake sink is required")
+	}
+	if schedulerClock == nil {
+		return nil, fmt.Errorf("expiration scheduler clock is required")
+	}
+	return &LifecycleService{
+		runner: runner, finalizer: finalizer, wake: wake, expirationClock: schedulerClock,
+	}, nil
 }
 
 // BanManual creates a Manual Decision or atomically replaces the current
@@ -89,7 +118,7 @@ func (s *LifecycleService) BanManual(
 	request ManualRequest,
 	replace bool,
 ) (ManualResult, error) {
-	if s == nil || s.runner == nil {
+	if s == nil || s.runner == nil || s.finalizer == nil || s.wake == nil {
 		return ManualResult{}, fmt.Errorf("decision lifecycle service is not initialized")
 	}
 	if ctx == nil {
@@ -100,9 +129,28 @@ func (s *LifecycleService) BanManual(
 	err := s.runner.RunDecisionTransaction(ctx, func(tx LifecycleTransaction) error {
 		var err error
 		result, err = RecordManualInTransaction(ctx, tx, request, replace)
+		if err != nil {
+			return err
+		}
+		projection, found, err := tx.FindDecisionProjection(ctx, request.NodeID, request.Target)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("manual decision projection was not materialized")
+		}
+		result.EnforcementChanges, err = s.finalizer.FinalizeTargets(
+			ctx, tx, []core.DesiredBanProjection{projection}, request.CreatedAt,
+		)
 		return err
 	})
 	if err != nil {
+		if !errors.Is(err, ErrCommitUnknown) {
+			return ManualResult{}, err
+		}
+		return result, err
+	}
+	if err := WakeCommittedTargets(ctx, s.wake, result.EnforcementChanges); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -111,13 +159,22 @@ func (s *LifecycleService) BanManual(
 // ExpirationResult reports every Decision terminated by one transaction and
 // the once-per-target Projections rebuilt from the remaining Active set.
 type ExpirationResult struct {
-	Expired     []core.Decision
-	Projections []core.DesiredBanProjection
+	Expired            []core.Decision
+	Projections        []core.DesiredBanProjection
+	EnforcementChanges []TargetEnforcementChange
 }
 
 // Expire atomically terminates every Active Decision due at now.
 func (s *LifecycleService) Expire(ctx context.Context, now time.Time) (ExpirationResult, error) {
-	if s == nil || s.runner == nil {
+	return s.expire(ctx, now, true)
+}
+
+func (s *LifecycleService) expire(
+	ctx context.Context,
+	now time.Time,
+	wake bool,
+) (ExpirationResult, error) {
+	if s == nil || s.runner == nil || s.finalizer == nil || s.wake == nil {
 		return ExpirationResult{}, fmt.Errorf("decision lifecycle service is not initialized")
 	}
 	if ctx == nil {
@@ -128,10 +185,22 @@ func (s *LifecycleService) Expire(ctx context.Context, now time.Time) (Expiratio
 	err := s.runner.RunDecisionTransaction(ctx, func(tx LifecycleTransaction) error {
 		var err error
 		result, err = ExpireInTransaction(ctx, tx, now)
+		if err != nil {
+			return err
+		}
+		result.EnforcementChanges, err = s.finalizer.FinalizeTargets(ctx, tx, result.Projections, now)
 		return err
 	})
 	if err != nil {
+		if !errors.Is(err, ErrCommitUnknown) {
+			return ExpirationResult{}, err
+		}
 		return result, err
+	}
+	if wake {
+		if err := WakeCommittedTargets(ctx, s.wake, result.EnforcementChanges); err != nil {
+			return result, err
+		}
 	}
 	return result, nil
 }

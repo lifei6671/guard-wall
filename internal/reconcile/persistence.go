@@ -18,6 +18,20 @@ type RetryStateStore interface {
 	ApplyReconcileTransition(context.Context, core.ReconcileStateTransition) error
 }
 
+// ObservedStateStore persists the latest authoritative Firewall observation.
+// Callers must still perform a fresh Probe after process restart; this cache is
+// never itself proof of current physical state.
+type ObservedStateStore interface {
+	LoadObservedFirewallSnapshot(context.Context, core.NodeID) (core.ObservedFirewallSnapshot, error)
+	ApplyObservedFirewallUpdate(context.Context, core.ObservedFirewallUpdate) error
+}
+
+// PersistentStateStore is the complete durable boundary owned by Controller.
+type PersistentStateStore interface {
+	RetryStateStore
+	ObservedStateStore
+}
+
 // NewPersistentController constructs a controller and hydrates its durable
 // retry ledger before any Desired snapshot or external mutation is published.
 func NewPersistentController(
@@ -26,7 +40,7 @@ func NewPersistentController(
 	backend Backend,
 	clock Clock,
 	audit CriticalAuditWriter,
-	store RetryStateStore,
+	store PersistentStateStore,
 ) (*Controller, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("context is required")
@@ -51,7 +65,19 @@ func NewPersistentController(
 	if err := controller.hydrateRecovery(recovery); err != nil {
 		return nil, fmt.Errorf("hydrate reconcile recovery: %w", err)
 	}
-	controller.startupProbeRequired = len(recovery.States) != 0 || len(recovery.ProbeRequirements) != 0
+	observed, err := store.LoadObservedFirewallSnapshot(ctx, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("load Observed firewall snapshot: %w", err)
+	}
+	if observed.NodeID != "" && observed.NodeID != nodeID {
+		return nil, fmt.Errorf("Observed firewall snapshot belongs to node %q", observed.NodeID)
+	}
+	controller.seedObservedClock(observed)
+	// Any recovered durable state requires a fresh physical observation. A new,
+	// empty database may begin normally; Dispatcher still probes every Desired
+	// domain because DesiredPlanProvider returns the complete startup key set.
+	controller.startupProbeRequired = len(recovery.States) != 0 ||
+		len(recovery.ProbeRequirements) != 0 || observedSnapshotHasState(observed)
 	return controller, nil
 }
 
@@ -185,10 +211,24 @@ func (c *Controller) persistStateLocked(
 	upsertKey *pendingProbeKey,
 	deleteKey *pendingProbeKey,
 ) error {
+	return c.persistStateWithObservedLocked(ctx, ref, state, upsertKey, deleteKey, nil)
+}
+
+func (c *Controller) persistStateWithObservedLocked(
+	ctx context.Context,
+	ref attemptRef,
+	state core.RetryState,
+	upsertKey *pendingProbeKey,
+	deleteKey *pendingProbeKey,
+	observed *core.ObservedFirewallUpdate,
+) error {
 	if c.store == nil {
 		return nil
 	}
-	transition := core.ReconcileStateTransition{State: c.persistedState(ref, state)}
+	transition := core.ReconcileStateTransition{
+		State:    c.persistedState(ref, state),
+		Observed: observed,
+	}
 	if upsertKey != nil {
 		transition.UpsertProbe = pointerTo(c.persistedProbe(*upsertKey, ref, state.AttemptCount))
 	}
@@ -205,6 +245,17 @@ func (c *Controller) persistStateAndClearProbeLocked(
 	key pendingProbeKey,
 	pendingRef attemptRef,
 ) error {
+	return c.persistStateAndClearProbeWithObservedLocked(ctx, stateRef, state, key, pendingRef, nil)
+}
+
+func (c *Controller) persistStateAndClearProbeWithObservedLocked(
+	ctx context.Context,
+	stateRef attemptRef,
+	state core.RetryState,
+	key pendingProbeKey,
+	pendingRef attemptRef,
+	observed *core.ObservedFirewallUpdate,
+) error {
 	if c.store == nil {
 		return nil
 	}
@@ -215,6 +266,7 @@ func (c *Controller) persistStateAndClearProbeLocked(
 	return c.applyTransitionLocked(ctx, core.ReconcileStateTransition{
 		State:       c.persistedState(stateRef, state),
 		DeleteProbe: pointerTo(c.persistedProbe(key, pendingRef, pendingState.AttemptCount)),
+		Observed:    observed,
 	})
 }
 
@@ -243,6 +295,14 @@ func (c *Controller) applyTransitionLocked(ctx context.Context, transition core.
 		return errors.Join(err, fmt.Errorf("read back indeterminate reconcile commit: %w", loadErr))
 	}
 	applied := reconcileTransitionApplied(recovery, transition)
+	if transition.Observed != nil {
+		observed, observedErr := c.store.LoadObservedFirewallSnapshot(ctx, c.nodeID)
+		if observedErr != nil {
+			c.recoveryReloadNeeded = true
+			return errors.Join(err, fmt.Errorf("read back indeterminate Observed commit: %w", observedErr))
+		}
+		applied = applied && observedUpdateApplied(observed, *transition.Observed)
+	}
 	if replaceErr := c.replaceRecoveryLocked(recovery); replaceErr != nil {
 		c.recoveryReloadNeeded = true
 		return errors.Join(err, fmt.Errorf("replace state after indeterminate reconcile commit: %w", replaceErr))

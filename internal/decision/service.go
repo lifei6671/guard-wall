@@ -74,9 +74,10 @@ type ManualRequest struct {
 
 // ManualResult returns both sides of an atomic replace when Replaced is true.
 type ManualResult struct {
-	Previous *core.Decision
-	Current  core.Decision
-	Replaced bool
+	Previous           *core.Decision
+	Current            core.Decision
+	Replaced           bool
+	EnforcementChanges []TargetEnforcementChange
 }
 
 // MemoryService is the M0 in-memory Decision write boundary. Its mutex represents the atomic

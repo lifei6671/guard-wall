@@ -39,13 +39,16 @@ type outcomeWriter interface {
 
 type processingUnitOfWork interface {
 	outcomeWriter
+	finalizeDesiredState(context.Context) error
 	writeReceipt(context.Context, core.ProcessingReceipt) error
 	commit(context.Context) (commitState, error)
+	notifyCommitted(context.Context) error
 	rollback() error
 }
 
 type processingStore interface {
 	findReceipt(context.Context, core.DeliveryID) (core.ProcessingReceipt, bool, error)
+	notifyReceiptReplay(context.Context) error
 	beginProcessing(context.Context) (processingUnitOfWork, error)
 }
 
@@ -138,6 +141,9 @@ func (c *Coordinator) processLeader(ctx context.Context, delivery core.Delivery)
 			return core.DurableCompletion{}, err
 		}
 		c.resolvePending(delivery.ID, true)
+		if err := c.store.notifyReceiptReplay(ctx); err != nil {
+			return completion, err
+		}
 		return completion, nil
 	}
 	c.resolvePending(delivery.ID, false)
@@ -158,6 +164,10 @@ func (c *Coordinator) processLeader(ctx context.Context, delivery core.Delivery)
 	if err := prepared.write(ctx, tx); err != nil {
 		prepared.abort()
 		return core.DurableCompletion{}, rollbackWithCause(tx, fmt.Errorf("run processing attempt: %w", err))
+	}
+	if err := tx.finalizeDesiredState(ctx); err != nil {
+		prepared.abort()
+		return core.DurableCompletion{}, rollbackWithCause(tx, fmt.Errorf("finalize desired state: %w", err))
 	}
 
 	kind, failure := prepared.terminal()
@@ -181,7 +191,10 @@ func (c *Coordinator) processLeader(ctx context.Context, delivery core.Delivery)
 			// Confirmed means durable state won. Keep the post-commit ledger in
 			// sync even if an adapter also reports an invariant error.
 			prepared.confirm()
-			return core.DurableCompletion{}, fmt.Errorf("commit reported confirmed with error: %w", commitErr)
+			notifyErr := tx.notifyCommitted(ctx)
+			return core.DurableCompletion{}, errors.Join(
+				fmt.Errorf("commit reported confirmed with error: %w", commitErr), notifyErr,
+			)
 		}
 		completion, err := completionFromReceipt(delivery, receipt)
 		if err != nil {
@@ -191,6 +204,9 @@ func (c *Coordinator) processLeader(ctx context.Context, delivery core.Delivery)
 			return core.DurableCompletion{}, err
 		}
 		prepared.confirm()
+		if err := tx.notifyCommitted(ctx); err != nil {
+			return completion, err
+		}
 		return completion, nil
 	case commitRejected:
 		prepared.abort()
@@ -215,6 +231,9 @@ func (c *Coordinator) processLeader(ctx context.Context, delivery core.Delivery)
 				return core.DurableCompletion{}, err
 			}
 			prepared.confirm()
+			if err := tx.notifyCommitted(readbackContext); err != nil {
+				return completion, err
+			}
 			return completion, nil
 		}
 		if readErr == nil {

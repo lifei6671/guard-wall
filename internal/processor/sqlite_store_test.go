@@ -17,6 +17,7 @@ import (
 	"github.com/lifei6671/guard-wall/internal/core"
 	"github.com/lifei6671/guard-wall/internal/decision"
 	"github.com/lifei6671/guard-wall/internal/detection"
+	"github.com/lifei6671/guard-wall/internal/enforcement"
 	"github.com/lifei6671/guard-wall/internal/store"
 	"modernc.org/sqlite"
 )
@@ -24,7 +25,7 @@ import (
 func TestSQLiteCoordinatorReceiptReplaySkipsSecondAttempt(t *testing.T) {
 	database, _ := openSQLiteProcessingStore(t)
 	runner := &zeroOutcomeRunner{}
-	coordinator := NewCoordinator(NewSQLiteStoreAdapter(database), runner)
+	coordinator := NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), runner)
 	delivery := testDelivery(t, 1)
 
 	if _, err := coordinator.Process(context.Background(), delivery); err != nil {
@@ -46,7 +47,7 @@ func TestSQLiteCoordinatorReceiptReplaySkipsSecondAttempt(t *testing.T) {
 
 func TestSQLiteCoordinatorCommitUnknownUsesIndependentReceiptReadback(t *testing.T) {
 	database, _ := openSQLiteProcessingStore(t)
-	adapter := NewSQLiteStoreAdapter(database)
+	adapter := newEnforcingSQLiteStoreAdapter(t, database)
 	commitResultLost := errors.New("injected connection loss after commit")
 	adapter.commit = func(unit *store.UnitOfWork) error {
 		if err := unit.Commit(); err != nil {
@@ -67,7 +68,7 @@ func TestSQLiteCoordinatorCommitUnknownUsesIndependentReceiptReadback(t *testing
 
 func TestSQLiteCommitCanceledBeforeCommitRollsBackAndClosesTransaction(t *testing.T) {
 	database, _ := openSQLiteProcessingStore(t)
-	adapter := NewSQLiteStoreAdapter(database)
+	adapter := newEnforcingSQLiteStoreAdapter(t, database)
 	ctx, cancel := context.WithCancel(context.Background())
 	unit, err := adapter.beginProcessing(ctx)
 	if err != nil {
@@ -107,7 +108,7 @@ func TestSQLiteCoordinatorCommitsTypedOutcomesWithReceipt(t *testing.T) {
 	seedSQLiteProcessingCatalog(t, path)
 	delivery := testDelivery(t, 1)
 
-	if _, err := NewCoordinator(NewSQLiteStoreAdapter(database), &fullRunner{}).
+	if _, err := NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), &fullRunner{}).
 		Process(context.Background(), delivery); err != nil {
 		t.Fatalf("Process(): %v", err)
 	}
@@ -156,7 +157,7 @@ func TestSQLitePipelineCommitsPlanDetectionEffectsReceiptAndWindow(t *testing.T)
 	pipeline := NewPipeline(planNodeID, catalog, parsers, evaluator, ledger)
 	pipeline.clock = func() time.Time { return delivery.Record.ObservedAt.Add(time.Second) }
 
-	completion, err := NewCoordinator(NewSQLiteStoreAdapter(database), pipeline).
+	completion, err := NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), pipeline).
 		Process(context.Background(), delivery)
 	if err != nil {
 		t.Fatalf("Process(): %v", err)
@@ -220,13 +221,17 @@ func TestSQLitePipelineAutomaticDecisionCreateAndDuplicateSuppression(t *testing
 	}
 	firstPipeline := NewPipeline(planNodeID, firstCatalog, statelessParserRunner{}, automaticRuleEvaluator{}, ledger)
 	firstPipeline.clock = func() time.Time { return first.Record.ObservedAt.Add(time.Second) }
-	if _, err := NewCoordinator(NewSQLiteStoreAdapter(database), firstPipeline).Process(context.Background(), first); err != nil {
+	wakes := &processorRecordingWakeSink{}
+	if _, err := NewCoordinator(newEnforcingSQLiteStoreAdapterWithWake(t, database, wakes), firstPipeline).Process(context.Background(), first); err != nil {
 		t.Fatalf("first Process(): %v", err)
 	}
 	secondPipeline := NewPipeline(planNodeID, secondCatalog, statelessParserRunner{}, automaticRuleEvaluator{}, ledger)
 	secondPipeline.clock = func() time.Time { return second.Record.ObservedAt.Add(time.Second) }
-	if _, err := NewCoordinator(NewSQLiteStoreAdapter(database), secondPipeline).Process(context.Background(), second); err != nil {
+	if _, err := NewCoordinator(newEnforcingSQLiteStoreAdapterWithWake(t, database, wakes), secondPipeline).Process(context.Background(), second); err != nil {
 		t.Fatalf("duplicate Process(): %v", err)
+	}
+	if wakes.count() != 1 {
+		t.Fatalf("automatic create/duplicate wakes = %d, want 1", wakes.count())
 	}
 
 	connection = openSQLiteTestConnection(t, path)
@@ -275,6 +280,18 @@ func TestSQLitePipelineAutomaticDecisionCreateAndDuplicateSuppression(t *testing
 		activeCount != 1 || effectiveUntil != firstTriggeredAt.Add(10*time.Minute).UnixMicro() {
 		t.Fatalf("suppression changed projection: state=%s target=%s revision=%d updated=%d active=%d until=%d",
 			projectionState, projectionTarget, projectionRevision, projectionUpdatedAt, activeCount, effectiveUntil)
+	}
+	var membership string
+	var generation, snapshotRevision int64
+	if err := connection.QueryRowContext(context.Background(), `
+		SELECT e.desired_membership, e.target_enforcement_generation, d.snapshot_revision
+		FROM enforcement_states e JOIN desired_firewall_state d ON d.singleton = 1`).Scan(
+		&membership, &generation, &snapshotRevision,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if membership != "present" || generation != 1 || snapshotRevision != 1 {
+		t.Fatalf("automatic desired state = %s/%d/%d", membership, generation, snapshotRevision)
 	}
 	for table, want := range map[string]int{
 		"detection_terminal_outcomes": 2,
@@ -327,6 +344,105 @@ func TestSQLitePipelineAutomaticDecisionCreateAndDuplicateSuppression(t *testing
 		}
 		if snapshot.Count != 1 {
 			t.Fatalf("Window %s count = %d, want 1", version, snapshot.Count)
+		}
+	}
+}
+
+func TestSQLiteAutomaticCommitUnknownReadbackWakesProvenCommit(t *testing.T) {
+	database, path := openSQLiteProcessingStore(t)
+	seedSQLiteProcessingCatalog(t, path)
+	delivery := sqliteDeliveryAt(t, 0, 10, time.Unix(1_700_010_000, 0).UTC())
+	wakes := &processorRecordingWakeSink{}
+	adapter := newEnforcingSQLiteStoreAdapterWithWake(t, database, wakes)
+	adapter.commit = func(unit *store.UnitOfWork) error {
+		if err := unit.Commit(); err != nil {
+			return err
+		}
+		return errors.New("injected lost commit acknowledgement")
+	}
+	completion, err := NewCoordinator(
+		adapter, automaticPipeline(delivery, "v1", detection.NewLedger()),
+	).Process(context.Background(), delivery)
+	if err != nil || completion.DeliveryID != delivery.ID || wakes.count() != 1 {
+		t.Fatalf("commit-unknown proof = %+v/%v wakes=%d", completion, err, wakes.count())
+	}
+}
+
+func TestSQLiteAutomaticPostCommitWakeFailurePreservesCompletion(t *testing.T) {
+	database, path := openSQLiteProcessingStore(t)
+	seedSQLiteProcessingCatalog(t, path)
+	delivery := sqliteDeliveryAt(t, 0, 10, time.Unix(1_700_020_000, 0).UTC())
+	wakeFailure := errors.New("injected automatic wake failure")
+	wakes := &processorFailOnceWakeSink{failure: wakeFailure}
+	adapter := newEnforcingSQLiteStoreAdapterWithWake(t, database, wakes)
+	completion, err := NewCoordinator(
+		adapter, automaticPipeline(delivery, "v1", detection.NewLedger()),
+	).Process(context.Background(), delivery)
+	if !errors.Is(err, decision.ErrPostCommitWake) || !errors.Is(err, wakeFailure) ||
+		completion.DeliveryID != delivery.ID {
+		t.Fatalf("post-commit automatic wake = %+v/%v", completion, err)
+	}
+	if _, found, readErr := database.FindProcessingReceipt(context.Background(), delivery.ID); readErr != nil || !found {
+		t.Fatalf("committed receipt after wake failure = found:%v err:%v", found, readErr)
+	}
+	replayed, err := NewCoordinator(adapter, &zeroOutcomeRunner{}).Process(context.Background(), delivery)
+	if err != nil || replayed.DeliveryID != delivery.ID || wakes.count() != 2 {
+		t.Fatalf("receipt replay wake recovery = %+v/%v calls=%d", replayed, err, wakes.count())
+	}
+}
+
+func TestSQLiteBaseAdapterReceiptReplayIgnoresUnrelatedPendingTarget(t *testing.T) {
+	database, path := openSQLiteProcessingStore(t)
+	seedSQLiteProcessingCatalog(t, path)
+	pendingDelivery := sqliteDeliveryAt(t, 0, 10, time.Unix(1_700_025_000, 0).UTC())
+	if _, err := NewCoordinator(
+		newEnforcingSQLiteStoreAdapter(t, database),
+		automaticPipeline(pendingDelivery, "v1", detection.NewLedger()),
+	).Process(context.Background(), pendingDelivery); err != nil {
+		t.Fatalf("create pending Target: %v", err)
+	}
+	pending, err := database.PendingTargetEnforcementChanges(context.Background())
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending Target changes = %+v, %v", pending, err)
+	}
+
+	delivery := sqliteDeliveryAt(t, 10, 20, time.Unix(1_700_025_001, 0).UTC())
+	runner := &zeroOutcomeRunner{}
+	coordinator := NewCoordinator(NewSQLiteStoreAdapter(database), runner)
+	if _, err := coordinator.Process(context.Background(), delivery); err != nil {
+		t.Fatalf("first Process(): %v", err)
+	}
+	delivery.Sequence = 9
+	completion, err := coordinator.Process(context.Background(), delivery)
+	if err != nil {
+		t.Fatalf("receipt replay: %v", err)
+	}
+	if runner.calls != 1 || completion.Sequence != 9 {
+		t.Fatalf("runner calls/completion = %d/%+v", runner.calls, completion)
+	}
+}
+
+func TestSQLiteBaseAdapterRejectsAutomaticDecisionWithoutDesiredStateDependencies(t *testing.T) {
+	database, path := openSQLiteProcessingStore(t)
+	seedSQLiteProcessingCatalog(t, path)
+	delivery := sqliteDeliveryAt(t, 0, 10, time.Unix(1_700_030_000, 0).UTC())
+	_, err := NewCoordinator(
+		NewSQLiteStoreAdapter(database), automaticPipeline(delivery, "v1", detection.NewLedger()),
+	).Process(context.Background(), delivery)
+	if err == nil || !strings.Contains(err.Error(), "desired-state dependencies are required") {
+		t.Fatalf("base adapter automatic error = %v", err)
+	}
+	connection := openSQLiteTestConnection(t, path)
+	defer connection.Close()
+	for _, table := range []string{
+		"decisions", "desired_ban_projections", "enforcement_states", "processing_receipts",
+	} {
+		var count int
+		if err := connection.QueryRowContext(context.Background(), "SELECT count(*) FROM "+table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("%s count after rejected base adapter = %d", table, count)
 		}
 	}
 }
@@ -388,7 +504,7 @@ func TestSQLitePipelineRulePermanentCommitsTerminalOutcomeAndSuccessSibling(t *t
 		ledger,
 	)
 	pipeline.clock = func() time.Time { return delivery.Record.ObservedAt.Add(time.Second) }
-	if _, err := NewCoordinator(NewSQLiteStoreAdapter(database), pipeline).Process(context.Background(), delivery); err != nil {
+	if _, err := NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), pipeline).Process(context.Background(), delivery); err != nil {
 		t.Fatalf("Process(): %v", err)
 	}
 	receipt, found, err := database.FindProcessingReceipt(context.Background(), delivery.ID)
@@ -484,11 +600,11 @@ func TestSQLiteAutomaticSuppressionReceiptFailureRollsBackAndRetryAppliesOnce(t 
 	duplicate := sqliteDeliveryAt(t, 10, 20, time.Unix(1_700_000_060, 0).UTC())
 	ledger := detection.NewLedger()
 	if _, err := NewCoordinator(
-		NewSQLiteStoreAdapter(database), automaticPipeline(first, "v1", ledger),
+		newEnforcingSQLiteStoreAdapter(t, database), automaticPipeline(first, "v1", ledger),
 	).Process(context.Background(), first); err != nil {
 		t.Fatalf("seed Process(): %v", err)
 	}
-	failing := &receiptFailingSQLiteStore{adapter: NewSQLiteStoreAdapter(database)}
+	failing := &receiptFailingSQLiteStore{adapter: newEnforcingSQLiteStoreAdapter(t, database)}
 	if _, err := NewCoordinator(
 		failing, automaticPipeline(duplicate, "v1", ledger),
 	).Process(context.Background(), duplicate); !errors.Is(err, errInjected) {
@@ -505,7 +621,7 @@ func TestSQLiteAutomaticSuppressionReceiptFailureRollsBackAndRetryAppliesOnce(t 
 		t.Fatalf("Window after rollback = %d, want 1", snapshot.Count)
 	}
 	if _, err := NewCoordinator(
-		NewSQLiteStoreAdapter(database), automaticPipeline(duplicate, "v1", ledger),
+		newEnforcingSQLiteStoreAdapter(t, database), automaticPipeline(duplicate, "v1", ledger),
 	).Process(context.Background(), duplicate); err != nil {
 		t.Fatalf("retry Process(): %v", err)
 	}
@@ -543,7 +659,7 @@ func TestSQLiteRulePermanentReceiptFailureRollsBackAndRetryAppliesOnce(t *testin
 		return pipeline
 	}
 	if _, err := NewCoordinator(
-		&receiptFailingSQLiteStore{adapter: NewSQLiteStoreAdapter(database)}, newPipeline(),
+		&receiptFailingSQLiteStore{adapter: newEnforcingSQLiteStoreAdapter(t, database)}, newPipeline(),
 	).Process(context.Background(), delivery); !errors.Is(err, errInjected) {
 		t.Fatalf("Process() error = %v, want injected receipt failure", err)
 	}
@@ -574,7 +690,7 @@ func TestSQLiteRulePermanentReceiptFailureRollsBackAndRetryAppliesOnce(t *testin
 			t.Fatalf("%s Window after rollback = %d, want 0", ruleID, snapshot.Count)
 		}
 	}
-	if _, err := NewCoordinator(NewSQLiteStoreAdapter(database), newPipeline()).
+	if _, err := NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), newPipeline()).
 		Process(context.Background(), delivery); err != nil {
 		t.Fatalf("retry Process(): %v", err)
 	}
@@ -604,7 +720,7 @@ func TestSQLiteAutomaticCandidateIDConflictDoesNotSuppressAnotherDecision(t *tes
 	duplicate := sqliteDeliveryAt(t, 10, 20, time.Unix(1_700_000_060, 0).UTC())
 	ledger := detection.NewLedger()
 	if _, err := NewCoordinator(
-		NewSQLiteStoreAdapter(database), automaticPipeline(first, "v1", ledger),
+		newEnforcingSQLiteStoreAdapter(t, database), automaticPipeline(first, "v1", ledger),
 	).Process(context.Background(), first); err != nil {
 		t.Fatalf("seed Process(): %v", err)
 	}
@@ -626,7 +742,7 @@ func TestSQLiteAutomaticCandidateIDConflictDoesNotSuppressAnotherDecision(t *tes
 	}
 	connection.Close()
 	if _, err := NewCoordinator(
-		NewSQLiteStoreAdapter(database), automaticPipeline(duplicate, "v1", ledger),
+		newEnforcingSQLiteStoreAdapter(t, database), automaticPipeline(duplicate, "v1", ledger),
 	).Process(context.Background(), duplicate); !errors.Is(err, decision.ErrDecisionIDConflict) {
 		t.Fatalf("duplicate Process() error = %v, want DecisionID conflict", err)
 	}
@@ -673,7 +789,7 @@ func TestSQLiteConcurrentAutomaticDuplicatesAllSuppressSuccessfully(t *testing.T
 	first := sqliteDeliveryAt(t, 0, 10, base)
 	ledger := detection.NewLedger()
 	if _, err := NewCoordinator(
-		NewSQLiteStoreAdapter(database), automaticPipeline(first, "v1", ledger),
+		newEnforcingSQLiteStoreAdapter(t, database), automaticPipeline(first, "v1", ledger),
 	).Process(context.Background(), first); err != nil {
 		t.Fatalf("seed Process(): %v", err)
 	}
@@ -686,7 +802,7 @@ func TestSQLiteConcurrentAutomaticDuplicatesAllSuppressSuccessfully(t *testing.T
 		))
 	}
 	errorsByAttempt := make(chan error, duplicateCount)
-	barrierStore := newBeginBarrierSQLiteStore(NewSQLiteStoreAdapter(database), duplicateCount)
+	barrierStore := newBeginBarrierSQLiteStore(newEnforcingSQLiteStoreAdapter(t, database), duplicateCount)
 	var wait sync.WaitGroup
 	for index, delivery := range deliveries {
 		index := index
@@ -784,11 +900,11 @@ func TestSQLiteAutomaticDuplicateCommitUnknownAndReplay(t *testing.T) {
 		duplicate := sqliteDeliveryAt(t, 10, 20, time.Unix(1_700_000_060, 0).UTC())
 		ledger := detection.NewLedger()
 		if _, err := NewCoordinator(
-			NewSQLiteStoreAdapter(database), automaticPipeline(first, "v1", ledger),
+			newEnforcingSQLiteStoreAdapter(t, database), automaticPipeline(first, "v1", ledger),
 		).Process(context.Background(), first); err != nil {
 			t.Fatal(err)
 		}
-		adapter := NewSQLiteStoreAdapter(database)
+		adapter := newEnforcingSQLiteStoreAdapter(t, database)
 		adapter.commit = func(unit *store.UnitOfWork) error {
 			if err := unit.Commit(); err != nil {
 				return err
@@ -802,7 +918,7 @@ func TestSQLiteAutomaticDuplicateCommitUnknownAndReplay(t *testing.T) {
 		assertAutomaticSuppressionState(t, path, first, duplicate, 1, 2)
 		replayLedger := detection.NewLedger()
 		if _, err := NewCoordinator(
-			NewSQLiteStoreAdapter(database), automaticPipeline(duplicate, "v1", replayLedger),
+			newEnforcingSQLiteStoreAdapter(t, database), automaticPipeline(duplicate, "v1", replayLedger),
 		).Process(context.Background(), duplicate); err != nil {
 			t.Fatalf("receipt replay: %v", err)
 		}
@@ -825,11 +941,11 @@ func TestSQLiteAutomaticDuplicateCommitUnknownAndReplay(t *testing.T) {
 		duplicate := sqliteDeliveryAt(t, 10, 20, time.Unix(1_700_000_060, 0).UTC())
 		ledger := detection.NewLedger()
 		if _, err := NewCoordinator(
-			NewSQLiteStoreAdapter(database), automaticPipeline(first, "v1", ledger),
+			newEnforcingSQLiteStoreAdapter(t, database), automaticPipeline(first, "v1", ledger),
 		).Process(context.Background(), first); err != nil {
 			t.Fatal(err)
 		}
-		adapter := NewSQLiteStoreAdapter(database)
+		adapter := newEnforcingSQLiteStoreAdapter(t, database)
 		adapter.commit = func(unit *store.UnitOfWork) error {
 			if err := unit.Rollback(); err != nil {
 				return err
@@ -842,7 +958,7 @@ func TestSQLiteAutomaticDuplicateCommitUnknownAndReplay(t *testing.T) {
 		}
 		assertAutomaticSuppressionState(t, path, first, duplicate, 0, 1)
 		if _, err := NewCoordinator(
-			NewSQLiteStoreAdapter(database), automaticPipeline(duplicate, "v1", ledger),
+			newEnforcingSQLiteStoreAdapter(t, database), automaticPipeline(duplicate, "v1", ledger),
 		).Process(context.Background(), duplicate); err != nil {
 			t.Fatalf("retry after unknown rollback: %v", err)
 		}
@@ -873,6 +989,10 @@ func (s *beginBarrierSQLiteStore) findReceipt(
 	return s.adapter.findReceipt(ctx, id)
 }
 
+func (s *beginBarrierSQLiteStore) notifyReceiptReplay(ctx context.Context) error {
+	return s.adapter.notifyReceiptReplay(ctx)
+}
+
 func (s *beginBarrierSQLiteStore) beginProcessing(ctx context.Context) (processingUnitOfWork, error) {
 	s.mu.Lock()
 	s.arrived++
@@ -893,6 +1013,10 @@ func (s *receiptFailingSQLiteStore) findReceipt(
 	id core.DeliveryID,
 ) (core.ProcessingReceipt, bool, error) {
 	return s.adapter.findReceipt(ctx, id)
+}
+
+func (s *receiptFailingSQLiteStore) notifyReceiptReplay(ctx context.Context) error {
+	return s.adapter.notifyReceiptReplay(ctx)
 }
 
 func (s *receiptFailingSQLiteStore) beginProcessing(ctx context.Context) (processingUnitOfWork, error) {
@@ -1073,7 +1197,7 @@ func TestSQLitePipelineCommitUnknownReadbackConfirmsWindowOnce(t *testing.T) {
 	}}
 	pipeline := NewPipeline(planNodeID, catalog, parsers, evaluator, ledger)
 	pipeline.clock = func() time.Time { return delivery.Record.ObservedAt.Add(time.Second) }
-	adapter := NewSQLiteStoreAdapter(database)
+	adapter := newEnforcingSQLiteStoreAdapter(t, database)
 	adapter.commit = func(unit *store.UnitOfWork) error {
 		if err := unit.Commit(); err != nil {
 			return err
@@ -1128,7 +1252,7 @@ func TestSQLitePipelineAlertFailureRollsBackThenRetryCommitsOnce(t *testing.T) {
 	}
 	pipeline := NewPipeline(planNodeID, catalog, parsers, evaluator, ledger)
 	pipeline.clock = func() time.Time { return firstDelivery.Record.ObservedAt.Add(time.Second) }
-	coordinator := NewCoordinator(NewSQLiteStoreAdapter(database), pipeline)
+	coordinator := NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), pipeline)
 
 	if _, err := coordinator.Process(context.Background(), firstDelivery); err != nil {
 		t.Fatalf("baseline Process(): %v", err)
@@ -1201,7 +1325,7 @@ func TestSQLitePipelineParserPoisonCommitsOutcomeAuditAndReceipt(t *testing.T) {
 	pipeline := NewPipeline(planNodeID, catalog, parsers, &scriptedRuleEvaluator{}, detection.NewLedger())
 	pipeline.clock = func() time.Time { return delivery.Record.ObservedAt.Add(time.Second) }
 
-	if _, err := NewCoordinator(NewSQLiteStoreAdapter(database), pipeline).
+	if _, err := NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), pipeline).
 		Process(context.Background(), delivery); err != nil {
 		t.Fatalf("Process(): %v", err)
 	}
@@ -1247,6 +1371,88 @@ func assertSQLiteCounts(t *testing.T, path string, wants map[string]int) {
 			t.Fatalf("%s count = %d, want %d", table, got, want)
 		}
 	}
+}
+
+func newEnforcingSQLiteStoreAdapter(t *testing.T, database *store.Store) *SQLiteStoreAdapter {
+	return newEnforcingSQLiteStoreAdapterWithWake(t, database, decision.TargetWakeSinkFunc(
+		func(context.Context, core.NodeID, netip.Prefix) error { return nil },
+	))
+}
+
+func newEnforcingSQLiteStoreAdapterWithWake(
+	t *testing.T,
+	database *store.Store,
+	wake decision.TargetWakeSink,
+) *SQLiteStoreAdapter {
+	t.Helper()
+	finalizer, err := decision.NewDesiredStateFinalizer(decision.TargetPolicyResolverFunc(
+		func(context.Context, decision.DesiredStateTransaction, core.DesiredBanProjection) (enforcement.TargetPolicy, error) {
+			return enforcement.TargetPolicy{
+				Coverage: core.PolicyCoverageNone, Scopes: core.ScopeInput,
+				NativeTimeoutSupported: true, BackendAttributesDigest: strings.Repeat("b", 64),
+			}, nil
+		},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := NewEnforcingSQLiteStoreAdapter(
+		database,
+		finalizer,
+		wake,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return adapter
+}
+
+type processorRecordingWakeSink struct {
+	mu    sync.Mutex
+	calls []netip.Prefix
+}
+
+type processorFailOnceWakeSink struct {
+	mu      sync.Mutex
+	calls   int
+	failure error
+}
+
+func (s *processorFailOnceWakeSink) WakeTarget(
+	context.Context,
+	core.NodeID,
+	netip.Prefix,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if s.calls == 1 {
+		return s.failure
+	}
+	return nil
+}
+
+func (s *processorFailOnceWakeSink) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func (s *processorRecordingWakeSink) WakeTarget(
+	_ context.Context,
+	_ core.NodeID,
+	target netip.Prefix,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, target)
+	return nil
+}
+
+func (s *processorRecordingWakeSink) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.calls)
 }
 
 func openSQLiteProcessingStore(t *testing.T) (*store.Store, string) {
