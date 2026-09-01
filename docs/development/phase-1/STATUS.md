@@ -17,7 +17,7 @@
 | M0 证据状态 | `Implemented`（worktree preliminary；尚未 `Verified`） |
 | Phase 1 发布状态 | `Not Released` |
 | 当前 Evidence | `artifacts/evidence/M0/worktree/m0-a/`、`m0-b/`、`m0-c/`、`m0-d/` |
-| 最近更新 | `2026-08-31` |
+| 最近更新 | `2026-09-01` |
 
 当前仓库已有 M0-A Contract、Crash Matrix manifest、两份 ADR、Go Core、SQLite
 migration/Store、Config Schema、安全 credential reader、single-document YAML loader、SMTP credential
@@ -36,6 +36,10 @@ Code Review 通过；C1 signal-aware lifecycle owner 也已获用户 Code Review
 Source reader/management intake、Enforcer/IPC health 事件源、可执行进程 composition/runtime startup、
 真实 shutdown/crash、C3、正式 Contract Tests、
 目标 Linux durability 与 commit-bound Evidence Manifest。
+另按用户确认的 GORM-0b 边界接入 `gorm.io/gorm v1.31.2` core 与 project-owned
+modernc Dialector/non-closing ConnPool；GORM-1a 仅将 `PutParserOutcome` 的七列 INSERT
+迁移到绑定既有 raw `*sql.Tx` 的不可最终化私有 session。checksummed migration、PRAGMA、
+其余 UnitOfWork/关键一致性 SQL、Schema、公共 API 和 Store pool/事务最终化所有权保持不变。
 
 ## 2. 状态字段
 
@@ -62,7 +66,7 @@ Source reader/management intake、Enforcer/IPC health 事件源、可执行进�
 | B1 | SQLite 并发、事务与 durability Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/sqlite-result.json` | Go driver/PRAGMA/migration 与 Ubuntu WSL2 cross-process SIGKILL→reopen committed/uncommitted matrix 已通过；缺 OS reboot、filesystem barrier 与 power-loss 证据 |
 | B2 | Source identity 与 replay Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/identity-result.json`、`m0-c/source-slice/result.md` | golden vectors、Ubuntu WSL2 clean restart-replay、两个 committed-boundary generation transition SIGKILL 窗口、真实 opaque Journald cursor reopen 与 processing UnitOfWork transaction-internal SIGKILL rollback/direct replay 已通过；缺真实 File/Journald reader、copytruncate、Source-state internal crash、cursor invalidation/vacuum/resume 与 replay/reprocess refs |
 | B3 | nftables Backend Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/nftables-result.json` | 缺 production hook/priority、packet path、Snapshot/Plan、ownership 与恢复证据 |
-| B4 | Agent/Enforcer 权限与 IPC Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json` | WSL2 framing fail-closed、四操作 allowlist、正式 IPC v1 request Schema、29 个 golden vectors、资源 exact/one-over 与 seed invariants 已通过；缺 production predecoder/typed validator、真实 Snapshot/owner/capability/object-role 校验、跨 UID、systemd hardening、持续 fuzz 与恢复证据 |
+| B4 | Agent/Enforcer 权限与 IPC Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json` | WSL2 framing fail-closed、四操作 allowlist、正式 IPC v1 request Schema、mutation-only response Schema、production payload validator、frame reader、accepted-connection `SO_PEERCRED` gate 与 listener/socket lifecycle library 已通过；缺 Probe/Snapshot 成功响应、production response/writer/client/executor、真实 `/run/guard` root:guard/跨 UID、真实 Snapshot/owner/capability/object-role、systemd hardening、持续 fuzz 与恢复证据 |
 | C1 | Source Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/source-slice/result.md` | Queue Seal fixed accepted set、单 Source runtime owner、drain/Flush/Audit/Close、timeout 不提前 Close 与 commit-unknown readback 已通过 race；缺真实 Source reader/management intake、signal executable、进程 restart 与 Linux durability |
 | C2 | Decision/Enforcement Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | Automatic/Manual/expiry generation/SnapshotRevision/Wake、retry/pending-Probe SQLite 恢复、60s scheduler、62s SQLite→Fake 闭环、完整三域 Observed 与 Dispatcher-owned Backend health lifecycle 原语已通过用户 Review；仍缺真实 Enforcer/IPC health 源、可执行进程 composition/runtime startup 与真实进程 restart |
 | C3 | 完整 Crash Matrix | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 C1、C2 Verified |
@@ -222,6 +226,19 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
 | 2026-08-31 | B4-f IPC framing fail-closed matrix | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 用户 Code Review 明确通过；framing fail-closed、四操作 allowlist、fuzz seeds 与 Evidence repair 已接受。用户同时重申 Enforcer 用于限制已攻陷 Agent 的权限，后续协议和实现不得接受任意命令，必须独立严格校验语义操作。B4 总项仍为 `IN_PROGRESS / Implemented`；production Schema/parser/object/Plan validator、跨 UID、systemd/capability、持续 fuzz、恢复、非 WSL Linux、executable 与 commit-bound Evidence 仍未验证 |
 | 2026-08-31 | B4-g formal IPC v1 request Schema 与安全 golden vectors | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `schema/ipc-v1.schema.json`、`schema/testdata/ipc-v1/`、`artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 四个 request operation 已冻结为递归 closed union；`ApplyManagedPlan` 仅能表达一个 domain 和一个 typed operation，协议不存在 command/args/binary/env/cwd 或任意 nftables 物理对象名。6 valid + 23 invalid golden、64 KiB/depth 8/token 4096/prefix 1024 exact/one-over、targeted/full race/vet/module 与 Linux 双架构 test compile 均通过；code checkpoint 两个 P2 已修复，final full-scope review 为 `COMPLETE / FRESH / APPROVED / PASSED`，P0-P3 全无，等待用户 Code Review。不代表 production predecoder/DTO/validator/socket/executor、真实 Snapshot/owner/capability/object-role 校验、跨 UID/systemd/root/capability、持续 fuzz 或 commit-bound Evidence |
 | 2026-08-31 | B4-g formal IPC v1 request Schema 与安全 golden vectors | `REVIEW / Implemented` | `DONE / Implemented` | `schema/ipc-v1.schema.json`、`schema/testdata/ipc-v1/`、`artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 用户 Code Review 明确通过；四操作 closed request Schema、任意命令/物理对象名不可表达边界、29 个 security golden、资源 exact/one-over 与独立终审已接受。B4 总项仍为 `IN_PROGRESS / Implemented`；production predecoder/DTO/validator/socket/executor、真实 Snapshot/owner/capability/object-role enforcement、跨 UID/systemd/root capability、持续 fuzz 与 commit-bound Evidence 仍未验证 |
+| 2026-08-31 | B4-h production IPC v1 payload predecoder/typed validator | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `internal/ipc/`、`schema/ipc_v1_schema_test.go`、`artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | sealed typed DTO、64 KiB/depth/token/duplicate/unknown、mathematical integer、Prefix/policy/timeout/scope 与 29 golden 已接入 production decoder。code checkpoint repair round 1 及 final Evidence repair round 1 后，终审为 `APPROVED_WITH_FOLLOWUPS / COMPLETE / FRESH / PASSED`，P0/P1/P3 均无；Windows Temp cross-build fixture cleanup 是非阻断 P2，等待用户 Code Review。Linux native race/CI 未运行；不代表 framing/socket/executor、真实 Snapshot/capability/object-role、跨 UID/systemd/root 或持续 fuzz |
+| 2026-08-31 | B4-h production IPC v1 payload predecoder/typed validator | `REVIEW / Implemented` | `DONE / Implemented` | `internal/ipc/`、`schema/ipc_v1_schema_test.go`、`artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 用户 Code Review 明确通过；production payload predecoder、sealed typed DTO、semantic validator、29 个 golden、资源边界、两轮 repair 与非阻断 Windows Temp cleanup P2 已接受。B4 总项仍为 `IN_PROGRESS / Implemented`；Linux native race、CI、framing/socket/executor、真实 Snapshot/owner/capability/object-role、跨 UID/systemd/root、恢复、持续 fuzz、非 WSL Linux 与 commit-bound Evidence 仍未验证 |
+| 2026-08-31 | B4-i production IPC v1 frame reader | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `internal/ipc/frame.go`、`internal/ipc/frame_test.go`、`artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | `uint32-be` header、1 MiB frame/64 KiB request pre-allocation caps、稳定截断分类与 one-frame stream consumption 已接入 production `DecodeRequest`。六个 valid golden、exact/one-over、连续帧、错误脱敏、seed fuzz、targeted/full race、Linux 双架构 build 与 WSL count=20 已通过；code checkpoint 与 final full-scope review 最终均 `COMPLETE / FRESH / APPROVED / PASSED`，ADR repair round 1 后 P0-P3 全无，等待用户 Code Review。不代表 socket/`SO_PEERCRED`/executor、真实权限或持续 fuzz |
+| 2026-08-31 | B4-i production IPC v1 frame reader | `REVIEW / Implemented` | `DONE / Implemented` | `internal/ipc/frame.go`、`internal/ipc/frame_test.go`、`artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 用户 Code Review 明确通过；production frame reader、pre-allocation caps、稳定错误分类、one-frame consumption、完整验证与 ADR repair round 1 已接受。B4 总项仍为 `IN_PROGRESS / Implemented`；socket/`SO_PEERCRED`/executor、真实 Snapshot/owner/capability/object-role、跨 UID/systemd/root、恢复、持续 fuzz、Linux native race、非 WSL Linux、CI、production executable 与 commit-bound Evidence 仍未验证 |
+| 2026-08-31 | B4-j production IPC accepted-connection peer identity gate | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `internal/ipc/peer_linux.go`、`internal/ipc/peer_linux_test.go`、`artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | Linux-only `DecodeUnixFrame` 先读取 `SO_PEERCRED`、匹配启动时注入的 expected guard UID，再调用 production `DecodeFrame`；credential failure/UID mismatch 脱敏 fail-closed。真实 WSL socket same-UID、mismatch-before-read 且 stream 保持完整、closed connection、targeted/full count=1/20、双架构 build 与全仓回归通过；code checkpoint repair 0 与 final Evidence repair round 1 最终均 `COMPLETE / FRESH / APPROVED / PASSED`，P0-P3 全无，等待用户 Code Review。不代表 listener/socket lifecycle、真实 cross-UID、executor、root/systemd/capability 或持续 fuzz |
+| 2026-09-01 | B4-j production IPC accepted-connection peer identity gate | `REVIEW / Implemented` | `DONE / Implemented` | `internal/ipc/peer_linux.go`、`internal/ipc/peer_linux_test.go`、`artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 用户 Code Review 明确通过；Linux-only accepted-connection `SO_PEERCRED` UID gate、脱敏失败分类、真实 WSL socket 验证、双架构 build、全仓回归与 Evidence repair round 1 已接受。B4 总项仍为 `IN_PROGRESS / Implemented`；listener/socket lifecycle、真实 guard/cross-UID、response/executor、root/systemd/capability、Linux native race、持续 fuzz、非 WSL Linux、CI、production executable 与 commit-bound Evidence 仍未验证，G18.1-G18.3 保持 `FAIL`，M0 保持 `NO-GO` |
+| 2026-09-01 | B4-k production Unix listener/socket lifecycle | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `internal/ipc/listener_linux.go`、`internal/ipc/listener_linux_test.go`、`artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 固定 `/run/guard/enforcer.sock`、root:guard 0750/0660 read-back、directory-fd flock、active/stale/replace fail-closed、identity-safe cleanup、context-aware AcceptRequest→B4-j gate 已实现。Ubuntu 22.04.5 WSL2 targeted count=1/20 与 full IPC、Linux 双架构 build/vet、全仓回归和 cleanup 通过；checkpoint repair round 1 修复两个 P1 及测试暴露的分类竞态，final docs/Evidence repair round 1 修复 ADR P2 与精确命令 Evidence P1，fresh delta 最终 `COMPLETE / FRESH / APPROVED / PASSED`、P0-P3 全无，等待用户 Code Review。真实 `/run/guard` root:guard、跨 UID、executable response/executor、systemd/root capability、Linux native race、持续 fuzz、非 WSL Linux、CI 与 commit-bound Evidence 仍未验证；B4/G18/M0 不提升 |
+| 2026-09-01 | B4-k production Unix listener/socket lifecycle | `REVIEW / Implemented` | `DONE / Implemented` | `internal/ipc/listener_linux.go`、`internal/ipc/listener_linux_test.go`、`artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 用户 Code Review 明确通过；已接受固定 socket path、root:guard 0750/0660 read-back、lifetime directory-fd flock、stale/active/replacement fail-closed、identity-safe cleanup、context-aware AcceptRequest→B4-j gate，以及 checkpoint/docs/Evidence repair round 1 的最终 `COMPLETE / FRESH / APPROVED / PASSED` 证据。真实 `/run/guard` root:guard、跨 UID、executable response/executor、systemd/root capability、Linux native race、持续 fuzz、非 WSL Linux、CI 与 commit-bound Evidence 仍未验证；B4 保持 `IN_PROGRESS / Implemented`，G18.1-G18.3 保持 `FAIL`，M0 保持 `NO-GO` |
+| 2026-09-01 | B4-l1 mutation-only IPC v1 response Schema 与 golden vectors | `IN_PROGRESS / Implemented` | `REVIEW / Implemented` | `schema/ipc-v1-mutation-response.schema.json`、`schema/testdata/ipc-v1-mutation-response/`、`schema/ipc_v1_mutation_response_schema_test.go`、`artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | Apply 三 domain 与 Remove 的 confirmed/rejected/unknown 六分支 closed union、operation-specific rejected error allowlist、unknown_result、12 valid + 28 invalid golden、4 KiB/depth 2/token 32 exact/one-over、targeted count=20 race、全仓 race/vet/module、Linux 双架构 CGo-free compile 均通过。本批仅冻结 mutation response contract；Probe/Snapshot success payload 与 production DTO/codec/writer/client/accept-loop/executor 未实现。B4 总项保持 `IN_PROGRESS / Implemented`，G18.1-G18.3 保持 `FAIL`，M0 保持 `NO-GO`；等待用户 Code Review |
+| 2026-09-01 | B4-l1 mutation-only IPC v1 response Schema 与 golden vectors | `REVIEW / Implemented` | `DONE / Implemented` | `schema/ipc-v1-mutation-response.schema.json`、`schema/testdata/ipc-v1-mutation-response/`、`schema/ipc_v1_mutation_response_schema_test.go`、`artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 用户 Code Review 明确通过；已接受六分支 mutation response closed union、operation-specific rejected allowlist、unknown_result、40 个 golden、精确资源边界，以及 Evidence repair round 1/2 后最终 `APPROVED / COMPLETE / FRESH / PASSED`、P0-P3 全无的证据。本批仍不代表 Probe/Snapshot success 或 production response DTO/codec/writer/client/accept-loop/executor；B4 保持 `IN_PROGRESS / Implemented`，G18.1-G18.3 保持 `FAIL`，M0 保持 `NO-GO` |
+| 2026-09-01 | GORM-0b core + project-owned modernc adapter | `IN_PROGRESS / Specified` | `REVIEW / Implemented` | `go.mod`、`go.sum`、`internal/store/gorm_adapter.go`、`internal/store/gorm_adapter_test.go`、`docs/adr/0003-gorm-core-modernc-adapter.md`、`artifacts/evidence/M0/worktree/m0-d/gorm-adapter/result.md` | 仅新增 `gorm.io/gorm v1.31.2` core；GORM 复用唯一 modernc pool，non-closing wrapper 阻止解包/关闭，初始化零 I/O，migration fail-fast，普通参数化 CRUD/OnConflict/三类 RETURNING/显式事务由临时 raw fixture 验证。selected module graph/go.sum 含 GORM upstream test 的官方/mattn driver，但 compiled closure、CGo-free test binary metadata 与 runtime registry 均不含第二 driver。targeted count=20 race、全仓 race/vet/module、Windows CGo-free runtime、Linux 双架构 CGo-free test compile、checkpoint 与 final FULL_SCOPE 终审均通过；最终 `APPROVED / COMPLETE / FRESH / PASSED`、P0-P3 全无，等待用户 Code Review。未迁移生产 SQL，未改变 Schema/公共 Store API/PRAGMA/关键事务语义；真实 Linux runtime、CI、漏洞扫描、SBOM、性能和 commit-bound Evidence 未完成，M0 保持 `NO-GO`。 |
+| 2026-09-01 | GORM-0b core + project-owned modernc adapter | `REVIEW / Implemented` | `DONE / Implemented` | `go.mod`、`go.sum`、`internal/store/gorm_adapter.go`、`internal/store/gorm_adapter_test.go`、`docs/adr/0003-gorm-core-modernc-adapter.md`、`artifacts/evidence/M0/worktree/m0-d/gorm-adapter/result.md` | 用户 Code Review 明确通过；已接受 GORM core、project-owned modernc Dialector、non-closing pool ownership、disabled Migrator、临时 fixture CRUD/OnConflict/三类 RETURNING/事务验证，以及最终 `APPROVED / COMPLETE / FRESH / PASSED`、P0-P3 全无的证据。GORM-1 生产 SQL 迁移未授权；Schema/公共 Store API/PRAGMA/关键 raw SQL 与未验证域不变，D1/D2/D4、G18.1-G18.3 不提升，M0 保持 `NO-GO`。 |
+| 2026-09-01 | GORM-1a `PutParserOutcome` 单 INSERT | `IN_PROGRESS / Specified` | `REVIEW / Implemented` | `internal/store/gorm_adapter.go`、`internal/store/uow.go`、`internal/store/decision_lifecycle.go`、`internal/store/gorm_uow_test.go`、`docs/adr/0004-gorm-put-parser-outcome-uow-exception.md`、`artifacts/evidence/M0/worktree/m0-d/gorm-put-parser-outcome/result.md` | 仅将 `PutParserOutcome` 的显式七列 INSERT 改为 GORM `Create`；不可 finalise/unwrap 的 transaction ConnPool 同时绑定 cloned Config/Statement 到既有 raw `*sql.Tx`，UnitOfWork 仍唯一 Commit/Rollback。exact SQL/Create callback、三类 outcome raw readback、NULL/零值、commit/rollback、deferred FK、duplicate/cancel sticky error、focused/full race、vet/module、CGo-free 三目标编译及 Ubuntu WSL2 SIGKILL/replay 初跑/count=20 均通过；Tier-3 checkpoint 与 final FULL_SCOPE 终审均为 `APPROVED / COMPLETE / FRESH / PASSED`，P0-P3 全无。其余 UnitOfWork/关键 SQL、Schema/API/依赖/PRAGMA 不变；用户验收待完成，M0 保持 `NO-GO`。 |
 
 ## 7. 下一步队列
 
@@ -307,3 +324,61 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
     production predecoder/DTO/validator/socket/executor、真实 Snapshot digest/owner/capability/object-role
     enforcement、跨 UID/systemd/root capability、持续 fuzz 与 commit-bound Evidence 仍未验证；B4 总项、
     G18.1–G18.3 与 M0 结论不变。
+14. B4-h production IPC v1 payload predecoder/typed validator 已实现：冻结的 29 个 golden 与资源
+    exact/one-over 直接运行于 stdlib-only production decoder；sealed read-only typed DTO、内部错误分类、
+    mathematical integer、Prefix/policy/timeout/scope 校验已落盘。code checkpoint repair round 1 与
+    final Evidence repair round 1 后，独立终审为 `APPROVED_WITH_FOLLOWUPS / COMPLETE / FRESH /
+    PASSED`，P0/P1/P3 均无；用户 Code Review 已明确通过，当前为 `DONE / Implemented`。Windows full race、Linux 双架构 CGo-free build 与
+    Ubuntu WSL2 初跑/count=20 已通过；Linux native race 与 CI 未运行，Windows Temp cross-build fixture
+    cleanup 为非阻断 P2。framing/socket/executor、真实 Snapshot/
+    capability/object-role、跨 UID/systemd/root、持续 fuzz 与 commit-bound Evidence 仍未验证；B4 总项、
+    G18.1–G18.3 与 M0 结论不变。
+15. B4-i production frame reader 已实现：`uint32-be` header、1 MiB frame cap 与 64 KiB request cap
+    均在 payload allocation/read 前执行；截断/超限稳定分类且不回显输入，成功仅消费一帧，错误后
+    caller 必须丢弃 stream。六个 valid golden、64 KiB/1 MiB exact/one-over、连续帧、seed fuzz、
+    targeted/full race、Linux amd64/arm64 CGo-free build 与 Ubuntu WSL2 count=20 已通过，临时产物
+    cleanup/absent readback 通过；code checkpoint 与 final full-scope review 最终均 `COMPLETE / FRESH /
+    APPROVED / PASSED`，ADR repair round 1 后 P0-P3 全无；用户 Code Review 已明确通过，当前为
+    `DONE / Implemented`。socket/`SO_PEERCRED`/executor、真实 Snapshot/capability/
+    object-role、跨 UID/systemd/root、持续 fuzz、非 WSL Linux 与 commit-bound Evidence 仍未验证；
+    B4 总项、G18.1–G18.3 与 M0 结论不变。
+16. B4-j production accepted-connection peer identity gate 已实现：Linux-only `DecodeUnixFrame` 使用
+    `SO_PEERCRED` 获取实际 peer UID，匹配启动时注入的 expected guard UID 后才进入 B4-i；失败分类
+    不回显 UID、socket 或 OS error，caller 保持 connection ownership。WSL 真实 Unix socket same-UID、
+    mismatch-before-read/stream-preservation、closed connection、targeted/full count=1/20，以及 Windows
+    回归、Linux 双架构 CGo-free vet/test/build 与 cleanup readback 均通过。code checkpoint 为
+    `COMPLETE / FRESH / APPROVED / PASSED`、repair round 0、P0-P3 全无。final full-scope review 的精确
+    Evidence 命令 P1 经 repair round 1 全新 fixture 重跑后 resolved，最终 `COMPLETE / FRESH / APPROVED /
+    PASSED`、P0-P3 全无；用户 Code Review 已明确通过，当前为 `DONE / Implemented`。
+    production listener/socket lifecycle、真实 guard/cross-UID、response/executor、root/systemd/capability、
+    Linux native race、持续 fuzz、非 WSL Linux、CI 与 commit-bound Evidence 仍未验证；B4 总项、
+    G18.1–G18.3 与 M0 结论不变。
+17. B4-k production Unix listener/socket lifecycle 已实现：固定 path 与 0750/0660 owner/mode read-back、
+    directory-fd `flock`、active/stale/replacement fail-closed、identity-safe Close cleanup，以及 context-aware
+    `AcceptRequest → DecodeUnixFrame` 均通过真实 WSL socket。独立 checkpoint repair round 1 修复目录失败
+    残留与并发 stale takeover 两个 P1，current-hash targeted count=1/20、full IPC、双架构 build/vet、全仓
+    回归与 cleanup 均通过，最终 `COMPLETE / FRESH / APPROVED / PASSED`、P0-P3 全无；用户 Code Review
+    已明确通过，当前为 `DONE / Implemented`。真实 `/run/guard` root:guard、跨 UID、response/executor、
+    systemd/root capability、Linux native race、持续 fuzz、非 WSL Linux、CI 与 commit-bound Evidence 未验证；
+    B4 总项、G18.1–G18.3 与 M0 结论不变。
+18. B4-l1 mutation-only response contract 已实现：Apply 三 domain 与 Remove 的六个 typed result 分支、
+    stable rejected/unknown error codes、closed object 与 4 KiB/depth 2/token 32 资源边界由 12 valid、
+    28 invalid golden 及精确边界测试冻结。targeted count=20 race、全仓 race/vet/module、Linux
+    amd64/arm64 CGo-free compile 与 diff-check 已通过，当前为 `REVIEW / Implemented`，等待用户 Code
+    Review；用户已明确通过，当前为 `DONE / Implemented`。Probe/Snapshot success payload、production
+    response DTO/codec/writer/client、accept-loop/executor 与真实 runtime 未实现；B4 总项、G18.1–G18.3
+    与 M0 结论不变。
+19. GORM-0b 已按用户确认边界实现并获用户 Code Review 通过，当前 `DONE / Implemented`：GORM core 通过项目自有
+    modernc Dialector 与 non-closing ConnPool 复用现有 Store pool，AutoMigrate/schema API 被
+    fail-fast 禁用。compiled closure、binary metadata 与 driver registry 均无
+    官方/mattn SQLite driver；selected graph/go.sum 中的 upstream test 依赖已作为供应链暴露单独记录。
+    GORM-1a 现按独立 ADR 只窄化 `PutParserOutcome` 一条 INSERT；后续任何迁移仍须另行选择小批次并确认。
+    migration、PRAGMA、CAS/fence、commit-unknown、snapshot 和其余 UnitOfWork 保持 raw SQL。final FULL_SCOPE 终审为
+    `APPROVED / COMPLETE / FRESH / PASSED`、P0-P3 全无；用户门已 `PASSED`，
+    不提升 D1/D2/D4、G18.1–G18.3 或 M0 结论。
+20. GORM-1a 已按用户确认边界实现，当前 `REVIEW / Implemented`：仅 `PutParserOutcome` 使用显式七列
+    GORM `Create`，同一 raw `*sql.Tx` 仍由 UnitOfWork 独占 Commit/Rollback；transaction wrapper 不暴露
+    Begin/Commit/Rollback/Close/unwrap 能力。高风险 race、全仓回归、CGo-free 三目标编译与 Ubuntu WSL2
+    SIGKILL/replay 初跑/count=20 已通过，Tier-3 checkpoint 与 final FULL_SCOPE 终审均为
+    `APPROVED / COMPLETE / FRESH / PASSED`、P0-P3 全无。其余 SQL、Schema/API/依赖/PRAGMA 不变；等待用户 Code Review，
+    G18.1–G18.3 保持 `FAIL`，M0 保持 `NO-GO`。

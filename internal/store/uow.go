@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
+	"gorm.io/gorm"
 )
 
 var errUnitOfWorkClosed = errors.New("unit of work is closed")
@@ -36,9 +37,31 @@ type CriticalAudit struct {
 // UnitOfWork is the only transaction handle accepted by processing domain
 // writers. It is not safe for concurrent use.
 type UnitOfWork struct {
-	tx     *sql.Tx
-	failed error
-	done   bool
+	tx             *sql.Tx
+	transactionORM *gorm.DB
+	failed         error
+	done           bool
+}
+
+type parserTerminalOutcomeRow struct {
+	DeliveryID    string  `gorm:"column:delivery_id;primaryKey;autoIncrement:false"`
+	ParserID      string  `gorm:"column:parser_id;primaryKey;autoIncrement:false"`
+	ParserVersion string  `gorm:"column:parser_version;primaryKey;autoIncrement:false"`
+	Kind          string  `gorm:"column:kind"`
+	EmittedCount  int64   `gorm:"column:emitted_count"`
+	FailureCode   *string `gorm:"column:failure_code"`
+	CompletedAtUS int64   `gorm:"column:completed_at_us"`
+}
+
+func (parserTerminalOutcomeRow) TableName() string {
+	return "parser_terminal_outcomes"
+}
+
+func (s *Store) newUnitOfWork(tx *sql.Tx) *UnitOfWork {
+	return &UnitOfWork{
+		tx:             tx,
+		transactionORM: newGORMTransactionSession(s.orm, tx),
+	}
 }
 
 // BeginProcessing starts one processing transaction. Only the Processing
@@ -54,7 +77,7 @@ func (s *Store) BeginProcessing(ctx context.Context) (*UnitOfWork, error) {
 	if err != nil {
 		return nil, fmt.Errorf("begin processing transaction: %w", err)
 	}
-	return &UnitOfWork{tx: tx}, nil
+	return s.newUnitOfWork(tx), nil
 }
 
 // PutParserOutcome inserts one parser version's terminal result.
@@ -69,16 +92,26 @@ func (u *UnitOfWork) PutParserOutcome(ctx context.Context, outcome core.ParserTe
 	if err != nil {
 		return u.fail(err)
 	}
-	_, err = u.tx.ExecContext(ctx, `
-		INSERT INTO parser_terminal_outcomes(
-			delivery_id, parser_id, parser_version, kind, emitted_count,
-			failure_code, completed_at_us
-		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		string(outcome.DeliveryID), string(outcome.ParserID), string(outcome.ParserVersion),
-		kind, int64(outcome.EmittedCount), nullableString(outcome.FailureCode),
-		outcome.CompletedAt.UTC().UnixMicro())
-	if err != nil {
-		return u.fail(fmt.Errorf("put parser outcome for delivery %q: %w", outcome.DeliveryID, err))
+	var failureCode *string
+	if outcome.FailureCode != "" {
+		failureCode = &outcome.FailureCode
+	}
+	result := u.transactionORM.WithContext(ctx).
+		Select(
+			"delivery_id", "parser_id", "parser_version", "kind",
+			"emitted_count", "failure_code", "completed_at_us",
+		).
+		Create(&parserTerminalOutcomeRow{
+			DeliveryID:    string(outcome.DeliveryID),
+			ParserID:      string(outcome.ParserID),
+			ParserVersion: string(outcome.ParserVersion),
+			Kind:          kind,
+			EmittedCount:  int64(outcome.EmittedCount),
+			FailureCode:   failureCode,
+			CompletedAtUS: outcome.CompletedAt.UTC().UnixMicro(),
+		})
+	if result.Error != nil {
+		return u.fail(fmt.Errorf("put parser outcome for delivery %q: %w", outcome.DeliveryID, result.Error))
 	}
 	return nil
 }

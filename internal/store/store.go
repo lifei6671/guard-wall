@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
+	"gorm.io/gorm"
 	"modernc.org/sqlite"
 )
 
@@ -26,7 +27,8 @@ var registerConnectionHook sync.Once
 
 // Store owns the shared SQLite connection pool.
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	orm *gorm.DB
 }
 
 // Open opens a local SQLite database, applies all migrations atomically, and
@@ -59,6 +61,12 @@ func Open(ctx context.Context, databasePath string, migrationFS fs.FS) (*Store, 
 		closeErr := db.Close()
 		return nil, joinErrors(fmt.Errorf("open store: verify pragmas after migration: %w", err), closeErr)
 	}
+	orm, err := newGORMAdapter(ctx, db)
+	if err != nil {
+		closeErr := db.Close()
+		return nil, joinErrors(fmt.Errorf("open store: %w", err), closeErr)
+	}
+	store.orm = orm
 	return store, nil
 }
 

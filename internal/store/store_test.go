@@ -306,7 +306,11 @@ func TestMigrationV4UpgradesLegacyDesiredStateWithoutRevisionOrRetryRegression(t
 		t.Fatalf("legacy unmaterialized retry = count:%d generation:%d retry:%d attempts:%d status:%s",
 			orphanCount, orphanGeneration, orphanRetryEpoch, orphanAttempts, orphanStatus)
 	}
-	database := &Store{db: db}
+	orm, err := newGORMAdapter(ctx, db)
+	if err != nil {
+		t.Fatalf("initialize GORM adapter for migrated store: %v", err)
+	}
+	database := &Store{db: db, orm: orm}
 	service := newDecisionLifecycleService(t, database)
 	if _, err := service.BanManual(ctx, decision.ManualRequest{
 		DecisionID: "manual-after-v4-matched", NodeID: testNodeID,

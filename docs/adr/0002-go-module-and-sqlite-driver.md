@@ -114,7 +114,9 @@ database/sql driver name: sqlite
   Go 1.27.0 基线，并固定 `modernc.org/libc v1.74.4`：
   [v1.57.0 go.mod](https://gitlab.com/cznic/sqlite/-/raw/v1.57.0/go.mod)。
 - driver 提供连接 hook 和受校验的 PRAGMA DSN shorthand，可在每个物理连接打开时执行并
-  拒绝错误配置；不需要为此新增 ORM、migration framework 或另一层数据库依赖。
+  拒绝错误配置；这些职责不需要 ORM 或另一套 migration framework。后续获批的 GORM core
+  适配层不得接管这些职责，具体边界见
+  [ADR-0003](0003-gorm-core-modernc-adapter.md)。
 
 这项选择只降低构建和部署变量，不代表纯 Go port 的并发、性能或 durability 已在 Guard
 负载上证明。

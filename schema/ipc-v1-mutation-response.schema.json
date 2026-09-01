@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://guard-wall.local/schema/ipc-v1-mutation-response.schema.json",
+  "title": "Guard Wall Agent/Enforcer IPC v1 Mutation Response",
+  "description": "The authoritative fail-closed response schema for ApplyManagedPlan and RemoveManagedInfrastructure only. ProbeCapabilities and SnapshotManaged success payloads are intentionally not defined by this artifact.",
+  "x-guard-max-frame-bytes": 1048576,
+  "x-guard-max-response-bytes": 4096,
+  "x-guard-max-instance-depth": 2,
+  "x-guard-max-json-tokens": 32,
+  "oneOf": [
+    { "$ref": "#/$defs/applyConfirmed" },
+    { "$ref": "#/$defs/applyRejected" },
+    { "$ref": "#/$defs/applyUnknown" },
+    { "$ref": "#/$defs/removeConfirmed" },
+    { "$ref": "#/$defs/removeRejected" },
+    { "$ref": "#/$defs/removeUnknown" }
+  ],
+  "$defs": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "minimum": 1,
+      "maximum": 1
+    },
+    "applyOperation": {
+      "type": "string",
+      "const": "ApplyManagedPlan",
+      "maxLength": 32
+    },
+    "removeOperation": {
+      "type": "string",
+      "const": "RemoveManagedInfrastructure",
+      "maxLength": 32
+    },
+    "domain": {
+      "type": "string",
+      "enum": ["infrastructure", "policy", "target"],
+      "maxLength": 16
+    },
+    "applyRejectedErrorCode": {
+      "type": "string",
+      "enum": ["invalid_plan", "ownership_conflict", "unsupported", "not_ready", "backend_rejected"],
+      "maxLength": 32
+    },
+    "removeRejectedErrorCode": {
+      "type": "string",
+      "enum": ["ownership_conflict", "unsupported", "not_ready", "backend_rejected"],
+      "maxLength": 32
+    },
+    "unknownErrorCode": {
+      "type": "string",
+      "const": "unknown_result",
+      "maxLength": 32
+    },
+    "applyConfirmed": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": ["version", "operation", "status", "domain"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "operation": { "$ref": "#/$defs/applyOperation" },
+        "status": { "type": "string", "const": "confirmed", "maxLength": 9 },
+        "domain": { "$ref": "#/$defs/domain" }
+      }
+    },
+    "applyRejected": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": ["version", "operation", "status", "domain", "error_code"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "operation": { "$ref": "#/$defs/applyOperation" },
+        "status": { "type": "string", "const": "rejected", "maxLength": 8 },
+        "domain": { "$ref": "#/$defs/domain" },
+        "error_code": { "$ref": "#/$defs/applyRejectedErrorCode" }
+      }
+    },
+    "applyUnknown": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": ["version", "operation", "status", "domain", "error_code"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "operation": { "$ref": "#/$defs/applyOperation" },
+        "status": { "type": "string", "const": "unknown", "maxLength": 7 },
+        "domain": { "$ref": "#/$defs/domain" },
+        "error_code": { "$ref": "#/$defs/unknownErrorCode" }
+      }
+    },
+    "removeConfirmed": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 3,
+      "required": ["version", "operation", "status"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "operation": { "$ref": "#/$defs/removeOperation" },
+        "status": { "type": "string", "const": "confirmed", "maxLength": 9 }
+      }
+    },
+    "removeRejected": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": ["version", "operation", "status", "error_code"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "operation": { "$ref": "#/$defs/removeOperation" },
+        "status": { "type": "string", "const": "rejected", "maxLength": 8 },
+        "error_code": { "$ref": "#/$defs/removeRejectedErrorCode" }
+      }
+    },
+    "removeUnknown": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "required": ["version", "operation", "status", "error_code"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "operation": { "$ref": "#/$defs/removeOperation" },
+        "status": { "type": "string", "const": "unknown", "maxLength": 7 },
+        "error_code": { "$ref": "#/$defs/unknownErrorCode" }
+      }
+    }
+  }
+}

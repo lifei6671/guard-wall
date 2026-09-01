@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/big"
 	"net/netip"
 	"regexp"
 	"sort"
@@ -166,6 +167,26 @@ func TestIPCV1ResourceLimits(t *testing.T) {
 	targetOperation["scopes"] = []any{"forward", "input"}
 	if code := validateIPCV1Semantics(target); code != "invalid_scope" {
 		t.Fatalf("reversed dual scope code = %q, want invalid_scope", code)
+	}
+}
+
+func TestIPCV1IntegerSemantics(t *testing.T) {
+	root := decodeIPCV1JSON(t, readIPCV1File(t, "ipc-v1.schema.json"))
+	for _, raw := range [][]byte{
+		[]byte(`{"version":1.0,"operation":"ProbeCapabilities","payload":{}}`),
+		[]byte(`{"version":1e0,"operation":"ProbeCapabilities","payload":{}}`),
+	} {
+		if _, code := validateIPCV1Request(raw, root); code != "" {
+			t.Fatalf("mathematical integer rejected with %s", code)
+		}
+	}
+	for _, raw := range [][]byte{
+		[]byte(`{"version":1.5,"operation":"ProbeCapabilities","payload":{}}`),
+		[]byte(`{"version":9223372036854775808,"operation":"ProbeCapabilities","payload":{}}`),
+	} {
+		if _, code := validateIPCV1Request(raw, root); code != "schema_rejected" {
+			t.Fatalf("non-int64 request code = %q, want schema_rejected", code)
+		}
 	}
 }
 
@@ -434,12 +455,8 @@ func validateIPCV1SchemaValue(root, schema map[string]any, value any, path strin
 			}
 		}
 	case "integer":
-		number, ok := value.(json.Number)
+		integer, ok := jsonInt64(value)
 		if !ok {
-			return fmt.Errorf("%s is not an integer", path)
-		}
-		integer, err := number.Int64()
-		if err != nil {
 			return fmt.Errorf("%s is not an integer", path)
 		}
 		if minimum, ok := jsonInt64(schema["minimum"]); ok && integer < minimum {
@@ -737,11 +754,21 @@ func jsonInt64(value any) (int64, bool) {
 	if !ok {
 		return 0, false
 	}
-	integer, err := number.Int64()
-	return integer, err == nil
+	rational, ok := new(big.Rat).SetString(string(number))
+	if !ok || !rational.IsInt() || !rational.Num().IsInt64() {
+		return 0, false
+	}
+	return rational.Num().Int64(), true
 }
 
 func equalJSONValue(left, right any) bool {
+	leftNumber, leftIsNumber := left.(json.Number)
+	rightNumber, rightIsNumber := right.(json.Number)
+	if leftIsNumber && rightIsNumber {
+		leftRational, leftOK := new(big.Rat).SetString(string(leftNumber))
+		rightRational, rightOK := new(big.Rat).SetString(string(rightNumber))
+		return leftOK && rightOK && leftRational.Cmp(rightRational) == 0
+	}
 	leftJSON, leftErr := json.Marshal(left)
 	rightJSON, rightErr := json.Marshal(right)
 	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)

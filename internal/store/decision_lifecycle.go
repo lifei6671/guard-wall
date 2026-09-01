@@ -30,7 +30,7 @@ func (s *Store) RunDecisionTransaction(
 	if err != nil {
 		return fmt.Errorf("run decision transaction: begin: %w", err)
 	}
-	uow := &UnitOfWork{tx: tx}
+	uow := s.newUnitOfWork(tx)
 	if err := operation(uow); err != nil {
 		rollbackErr := uow.Rollback()
 		if rollbackErr != nil {

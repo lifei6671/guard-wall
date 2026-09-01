@@ -91,8 +91,10 @@ uint32-be payload length
 
 IPC v1 request 的 wire shape、字段与资源上限由
 [`schema/ipc-v1.schema.json`](../../schema/ipc-v1.schema.json) 和对应 golden vectors 冻结；
-production Go DTO/parser、response shape 与错误码仍由后续 M0-D 可编译接口冻结。本文不复制
-完整 Schema 或生成代码。
+Apply/Remove mutation response 的 wire shape、稳定状态与错误码由
+[`schema/ipc-v1-mutation-response.schema.json`](../../schema/ipc-v1-mutation-response.schema.json)
+和对应 golden vectors 冻结。ProbeCapabilities/SnapshotManaged 的成功响应载荷，以及 production
+response DTO/codec/writer/client，仍由后续可编译接口冻结。本文不复制完整 Schema 或生成代码。
 
 ### 允许的操作
 
@@ -245,10 +247,108 @@ depth、token、prefix exact/one-over 和 fuzz seed invariants 已由 stdlib-onl
 code checkpoint 的两个 P2 经 delta 修复后，独立审查为 `COMPLETE / FRESH / APPROVED / PASSED`，
 P0/P1/P2/P3 均无。
 
-这些结果只证明初步 framing fail-closed、peer credential 读取和 operation allowlist 路径在
-该 WSL2 环境可运行，并证明 IPC v1 request Schema/golden contract 在当前 worktree 的 test-only
-evaluator 中闭合。它们不是 production IPC parser、真实 Snapshot/owner/capability validator、
-生产 `guard` 用户、root Enforcer、systemd 或 `CAP_NET_ADMIN` 边界的验证证据。
+B4-h 在 baseline `a61d8c2` 上新增 `internal/ipc` production JSON payload predecoder、
+sealed read-only typed Request/ManagedPlan DTO 与确定性 semantic validator。production decoder
+在构造 DTO 前执行 64 KiB、UTF-8、单 JSON value、duplicate key、深度 8、token 4096、递归
+unknown/missing/type、closed operation/domain、`guard/v1`、digest/revision、canonical/sorted/unique
+Prefix、prefix 总数 1024、mandatory loopback、protected target、timeout/expiry 与 scope order 校验；
+错误只返回固定内部分类，不建立 response wire contract。冻结的 6 valid + 23 invalid golden 已直接
+运行于 production decoder。
+
+初次 Tier-3 code checkpoint 发现 Draft 2020-12 mathematical integer 被词法整数解析误拒的 P1，
+以及导出 concrete DTO 零值可伪装为已验证 union 的 P2。repair round 1 使用精确 `big.Rat`
+integer/const 数值语义，并将导出 variant 改为由未导出 concrete value 实现的 sealed read-only
+interface；fresh delta review 将两项标为 resolved，最终代码分区 P0/P1/P2/P3 均无。
+
+Windows targeted/full race、repeat、vet、module、格式检查，Linux amd64/arm64 CGo-free test/build
+以及 Ubuntu 22.04.5 WSL2 amd64 初跑/count=20 已通过。WSL 首次 standalone 配方因未复制 golden
+相对路径而在 fixture load 阶段失败；重建 package-shaped 隔离 fixture 后通过。Linux native race
+因 WSL 无 Go toolchain 为 `NOT RUN`；CI 为 `NOT CONFIGURED`。Windows cross-build fixture 因 host
+删除策略阻止仍保留为非阻断清理项。
+
+初次 final full-scope review 发现 Evidence 只有命令摘要、不能独立重建交叉构建与 WSL corpus
+布局的 P1。Evidence repair round 1 补齐 PowerShell 工作目录、`CGO_ENABLED`/`GOOS`/`GOARCH`、
+输出路径、checksum/size readback、错误配方、修正配方、count=1/20 与 cleanup absent readback；
+fresh delta review 将 P1 标为 resolved，最终为 `COMPLETE / FRESH / PASSED /
+APPROVED_WITH_FOLLOWUPS`。P0/P1/P3 均无；仅 Windows Temp fixture cleanup 保留为非阻断 P2。
+
+B4-i 在同一 baseline 上新增 production `uint32-be` frame reader，并将每个完整 frame 直接交给
+B4-h `DecodeRequest`。4-byte header、1 MiB frame cap 与 64 KiB request cap 均在 payload 分配/
+读取前处理；header/payload 截断、frame 超限使用固定且不回显输入的内部分类。成功路径只消费一帧，
+允许同一 reader 连续解码；任一错误后 caller 必须丢弃 stream，避免在未 drain 的攻击者声明长度后
+继续猜测边界。6 个 frozen valid fixture、64 KiB/1 MiB exact/one-over、连续帧、错误脱敏与 fuzz
+seeds 已直接通过 production frame reader。
+
+Windows targeted/full race、repeat、vet/module 与 Linux amd64/arm64 CGo-free test/build 通过；Ubuntu
+22.04 WSL2 package-shaped fixture 的初跑和 count=20 通过，host/WSL 临时产物均清理并回读 absent。
+独立 Tier-3 code checkpoint 为 `COMPLETE / FRESH / APPROVED / PASSED`，P0/P1/P2/P3 均无。
+final full-scope review 的一项 production-library 边界措辞 P2 经 ADR repair round 1 修复，最终为
+`COMPLETE / FRESH / APPROVED / PASSED`，P0/P1/P2/P3 均无。Linux native race、持续 fuzz 与 CI
+仍为 `NOT RUN / NOT CONFIGURED`。用户 Code Review 已明确通过，B4-i 当前为
+`DONE / Implemented`；这不提升 B4 总项或任何 M0 Gate。
+
+B4-j 新增 Linux-only production accepted-connection identity gate：`DecodeUnixFrame` 先通过
+`SO_PEERCRED` 读取实际 peer UID，与 Enforcer 启动时解析并注入的 `guard` UID 比较，只有匹配后
+才调用 B4-i `DecodeFrame`。credential 获取失败或 UID mismatch 都返回固定脱敏分类；函数不使用
+root Enforcer 的 `os.Getuid()`，不关闭连接，也不接管 caller lifecycle。
+
+真实 WSL2 Unix socket 测试证明 same-UID 合法 frame 通过、mismatch 在任何 frame byte 读取前拒绝，
+并可在拒绝后由 `DecodeFrame` 完整读出原 frame；closed connection 与 UID/OS error 脱敏也通过。
+Windows 全仓回归、Linux amd64/arm64 CGo-free vet/test/build、WSL targeted/full count=1/count=20 和
+临时产物 cleanup/absent readback 均通过。独立 Tier-3 code checkpoint 为
+`COMPLETE / FRESH / APPROVED / PASSED`、repair round 0、P0/P1/P2/P3 全无。final full-scope review
+初次报告精确命令 Evidence P1；Evidence repair round 1 使用全新 fixture 重跑并补齐 build、hash/size、
+WSL、失败配方和 cleanup 命令后，fresh delta 最终为 `COMPLETE / FRESH / APPROVED / PASSED`，
+P0/P1/P2/P3 全无。Linux native race、真实 `guard`/另一 OS UID、root/systemd/capability 与 CI 仍未运行。
+用户 Code Review 已明确通过，B4-j 当前为 `DONE / Implemented`；这不提升 B4 总项或任何 M0 Gate。
+
+B4-k 新增 Linux-only production listener/socket lifecycle library：`ListenUnix` 固定使用
+`/run/guard/enforcer.sock`，由 root Enforcer 在启动时注入 `guard` GID；父目录与 socket 分别按
+`root:guard 0750`、`root:guard 0660` 创建并以 path/fd read-back 校验。已验证目录 fd 的非阻塞
+独占 `flock` 从 stale detection、identity-guarded removal、bind 一直持有到 listener Close 后的
+owned-socket cleanup，避免两个协作 Enforcer 并发启动形成 unlinked listener 或 split-brain。
+活跃 socket、symlink、普通文件、owner/mode drift 与 device/inode replacement 均 fail-closed；只有
+owner/mode 匹配、connect 明确 `ECONNREFUSED` 且二次 identity 未变化的 Unix socket 才可视为 stale。
+
+`AcceptRequest` 支持 context cancellation/deadline；accepted connection 必须先经过 B4-j
+`DecodeUnixFrame`，任一失败都由 listener 关闭连接，只有成功才把连接所有权交给 caller。Ubuntu
+22.04.5 WSL2 的真实临时 socket 初跑、`count=20` 与完整 IPC package 运行通过；Linux amd64/arm64
+CGo-free vet/test/build、Windows 全仓回归、格式与 cleanup read-back 通过。独立 Tier-3 checkpoint
+repair round 1 修复目录配置失败残留与并发 stale takeover 两个 P1；测试又暴露并修复 mkdir error
+shadow、deadline 分类窄竞态及 replacement cleanup 分类漂移。final full-scope review 的 ADR P2 与
+Evidence 精确命令 P1 分别在 docs/Evidence repair round 1 修复并通过 fresh delta，最终为
+`COMPLETE / FRESH / APPROVED / PASSED`，P0/P1/P2/P3 全无。用户 Code Review 已明确通过，
+B4-k 当前为 `DONE / Implemented`；这不提升 B4 总项或任何 M0 Gate。
+
+B4-l1 冻结 mutation-only IPC v1 response contract。`ApplyManagedPlan` 只能返回一个明确 domain
+（`infrastructure`、`policy` 或 `target`）及 `confirmed`、`rejected`、`unknown` 三态之一；
+`RemoveManagedInfrastructure` 使用同一三态但禁止携带 domain。`confirmed` 禁止 `error_code`；
+`rejected` 只能使用 operation-specific allowlist；`unknown` 只能使用 `unknown_result`。wire object
+递归 closed，不存在 payload、message、details、cause、command、request_id 或任意扩展元数据。
+
+mutation response 最大 4 KiB、实例深度 2、JSON token 32，并继续受 1 MiB frame 上限约束。12 个
+valid 与 28 个 invalid golden 覆盖六个互斥 union 分支、错误码矩阵、duplicate key、非法 UTF-8、
+多 JSON value、资源边界及 closed-property audit；精确 4096/4097 bytes、depth 2/3、token 32/33
+边界由程序化测试验证。
+
+连接处理保持 fail-closed：`SO_PEERCRED` 不可用或 UID 不匹配、frame 截断/超限、非法 UTF-8/JSON、
+duplicate key、未知版本/operation/field 或 request schema/semantic rejection 均在响应前断开；已认证且
+有效的 Apply/Remove 请求至多写一个 typed response 后关闭。编码或写入失败只关闭连接，不尝试第二个
+响应。mutation caller 对缺失、截断或非法响应必须判定 `Unknown`，先 Probe/Snapshot reconciliation，
+不得盲目重试写操作。shutdown/cancel 导致无法写响应时同样按 `Unknown` 处理。
+
+B4-l1 仅证明 Schema/golden/test contract；用户 Code Review 已明确通过，当前为
+`DONE / Implemented`。这不证明 production
+response DTO/codec/writer/client、accept-loop/executor round-trip，也不冻结 ProbeCapabilities 或
+SnapshotManaged 的成功载荷。这不提升 B4 总项或任何 M0 Gate。
+
+以上不证明真实 `/run/guard` root:guard、生产跨 UID、executable accept loop、response/executor、
+systemd、root capability 或 Firewall 行为，也不提升 B4 总项或任何 M0 Gate。
+
+这些结果证明 IPC v1 request Schema/golden contract、production frame reader、payload decoder/typed
+validator、accepted-connection peer identity gate 与 listener/socket lifecycle library 在当前 worktree
+闭合。它们不证明真实 Snapshot/owner/capability validator、生产跨 UID 环境、root Enforcer、systemd
+或 `CAP_NET_ADMIN` 边界。
 
 ## Not Verified
 
@@ -256,14 +356,14 @@ evaluator 中闭合。它们不是 production IPC parser、真实 Snapshot/owner
 
 1. 使用生产 `guard` 用户执行的跨 UID 拒绝。
 2. 两个真实 systemd unit 的 hardening 和精确 `ReadWritePaths`。
-3. production parser 中的 canonical Prefix、owner/version、单 domain/operation count、真实 Snapshot
-   digest、capability 与 Guard-owned object-role mapping 校验；request Schema/golden 已落盘，尚未接入
-   production Enforcer。
+3. production payload decoder 已校验 canonical Prefix、owner/version 和单 domain/operation count；
+   真实 Snapshot digest、installed owner、capability 与 Guard-owned object-role mapping 尚未接入。
 4. Agent/Enforcer restart、timeout、cancellation 和 unknown result 恢复。
 5. root Enforcer 的 `CAP_NET_ADMIN` bounding、Agent 无 capability 及实际 nftables 权限。
-6. production IPC parser/validator 集成与持续 fuzz campaign；当前 framing Spike 和 B4-g test-only
-   evaluator 已覆盖截断、非法 JSON、未知字段/版本/操作、资源 exact/one-over 和 seed invariants，
-   但不代表 production predecoder 或持续 fuzz。
+6. production frame reader/payload decoder、accepted Unix connection peer credential gate 与 listener/
+   socket lifecycle library 已集成；仍无真实 `/run/guard` root:guard、生产跨 UID、executable accept
+   loop、response/executor 或持续 fuzz campaign。当前只证明 frozen golden、framing/JSON 资源
+   exact/one-over、seed invariants 与临时 same-UID/mismatched-expected-UID socket 通过 production library。
 7. 非 WSL2 的目标 Linux 发行版、内核和 systemd 支持矩阵。
 
 完成以上生产用户、systemd、capability、validator 和恢复测试，并生成可定位 Evidence
@@ -274,14 +374,16 @@ Manifest 后，B4 才能进入 `Verified` 评审。
 M0-B/M0-D 必须补齐：
 
 - 真实 `guard` service UID 与另一个非授权 UID 的正反测试；
-- socket 目录创建、权限漂移、陈旧 socket 和 Enforcer restart 测试；
+- socket 目录创建、权限漂移、陈旧/活跃 socket、并发 ownership 与安全 cleanup 已通过 production
+  library 测试；仍需真实 `/run/guard` root:guard、跨 UID 与进程 restart 测试；
 - 将已冻结的四 operation request Schema/golden vectors 接入 production predecoder/typed validator，
   并在调用 executor 前验证大小、深度、token、canonical target、owner、Snapshot、capability 和
   Guard-owned object-role mapping；
 - Agent 无 capability、Enforcer 仅 `CAP_NET_ADMIN` 的运行时检查；
 - systemd security 属性和精确文件写权限测试；
-- 将已在 Spike 通过的 malformed/truncated/oversized/version mismatch table/fuzz seed
-  合入 production parser/validator，并执行持续 fuzz campaign；
+- production frame reader/payload validator 已覆盖 malformed/truncated/oversized/version mismatch
+  table/fuzz seeds，并已接入 accepted-connection peer credential gate 与 listener/socket lifecycle；
+  仍需真实跨 UID、executable accept loop 与持续 fuzz campaign；
 - timeout/cancel 后 Probe-first 的 Reconcile 集成测试；
 - 在 Phase 1 发布支持 Linux 环境中的重复验证。
 

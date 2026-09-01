@@ -1,0 +1,275 @@
+{
+  "valid": [
+    {
+      "path": "valid/apply-infrastructure-confirmed.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "schema"
+    },
+    {
+      "path": "valid/apply-infrastructure-rejected.json",
+      "operation": "ApplyManagedPlan",
+      "status": "rejected",
+      "layer": "schema"
+    },
+    {
+      "path": "valid/apply-infrastructure-unknown.json",
+      "operation": "ApplyManagedPlan",
+      "status": "unknown",
+      "layer": "schema"
+    },
+    {
+      "path": "valid/apply-policy-confirmed.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "schema"
+    },
+    {
+      "path": "valid/apply-policy-rejected.json",
+      "operation": "ApplyManagedPlan",
+      "status": "rejected",
+      "layer": "schema"
+    },
+    {
+      "path": "valid/apply-policy-unknown.json",
+      "operation": "ApplyManagedPlan",
+      "status": "unknown",
+      "layer": "schema"
+    },
+    {
+      "path": "valid/apply-target-confirmed.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "schema"
+    },
+    {
+      "path": "valid/apply-target-rejected.json",
+      "operation": "ApplyManagedPlan",
+      "status": "rejected",
+      "layer": "schema"
+    },
+    {
+      "path": "valid/apply-target-unknown.json",
+      "operation": "ApplyManagedPlan",
+      "status": "unknown",
+      "layer": "schema"
+    },
+    {
+      "path": "valid/remove-confirmed.json",
+      "operation": "RemoveManagedInfrastructure",
+      "status": "confirmed",
+      "layer": "schema"
+    },
+    {
+      "path": "valid/remove-rejected.json",
+      "operation": "RemoveManagedInfrastructure",
+      "status": "rejected",
+      "layer": "schema"
+    },
+    {
+      "path": "valid/remove-unknown.json",
+      "operation": "RemoveManagedInfrastructure",
+      "status": "unknown",
+      "layer": "schema"
+    }
+  ],
+  "invalid": [
+    {
+      "path": "invalid/unknown-version.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/unknown-operation.json",
+      "operation": "ProbeCapabilities",
+      "status": "confirmed",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/unknown-status.json",
+      "operation": "ApplyManagedPlan",
+      "status": "succeeded",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/missing-version.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/missing-operation.json",
+      "operation": null,
+      "status": "confirmed",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/missing-status.json",
+      "operation": "ApplyManagedPlan",
+      "status": null,
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/missing-apply-domain.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/invalid-apply-domain.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/remove-with-domain.json",
+      "operation": "RemoveManagedInfrastructure",
+      "status": "confirmed",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/confirmed-with-error.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/rejected-without-error.json",
+      "operation": "ApplyManagedPlan",
+      "status": "rejected",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/unknown-without-error.json",
+      "operation": "ApplyManagedPlan",
+      "status": "unknown",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/unknown-with-rejected-code.json",
+      "operation": "ApplyManagedPlan",
+      "status": "unknown",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/rejected-with-unknown-result.json",
+      "operation": "ApplyManagedPlan",
+      "status": "rejected",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/remove-invalid-plan.json",
+      "operation": "RemoveManagedInfrastructure",
+      "status": "rejected",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/unknown-field.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/error-message.json",
+      "operation": "ApplyManagedPlan",
+      "status": "rejected",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/arbitrary-payload.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/command-field.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/request-id.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/details-field.json",
+      "operation": "ApplyManagedPlan",
+      "status": "rejected",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/cause-field.json",
+      "operation": "ApplyManagedPlan",
+      "status": "rejected",
+      "layer": "schema",
+      "classification": "schema_rejected"
+    },
+    {
+      "path": "invalid/duplicate-key.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "decoder",
+      "classification": "duplicate_key"
+    },
+    {
+      "path": "invalid/multiple-json-values.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "decoder",
+      "classification": "invalid_json"
+    },
+    {
+      "path": "invalid/invalid-utf8.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "decoder",
+      "classification": "invalid_utf8",
+      "fixture_encoding": "generated_from_hex_descriptor"
+    },
+    {
+      "path": "invalid/oversized-response.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "resource",
+      "classification": "response_too_large"
+    },
+    {
+      "path": "invalid/max-depth-one-over.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "resource",
+      "classification": "max_depth_exceeded"
+    },
+    {
+      "path": "invalid/token-limit-exceeded.json",
+      "operation": "ApplyManagedPlan",
+      "status": "confirmed",
+      "layer": "resource",
+      "classification": "token_limit_exceeded"
+    }
+  ]
+}
