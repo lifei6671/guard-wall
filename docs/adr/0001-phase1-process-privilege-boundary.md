@@ -93,8 +93,9 @@ IPC v1 request 的 wire shape、字段与资源上限由
 [`schema/ipc-v1.schema.json`](../../schema/ipc-v1.schema.json) 和对应 golden vectors 冻结；
 Apply/Remove mutation response 的 wire shape、稳定状态与错误码由
 [`schema/ipc-v1-mutation-response.schema.json`](../../schema/ipc-v1-mutation-response.schema.json)
-和对应 golden vectors 冻结。ProbeCapabilities/SnapshotManaged 的成功响应载荷，以及 production
-response DTO/codec/writer/client，仍由后续可编译接口冻结。本文不复制完整 Schema 或生成代码。
+和对应 golden vectors 冻结。Apply/Remove production response DTO/codec/frame 与 Linux mutation client
+已由下文 B4-l2 至 B4-l6 的可编译接口冻结；ProbeCapabilities/SnapshotManaged 的成功响应载荷仍由后续
+可编译接口冻结。本文不复制完整 Schema 或生成代码。
 
 ### 允许的操作
 
@@ -341,6 +342,150 @@ B4-l1 仅证明 Schema/golden/test contract；用户 Code Review 已明确通过
 `DONE / Implemented`。这不证明 production
 response DTO/codec/writer/client、accept-loop/executor round-trip，也不冻结 ProbeCapabilities 或
 SnapshotManaged 的成功载荷。这不提升 B4 总项或任何 M0 Gate。
+
+B4-l2 将 B4-l1 已冻结的 mutation-only response contract 落为 production typed DTO 与 payload
+codec。`MutationResponse`、`ApplyManagedPlanResponse` 和
+`RemoveManagedInfrastructureResponse` 均为 sealed read-only interface；六个构造入口只允许创建
+Apply 三 domain 与 Remove 的 confirmed/rejected/unknown 合法分支。wire status/error code 与本地
+codec validation error 使用不同类型，避免把 Backend 内部字符串或攻击者输入带入稳定错误分类。
+
+`EncodeMutationResponse` 使用固定字段顺序输出 compact JSON，拒绝 nil/typed-nil 与非法内部状态；
+`DecodeMutationResponse` 按 4096-byte cap、UTF-8、response-specific duplicate/depth/token/single-value
+scanner、closed union 的顺序 fail-closed。version 接受 JSON 数学整数 `1`、`1.0`、`1e0`，拒绝分数、
+非正数、字符串、null 与 int64 overflow。40 个既有 golden、六分支 constructor matrix、operation-specific
+allowlist、精确资源边界、分类优先级、nil、错误脱敏和 seed fuzz invariants 已由 production codec 测试复用。
+
+B4-l2 用户 Code Review 已明确通过，当前为 `DONE / Implemented`；仍不描述为 `Verified`。本批不含
+uint32-be response frame、raw payload writer、Unix client、accept-loop/executor、fake/backend 映射、
+connection deadline/partial-write/close/retry、ProbeCapabilities/SnapshotManaged success payload，亦未修改
+Schema、依赖、配置、数据库或 systemd。以上边界不提升 B4 总项、G18.1-G18.3 或 M0 Gate。
+
+B4-l3 将 mutation response 接入 platform-neutral `uint32-be` framing。导出的
+`DecodeMutationResponseFrame(io.Reader)` 先验证完整 header，再按 1 MiB frame cap、4 KiB mutation
+payload cap、完整 payload、B4-l2 codec 的顺序 fail-closed；cap 均在正文分配/读取前生效。frame 或
+payload 失败返回既有稳定脱敏 error classification，不伪造 wire `unknown_result`。
+
+`WriteMutationResponseFrame(io.Writer, MutationResponse)` 在首次写前完成 typed encode；encode 失败零
+写入。package-private raw helper 只完成同一 frame：positive short-write 续写剩余 suffix，error、`0,nil`
+或非法 write count 立即返回稳定 `write_failed`，不写第二帧、不关闭 writer、不设置 deadline，也不承担
+mutation retry。successful return 仅表示完整 frame 已交付给 `io.Writer`，不表示 peer 已读取或确认。
+
+B4-l3 用户 Code Review 已明确通过，当前为 `DONE / Implemented`；仍不描述为 `Verified`。本批不含
+exported raw payload writer、request encoder/constructors、Unix client、accept-loop/executor、Backend/result
+mapping、connection deadline/close/shutdown、Unknown/Probe-first orchestration、Probe/Snapshot success，亦未
+修改 Schema、依赖、配置、数据库或 systemd。B4 总项、G18.1-G18.3 与 M0 Gate 均不提升。
+
+B4-l4 将 frozen IPC v1 mutation request contract 落为安全 outbound payload API。sealed
+`MutationRequest` 仅允许 `ApplyManagedPlanRequest` 与 `RemoveManagedInfrastructureRequest`；Apply
+Infrastructure/Policy/Target 和 Remove 四个 domain-specific 构造入口固定 version、owner、operation、
+kind 与 schema version，不接收 raw JSON/map、command、binary/env/cwd 或 Firewall 物理对象名。Policy
+构造复制 caller slices；非法 Prefix、顺序、timeout、expiry 或 scope 均按既有 decoder 的稳定分类
+fail-closed，不自动 mask、排序、去重或修正。
+
+`EncodeMutationRequest` 使用私有固定字段顺序 wire struct 输出 deterministic compact JSON，拒绝
+nil/typed-nil 与 package-private 非法状态；Policy 空 allowlist 输出 `[]`，Target 无 effective-until 输出
+显式 `null`。encoder 复用构造校验和 production `DecodeRequest` 闭环，不泄漏攻击者提供的 owner 或其他
+非法字段。6 valid + 23 invalid golden、非-golden caller value round-trip、slice aliasing、资源 exact/
+one-over、错误脱敏与 seed fuzz 已由专项测试复用；完整验证和独立 implementation checkpoint 已通过。
+
+B4-l4 用户 Code Review 已明确通过，当前为 `DONE / Implemented`；仍不描述为 `Verified`。本批不含
+request frame writer、Unix client、Dial/deadline/Close、response routing、semantic retry、Probe/Snapshot
+success、accept-loop/executor、Backend/Firewall，亦未修改 Schema、依赖、配置、数据库或 systemd。
+B4 总项、G18.1-G18.3 与 M0 Gate 均不提升。
+
+B4-l5 将 B4-l4 typed mutation request encoder 接入 platform-neutral `uint32-be` framing。导出的
+`WriteMutationRequestFrame(io.Writer, MutationRequest)` 必须在首次写入前完成 `EncodeMutationRequest`；
+validation failure 对包括 nil writer 在内的所有 writer 保持零写入。编码成功后仅复用 package-private
+`writeFramePayload` / `writeAll`：positive short-write 续写剩余 suffix，error、`0,nil`、负数或 overlong
+write count 立即返回稳定脱敏 `write_failed`，不泄露底层 writer 错误。
+
+writer 和 stream 始终由 caller 持有；函数不 Close、Flush、SetDeadline，不写第二帧，不自动重试 mutation，
+也不构造 response 或 `Unknown`。successful return 只表示完整 frame 已交付给 `io.Writer`，不表示 peer 已
+读取、执行或确认。现有 `FrameErrorCodeWriteFailed` 仅将注释从 response-specific 泛化为 IPC frame，错误码、
+cap 与运行时语义均未改变。
+
+B4-l5 用户 Code Review 已明确通过，当前为 `DONE / Implemented`；仍不描述为 `Verified`。本批不含
+Unix client、Dial/deadline/Close、response routing/correlation、semantic retry、Unknown/Probe-first、
+Probe/Snapshot success、accept-loop/executor、Backend/Firewall，亦未修改 Schema、依赖、配置、数据库或
+systemd。B4 总项、G18.1-G18.3 与 M0 Gate 均不提升。
+
+B4-l6 增加 Linux-only `RoundTripMutation(context.Context, MutationRequest)`，production path 固定为
+`/run/guard/enforcer.sock`，server peer UID 固定为 root/0；调用方不能注入 path、UID、network 或 dialer。
+typed request 在触碰 transport 前预校验，Dial 成功后先通过 private `verifyUnixPeerUID` 完成
+`SO_PEERCRED` 身份校验，再装配 caller context deadline/cancellation；arm 完成后、首次写入前还必须同步
+检查 context，避免 cancellation watcher 尚未调度时抢先发送 mutation。
+
+每次调用只建立一个连接、写一个 typed mutation request frame、读一个 typed mutation response frame并
+best-effort Close；不复用连接、不写第二帧、不重连或自动重试。Apply response 必须匹配 operation/type/
+domain，Remove response 必须匹配 operation/type；不匹配返回稳定脱敏 `response_mismatch`。完整且关联正确
+的 response 是成功线性化点，优先于随后 cancellation；合法 wire `unknown/unknown_result` 作为正常 typed
+response 返回。client 不构造 wire Unknown；写入开始后未取得完整关联 response 时，上层必须按结果不确定
+执行 Probe/Snapshot-first，再决定后续动作。
+
+B4-l6 的 contract guard pre-write cancellation 与 Linux evidence 两个 P1
+均已修复并通过独立 closure；Linux 真实临时 Unix socket IPC 全包 Race `count=20`、Windows/Linux 全仓
+normal/Vet/module、Windows full Race、三目标 CGo-free compile 均通过。post-Dial cancellation 测试使用
+调用栈定位 arm 阶段，保留一个非阻塞 P2 稳健性 follow-up。final FULL_SCOPE/INTEGRATION 已以
+`APPROVED_WITH_FOLLOWUPS / CHILD_AGENT / COMPLETE / FRESH / PASSED` 通过；用户随后明确回复
+`B4-l6 Code Review 通过`，本 Delivery Unit 当前为 `DONE / Implemented`，但不描述为 `Verified`。
+本批不含 Probe/Snapshot success、Probe-first 编排、accept-loop/executor、Backend/
+Firewall、配置、Schema、依赖、数据库或 systemd；B4、G18.1-G18.3 与 M0 Gate 均不提升。
+
+B4-l7 在 observation wire contract 之前冻结 platform-neutral Firewall capability domain authority。
+`BackendKind` 是仅含 `nftables-native`、`iptables-nft`、`iptables-legacy` 的 closed enum；
+`FirewallCapabilities` 仅能由 validating constructor 创建，字段私有且只读。工具版本限制为 1..128 字节、
+trimmed printable ASCII；至少支持一个 IP family 与一个 INPUT/FORWARD scope。native timeout 依赖 native set，
+crash-safe expiry 依赖 native timeout，Docker 安全集成证明依赖 FORWARD，mutation readiness 依赖 ownership
+证明与 CIDR；mutation-ready native nftables 还必须具备 native set 与 atomic batch。iptables 的 atomic batch
+不被错误绑定到 native set，UFW 安全集成证明也不被错误绑定到 INPUT。非法组合返回零值和稳定脱敏错误，
+不得携带 command、binary、任意物理对象名或 raw backend error。
+
+B4-l7 的 final delta closure 与记录 freshness closure 均为
+`APPROVED / CHILD_AGENT / COMPLETE / FRESH / PASSED`、P0-P3 全无；用户随后明确回复
+`B4-l7 Code Review 通过`，当前为 `DONE / Implemented`，但不描述为 `Verified`。本批没有
+修改 Backend interface，也不含 ManagedState/ForeignContext、Probe/Snapshot response Schema/DTO/codec/
+frame/client、executor/serve loop、真实 nftables/iptables、配置、依赖、数据库、systemd 或 runtime
+composition；B4、G18.1-G18.3 与 M0 Gate 均不提升。
+
+B4-l8 在 B4-l7 domain authority 之上冻结 success-only `ProbeCapabilities` wire Schema。root 精确为
+`{version,operation,payload}`；payload 精确要求 15 个字段，一对一映射
+`FirewallCapabilitiesSpec`。backend 仅允许三个 closed kind，tool version 为 1..128 字节、无首尾空格的
+printable ASCII，其余 13 个 capability 均为必须显式出现的 boolean。结构通过后，semantic test 必须使用
+`NewFirewallCapabilities` 重建领域值；构造失败稳定归类为 `semantic_rejected`。iptables native set 与
+atomic batch 保持双向独立，UFW proof 不绑定 INPUT。response 上限为 4 KiB、instance depth 2、JSON token
+64，并继承 1 MiB frame metadata；duplicate key、非法 UTF-8、多 JSON value、未知/缺失/类型混淆及
+command/error 等注入均 fail-closed 且分类脱敏。
+
+B4-l8 的独立终审与记录新鲜度闭环最终为
+`APPROVED / CHILD_AGENT / COMPLETE / FRESH / PASSED`、P0-P3 全无；用户随后明确回复
+`B4-l8 Code Review 通过`，当前为 `DONE / Implemented`，但不描述为 `Verified`。本批只定义成功事实；
+`mutation_ready=false` 仍是合法 Probe success，不表示 Probe 执行失败。未知 backend/tool/topology 或执行失败
+必须由后续独立 closed failure envelope 表达。本批未新增 production DTO/codec/frame/client，不含
+Snapshot、Backend interface、executor/serve loop、真实 Firewall、配置、依赖、数据库、systemd 或 runtime
+composition；B4、G18.1-G18.3 与 M0 Gate 均不提升。
+
+B4-l9 将 B4-l7 domain authority 与 B4-l8 success Schema 接入一个完整的 `ProbeCapabilities` IPC transport。
+failure root 精确为 `{version,operation,error_code}`，不复用 mutation status machine；`error_code` 仅允许
+`unsupported` 与 `not_ready`。前者表示当前 backend/tool/topology 属于明确不支持的闭集，后者表示未能取得
+完整、可信且当前的 Probe 事实。failure 不允许 payload、message、details、cause、command、binary、env、cwd、
+socket、UID、物理对象名或 raw backend error。已取得完整事实但当前不能 mutation 时仍必须返回 B4-l8 success，
+并明确 `mutation_ready=false`，不得降格为 failure。
+
+production transport 使用 sealed typed response、deterministic codec、uint32-be frame、固定
+`/run/guard/enforcer.sock` 与 root peer UID。Agent 每次只建立一个连接、认证后写一个固定空 payload Probe request、
+读取一个关联 response，不自动重连或重试；caller context 是 Dial 与 I/O 的唯一时间预算。服务端单次适配器必须
+在 `UnixListener.AcceptRequest` 完成 peer authentication 与 request decode 后才调用 typed handler，并取得连接
+所有权、最多写一个 response、在所有路径关闭连接。handler 只能返回已验证的 success/failure DTO，不能返回
+任意 string/map/raw error。success 在编码前再次调用 `FirewallCapabilities.Validate`，decode 必须通过
+`NewFirewallCapabilities` 重建，不维护第二套宽松语义。若 context 在 frame 尚未完整写入时终止，服务端
+必须保留 `context.Canceled`/`context.DeadlineExceeded` identity；完整 frame 已写入后即达到 delivery point，
+随后 cancellation 不得覆盖已完成结果。
+
+B4-l9 只证明 closed observation transport 与 injected provider plumbing。它不定义或注册 production Firewall
+Backend，不证明 backend auto-detection、tool/version、ownership、UFW/Docker coexistence、packet path 或生产
+`mutation_ready=true`，也不包含 SnapshotManaged、通用 Enforcer accept loop/executable、配置、依赖、数据库、
+systemd 或真实 Firewall mutation。用户已明确回复 `确认 B4-l9`，允许按上述公共 wire/API 边界实施；完成状态、
+验证结论与用户 Code Review 门仍分别记录。
 
 以上不证明真实 `/run/guard` root:guard、生产跨 UID、executable accept loop、response/executor、
 systemd、root capability 或 Firewall 行为，也不提升 B4 总项或任何 M0 Gate。

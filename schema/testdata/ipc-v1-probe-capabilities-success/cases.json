@@ -1,0 +1,31 @@
+{
+  "valid": [
+    {"path":"valid/nftables-native-ready.json","layer":"semantic","classification":""},
+    {"path":"valid/iptables-nft-atomic-without-set.json","layer":"semantic","classification":""},
+    {"path":"valid/iptables-legacy-set-without-atomic.json","layer":"semantic","classification":""},
+    {"path":"valid/ufw-forward-without-input.json","layer":"semantic","classification":""}
+  ],
+  "invalid": [
+    {"path":"invalid/missing-payload.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/unknown-root-field.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/missing-backend.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/unknown-payload-field.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/duplicate-key.json","layer":"decoder","classification":"duplicate_key"},
+    {"path":"invalid/type-confusion.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/invalid-utf8.json","layer":"decoder","classification":"invalid_utf8","fixture_encoding":"generated_from_hex_descriptor"},
+    {"path":"invalid/multiple-json-values.json","layer":"decoder","classification":"invalid_json"},
+    {"path":"invalid/version-2.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/unknown-backend.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/tool-version-empty.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/tool-version-leading-space.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/no-ip-family.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/no-scope.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/native-timeout-without-set.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/crash-expiry-without-timeout.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/docker-without-forward.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/mutation-without-ownership.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/mutation-without-cidr.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/nftables-ready-without-atomic.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/security-field-injection.json","layer":"schema","classification":"schema_rejected"}
+  ]
+}

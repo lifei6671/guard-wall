@@ -1,0 +1,28 @@
+{
+  "valid": [
+    {"path":"valid/unsupported.json","layer":"schema","classification":""},
+    {"path":"valid/not-ready.json","layer":"schema","classification":""}
+  ],
+  "invalid": [
+    {"path":"invalid/missing-version.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/missing-operation.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/missing-error-code.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/unknown-version.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/unknown-operation.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/unknown-error-code.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/error-code-type-confusion.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/error-code-null.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/unknown-root-field.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/status-field.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/payload-field.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/security-field-injection.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/root-array.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/duplicate-key.json","layer":"decoder","classification":"duplicate_key"},
+    {"path":"invalid/invalid-utf8.json","layer":"decoder","classification":"invalid_utf8","fixture_encoding":"generated_from_hex_descriptor"},
+    {"path":"invalid/multiple-json-values.json","layer":"decoder","classification":"invalid_json"},
+    {"path":"invalid/malformed-json.json","layer":"decoder","classification":"invalid_json"},
+    {"path":"invalid/max-depth-one-over.json","layer":"resource","classification":"max_depth_exceeded"},
+    {"path":"invalid/token-limit-exceeded.json","layer":"resource","classification":"token_limit_exceeded"},
+    {"path":"invalid/oversized-response.json","layer":"resource","classification":"response_too_large","fixture_encoding":"generated_padded_template"}
+  ]
+}

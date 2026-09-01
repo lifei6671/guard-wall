@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://guard-wall.local/schema/ipc-v1-probe-capabilities-success.schema.json",
+  "title": "Guard Wall Agent/Enforcer IPC v1 ProbeCapabilities Success Response",
+  "description": "The authoritative success-only response schema for ProbeCapabilities. Probe execution failures are intentionally outside this artifact.",
+  "x-guard-max-frame-bytes": 1048576,
+  "x-guard-max-response-bytes": 4096,
+  "x-guard-max-instance-depth": 2,
+  "x-guard-max-json-tokens": 64,
+  "type": "object",
+  "additionalProperties": false,
+  "maxProperties": 3,
+  "required": ["version", "operation", "payload"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "minimum": 1,
+      "maximum": 1
+    },
+    "operation": {
+      "type": "string",
+      "const": "ProbeCapabilities",
+      "maxLength": 32
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 15,
+      "required": [
+        "backend",
+        "tool_version",
+        "ipv4",
+        "ipv6",
+        "cidr",
+        "native_set",
+        "native_timeout",
+        "crash_safe_expiry",
+        "atomic_batch",
+        "host_input",
+        "forward",
+        "ufw_integration_proven",
+        "docker_integration_proven",
+        "ownership_proven",
+        "mutation_ready"
+      ],
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": ["nftables-native", "iptables-nft", "iptables-legacy"],
+          "maxLength": 16
+        },
+        "tool_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[!-~](?:[ -~]{0,126}[!-~])?$"
+        },
+        "ipv4": { "type": "boolean" },
+        "ipv6": { "type": "boolean" },
+        "cidr": { "type": "boolean" },
+        "native_set": { "type": "boolean" },
+        "native_timeout": { "type": "boolean" },
+        "crash_safe_expiry": { "type": "boolean" },
+        "atomic_batch": { "type": "boolean" },
+        "host_input": { "type": "boolean" },
+        "forward": { "type": "boolean" },
+        "ufw_integration_proven": { "type": "boolean" },
+        "docker_integration_proven": { "type": "boolean" },
+        "ownership_proven": { "type": "boolean" },
+        "mutation_ready": { "type": "boolean" }
+      }
+    }
+  }
+}

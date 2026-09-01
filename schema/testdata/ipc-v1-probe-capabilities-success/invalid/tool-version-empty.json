@@ -1,0 +1,1 @@
+{"version":1,"operation":"ProbeCapabilities","payload":{"backend":"nftables-native","tool_version":"","ipv4":true,"ipv6":false,"cidr":true,"native_set":true,"native_timeout":true,"crash_safe_expiry":true,"atomic_batch":true,"host_input":true,"forward":false,"ufw_integration_proven":false,"docker_integration_proven":false,"ownership_proven":true,"mutation_ready":true}}

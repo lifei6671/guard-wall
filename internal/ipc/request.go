@@ -107,6 +107,13 @@ type Request interface {
 	isRequest()
 }
 
+// MutationRequest is the closed set of requests that may change managed
+// firewall state.
+type MutationRequest interface {
+	Request
+	isMutationRequest()
+}
+
 // ProbeCapabilitiesRequest is a validated capability-model request.
 type ProbeCapabilitiesRequest interface {
 	Request
@@ -135,7 +142,7 @@ func (*snapshotManagedRequest) isSnapshotManagedRequest() {
 
 // ApplyManagedPlanRequest is a validated request containing one managed plan.
 type ApplyManagedPlanRequest interface {
-	Request
+	MutationRequest
 	Plan() ManagedPlan
 	isApplyManagedPlanRequest()
 }
@@ -146,6 +153,7 @@ type applyManagedPlanRequest struct {
 
 func (*applyManagedPlanRequest) Operation() Operation { return OperationApplyManagedPlan }
 func (*applyManagedPlanRequest) isRequest()           {}
+func (*applyManagedPlanRequest) isMutationRequest()   {}
 func (*applyManagedPlanRequest) isApplyManagedPlanRequest() {
 }
 
@@ -159,7 +167,7 @@ func (r *applyManagedPlanRequest) Plan() ManagedPlan {
 
 // RemoveManagedInfrastructureRequest is a validated ownership-scoped removal.
 type RemoveManagedInfrastructureRequest interface {
-	Request
+	MutationRequest
 	ExpectedOwnerVersion() string
 	isRemoveManagedInfrastructureRequest()
 }
@@ -172,6 +180,8 @@ func (*removeManagedInfrastructureRequest) Operation() Operation {
 	return OperationRemoveManagedInfrastructure
 }
 func (*removeManagedInfrastructureRequest) isRequest() {}
+func (*removeManagedInfrastructureRequest) isMutationRequest() {
+}
 func (*removeManagedInfrastructureRequest) isRemoveManagedInfrastructureRequest() {
 }
 
@@ -373,6 +383,405 @@ func (p *targetPlan) Scopes() []Scope {
 		return nil
 	}
 	return append([]Scope(nil), p.scopes...)
+}
+
+// NewApplyInfrastructureRequest constructs a validated request for the fixed
+// Guard-owned firewall infrastructure.
+func NewApplyInfrastructureRequest(
+	basisSnapshotDigest string,
+	infrastructureRevision int64,
+) (ApplyManagedPlanRequest, error) {
+	base, code := newPlanBase(basisSnapshotDigest, infrastructureRevision)
+	if code != "" {
+		return nil, validationError(code)
+	}
+	return &applyManagedPlanRequest{plan: &infrastructurePlan{
+		planBase:      base,
+		schemaVersion: 1,
+	}}, nil
+}
+
+// NewApplyPolicyRequest constructs a validated complete policy replacement.
+// Input slices are copied and must already be canonical and sorted.
+func NewApplyPolicyRequest(
+	basisSnapshotDigest string,
+	policyRevision int64,
+	allowlist []netip.Prefix,
+	protectedTargets []netip.Prefix,
+) (ApplyManagedPlanRequest, error) {
+	base, code := newPlanBase(basisSnapshotDigest, policyRevision)
+	if code != "" {
+		return nil, validationError(code)
+	}
+	if len(allowlist) > maxPlanPrefixes || len(protectedTargets) < 2 || len(protectedTargets) > maxPlanPrefixes {
+		return nil, validationError(ErrorCodeSchemaRejected)
+	}
+	if len(allowlist)+len(protectedTargets) > maxPlanPrefixes {
+		return nil, validationError(ErrorCodePrefixLimit)
+	}
+	validatedAllowlist, code := validatedPrefixList(allowlist)
+	if code != "" {
+		return nil, validationError(code)
+	}
+	validatedProtected, code := validatedPrefixList(protectedTargets)
+	if code != "" {
+		return nil, validationError(code)
+	}
+	mandatory := map[netip.Prefix]bool{
+		netip.MustParsePrefix("127.0.0.0/8"): false,
+		netip.MustParsePrefix("::1/128"):     false,
+	}
+	for _, prefix := range validatedProtected {
+		if _, required := mandatory[prefix]; required {
+			mandatory[prefix] = true
+		}
+	}
+	if !mandatory[netip.MustParsePrefix("127.0.0.0/8")] || !mandatory[netip.MustParsePrefix("::1/128")] {
+		return nil, validationError(ErrorCodeProtectedPolicyMissing)
+	}
+	return &applyManagedPlanRequest{plan: &policyPlan{
+		planBase:         base,
+		allowlist:        validatedAllowlist,
+		protectedTargets: validatedProtected,
+	}}, nil
+}
+
+// NewApplyTargetRequest constructs a validated target membership request.
+// The target and scopes must already be canonical; scopes are copied.
+func NewApplyTargetRequest(
+	basisSnapshotDigest string,
+	targetGeneration int64,
+	target netip.Prefix,
+	membership Membership,
+	timeoutMode TimeoutMode,
+	effectiveUntilUnixMicro int64,
+	hasEffectiveUntil bool,
+	scopes []Scope,
+) (ApplyManagedPlanRequest, error) {
+	base, code := newPlanBase(basisSnapshotDigest, targetGeneration)
+	if code != "" {
+		return nil, validationError(code)
+	}
+	canonicalTarget, code := canonicalPrefix(target.String())
+	if code != "" {
+		return nil, validationError(code)
+	}
+	for _, protected := range []netip.Prefix{
+		netip.MustParsePrefix("127.0.0.0/8"),
+		netip.MustParsePrefix("::1/128"),
+	} {
+		if canonicalTarget.Overlaps(protected) {
+			return nil, validationError(ErrorCodeProtectedTarget)
+		}
+	}
+	if membership != MembershipPresent && membership != MembershipAbsent {
+		return nil, validationError(ErrorCodeSchemaRejected)
+	}
+	if timeoutMode != TimeoutModeNone && timeoutMode != TimeoutModeNative {
+		return nil, validationError(ErrorCodeSchemaRejected)
+	}
+	if hasEffectiveUntil && effectiveUntilUnixMicro <= 0 {
+		return nil, validationError(ErrorCodeSchemaRejected)
+	}
+	if !hasEffectiveUntil && effectiveUntilUnixMicro != 0 {
+		return nil, validationError(ErrorCodeInvalidTimeout)
+	}
+	validatedScopes, code := validatedScopeList(scopes)
+	if code != "" {
+		return nil, validationError(code)
+	}
+	if membership == MembershipAbsent && (timeoutMode != TimeoutModeNone || hasEffectiveUntil) {
+		return nil, validationError(ErrorCodeInvalidTimeout)
+	}
+	if timeoutMode == TimeoutModeNative && !hasEffectiveUntil {
+		return nil, validationError(ErrorCodeInvalidTimeout)
+	}
+	if timeoutMode == TimeoutModeNone && hasEffectiveUntil {
+		return nil, validationError(ErrorCodeInvalidTimeout)
+	}
+	return &applyManagedPlanRequest{plan: &targetPlan{
+		planBase:                base,
+		target:                  canonicalTarget,
+		membership:              membership,
+		timeoutMode:             timeoutMode,
+		effectiveUntilUnixMicro: effectiveUntilUnixMicro,
+		hasEffectiveUntil:       hasEffectiveUntil,
+		scopes:                  validatedScopes,
+	}}, nil
+}
+
+// NewRemoveManagedInfrastructureRequest constructs the fixed ownership-scoped
+// removal request.
+func NewRemoveManagedInfrastructureRequest() RemoveManagedInfrastructureRequest {
+	return &removeManagedInfrastructureRequest{expectedOwnerVersion: ownerVersionV1}
+}
+
+type mutationRequestWire struct {
+	Version   int       `json:"version"`
+	Operation Operation `json:"operation"`
+	Payload   any       `json:"payload"`
+}
+
+type infrastructurePlanWire struct {
+	Domain              Domain                    `json:"domain"`
+	OwnerVersion        string                    `json:"owner_version"`
+	BasisSnapshotDigest string                    `json:"basis_snapshot_digest"`
+	Revision            int64                     `json:"infrastructure_revision"`
+	Operations          []infrastructureOperation `json:"operations"`
+}
+
+type infrastructureOperation struct {
+	Kind          string `json:"kind"`
+	SchemaVersion int64  `json:"schema_version"`
+}
+
+type policyPlanWire struct {
+	Domain              Domain            `json:"domain"`
+	OwnerVersion        string            `json:"owner_version"`
+	BasisSnapshotDigest string            `json:"basis_snapshot_digest"`
+	Revision            int64             `json:"policy_revision"`
+	Operations          []policyOperation `json:"operations"`
+}
+
+type policyOperation struct {
+	Kind             string   `json:"kind"`
+	Allowlist        []string `json:"allowlist"`
+	ProtectedTargets []string `json:"protected_targets"`
+}
+
+type targetPlanWire struct {
+	Domain              Domain            `json:"domain"`
+	OwnerVersion        string            `json:"owner_version"`
+	BasisSnapshotDigest string            `json:"basis_snapshot_digest"`
+	Generation          int64             `json:"target_generation"`
+	Operations          []targetOperation `json:"operations"`
+}
+
+type targetOperation struct {
+	Kind                    string      `json:"kind"`
+	Target                  string      `json:"target"`
+	Membership              Membership  `json:"membership"`
+	TimeoutMode             TimeoutMode `json:"timeout_mode"`
+	EffectiveUntilUnixMicro any         `json:"effective_until_unix_us"`
+	Scopes                  []Scope     `json:"scopes"`
+}
+
+type removeManagedInfrastructureWire struct {
+	ExpectedOwnerVersion string `json:"expected_owner_version"`
+}
+
+// EncodeMutationRequest validates and deterministically encodes one mutation
+// request payload. It never returns bytes together with an error.
+func EncodeMutationRequest(request MutationRequest) ([]byte, error) {
+	wire, code := mutationRequestToWire(request)
+	if code != "" {
+		return nil, validationError(code)
+	}
+	raw, err := json.Marshal(wire)
+	if err != nil {
+		return nil, validationError(ErrorCodeSchemaRejected)
+	}
+	decoded, err := DecodeRequest(raw)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := decoded.(MutationRequest); !ok {
+		return nil, validationError(ErrorCodeSchemaRejected)
+	}
+	return raw, nil
+}
+
+func mutationRequestToWire(request MutationRequest) (mutationRequestWire, ErrorCode) {
+	switch request := request.(type) {
+	case *applyManagedPlanRequest:
+		if request == nil || request.plan == nil {
+			return mutationRequestWire{}, ErrorCodeSchemaRejected
+		}
+		return applyRequestToWire(request.plan)
+	case *removeManagedInfrastructureRequest:
+		if request == nil || request.expectedOwnerVersion != ownerVersionV1 {
+			return mutationRequestWire{}, ErrorCodeSchemaRejected
+		}
+		return mutationRequestWire{
+			Version:   1,
+			Operation: OperationRemoveManagedInfrastructure,
+			Payload: removeManagedInfrastructureWire{
+				ExpectedOwnerVersion: ownerVersionV1,
+			},
+		}, ""
+	default:
+		return mutationRequestWire{}, ErrorCodeSchemaRejected
+	}
+}
+
+func applyRequestToWire(plan ManagedPlan) (mutationRequestWire, ErrorCode) {
+	switch plan := plan.(type) {
+	case *infrastructurePlan:
+		if plan == nil || plan.ownerVersion != ownerVersionV1 || plan.schemaVersion != 1 {
+			return mutationRequestWire{}, ErrorCodeSchemaRejected
+		}
+		normalized, err := NewApplyInfrastructureRequest(plan.basisSnapshotDigest, plan.revision)
+		if err != nil {
+			return mutationRequestWire{}, validationErrorCode(err)
+		}
+		validated := normalized.Plan().(*infrastructurePlan)
+		return mutationRequestWire{
+			Version:   1,
+			Operation: OperationApplyManagedPlan,
+			Payload: infrastructurePlanWire{
+				Domain:              DomainInfrastructure,
+				OwnerVersion:        validated.ownerVersion,
+				BasisSnapshotDigest: validated.basisSnapshotDigest,
+				Revision:            validated.revision,
+				Operations: []infrastructureOperation{{
+					Kind:          "ensure_infrastructure",
+					SchemaVersion: validated.schemaVersion,
+				}},
+			},
+		}, ""
+	case *policyPlan:
+		if plan == nil || plan.ownerVersion != ownerVersionV1 {
+			return mutationRequestWire{}, ErrorCodeSchemaRejected
+		}
+		normalized, err := NewApplyPolicyRequest(
+			plan.basisSnapshotDigest,
+			plan.revision,
+			plan.allowlist,
+			plan.protectedTargets,
+		)
+		if err != nil {
+			return mutationRequestWire{}, validationErrorCode(err)
+		}
+		validated := normalized.Plan().(*policyPlan)
+		return mutationRequestWire{
+			Version:   1,
+			Operation: OperationApplyManagedPlan,
+			Payload: policyPlanWire{
+				Domain:              DomainPolicy,
+				OwnerVersion:        validated.ownerVersion,
+				BasisSnapshotDigest: validated.basisSnapshotDigest,
+				Revision:            validated.revision,
+				Operations: []policyOperation{{
+					Kind:             "replace_policy",
+					Allowlist:        prefixStrings(validated.allowlist),
+					ProtectedTargets: prefixStrings(validated.protectedTargets),
+				}},
+			},
+		}, ""
+	case *targetPlan:
+		if plan == nil || plan.ownerVersion != ownerVersionV1 {
+			return mutationRequestWire{}, ErrorCodeSchemaRejected
+		}
+		normalized, err := NewApplyTargetRequest(
+			plan.basisSnapshotDigest,
+			plan.revision,
+			plan.target,
+			plan.membership,
+			plan.timeoutMode,
+			plan.effectiveUntilUnixMicro,
+			plan.hasEffectiveUntil,
+			plan.scopes,
+		)
+		if err != nil {
+			return mutationRequestWire{}, validationErrorCode(err)
+		}
+		validated := normalized.Plan().(*targetPlan)
+		var expiry any
+		if validated.hasEffectiveUntil {
+			expiry = validated.effectiveUntilUnixMicro
+		}
+		return mutationRequestWire{
+			Version:   1,
+			Operation: OperationApplyManagedPlan,
+			Payload: targetPlanWire{
+				Domain:              DomainTarget,
+				OwnerVersion:        validated.ownerVersion,
+				BasisSnapshotDigest: validated.basisSnapshotDigest,
+				Generation:          validated.revision,
+				Operations: []targetOperation{{
+					Kind:                    "set_target",
+					Target:                  validated.target.String(),
+					Membership:              validated.membership,
+					TimeoutMode:             validated.timeoutMode,
+					EffectiveUntilUnixMicro: expiry,
+					Scopes:                  append([]Scope(nil), validated.scopes...),
+				}},
+			},
+		}, ""
+	default:
+		return mutationRequestWire{}, ErrorCodeSchemaRejected
+	}
+}
+
+func newPlanBase(basisSnapshotDigest string, revision int64) (planBase, ErrorCode) {
+	if !validDigest(basisSnapshotDigest) || revision <= 0 {
+		return planBase{}, ErrorCodeSchemaRejected
+	}
+	return planBase{
+		ownerVersion:        ownerVersionV1,
+		basisSnapshotDigest: basisSnapshotDigest,
+		revision:            revision,
+	}, ""
+}
+
+func validatedPrefixList(values []netip.Prefix) ([]netip.Prefix, ErrorCode) {
+	result := make([]netip.Prefix, len(values))
+	seen := make(map[string]struct{}, len(values))
+	previous := ""
+	for index, value := range values {
+		prefix, code := canonicalPrefix(value.String())
+		if code != "" {
+			return nil, code
+		}
+		text := prefix.String()
+		if _, duplicate := seen[text]; duplicate {
+			return nil, ErrorCodeSchemaRejected
+		}
+		if index > 0 && previous > text {
+			return nil, ErrorCodeNoncanonicalOrder
+		}
+		seen[text] = struct{}{}
+		previous = text
+		result[index] = prefix
+	}
+	return result, ""
+}
+
+func validatedScopeList(values []Scope) ([]Scope, ErrorCode) {
+	if len(values) < 1 || len(values) > 2 {
+		return nil, ErrorCodeSchemaRejected
+	}
+	result := make([]Scope, len(values))
+	seen := make(map[Scope]struct{}, len(values))
+	for index, scope := range values {
+		if scope != ScopeInput && scope != ScopeForward {
+			return nil, ErrorCodeSchemaRejected
+		}
+		if _, duplicate := seen[scope]; duplicate {
+			return nil, ErrorCodeSchemaRejected
+		}
+		seen[scope] = struct{}{}
+		result[index] = scope
+	}
+	if len(result) == 2 && (result[0] != ScopeInput || result[1] != ScopeForward) {
+		return nil, ErrorCodeInvalidScope
+	}
+	return result, ""
+}
+
+func prefixStrings(values []netip.Prefix) []string {
+	result := make([]string, len(values))
+	for index, value := range values {
+		result[index] = value.String()
+	}
+	return result
+}
+
+func validationErrorCode(err error) ErrorCode {
+	if typed, ok := err.(*ValidationError); ok {
+		return typed.Code()
+	}
+	return ErrorCodeSchemaRejected
 }
 
 // DecodeRequest decodes and validates one complete IPC v1 JSON payload.

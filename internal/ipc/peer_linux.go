@@ -7,7 +7,7 @@ import (
 	"syscall"
 )
 
-// PeerErrorCode classifies an accepted Unix connection identity failure.
+// PeerErrorCode classifies a Unix connection identity failure.
 type PeerErrorCode string
 
 const (
@@ -35,9 +35,16 @@ func (e *PeerError) Code() PeerErrorCode {
 // Enforcer startup. The caller owns the connection and must discard it after
 // any returned error.
 func DecodeUnixFrame(connection *net.UnixConn, expectedUID uint32) (Request, error) {
+	if err := verifyUnixPeerUID(connection, expectedUID); err != nil {
+		return nil, err
+	}
+	return DecodeFrame(connection)
+}
+
+func verifyUnixPeerUID(connection *net.UnixConn, expectedUID uint32) error {
 	rawConnection, err := connection.SyscallConn()
 	if err != nil {
-		return nil, &PeerError{code: PeerErrorCodeCredentialUnavailable}
+		return &PeerError{code: PeerErrorCodeCredentialUnavailable}
 	}
 
 	var credential *syscall.Ucred
@@ -47,11 +54,10 @@ func DecodeUnixFrame(connection *net.UnixConn, expectedUID uint32) (Request, err
 			int(fileDescriptor), syscall.SOL_SOCKET, syscall.SO_PEERCRED,
 		)
 	}); err != nil || credentialErr != nil || credential == nil {
-		return nil, &PeerError{code: PeerErrorCodeCredentialUnavailable}
+		return &PeerError{code: PeerErrorCodeCredentialUnavailable}
 	}
 	if credential.Uid != expectedUID {
-		return nil, &PeerError{code: PeerErrorCodeUIDMismatch}
+		return &PeerError{code: PeerErrorCodeUIDMismatch}
 	}
-
-	return DecodeFrame(connection)
+	return nil
 }

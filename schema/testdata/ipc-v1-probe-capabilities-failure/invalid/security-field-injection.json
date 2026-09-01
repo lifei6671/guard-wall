@@ -1,0 +1,1 @@
+{"version":1,"operation":"ProbeCapabilities","error_code":"unsupported","message":"raw backend error","details":{"path":"/secret"},"cause":"command failed","command":"nft flush ruleset","binary":"/bin/sh","env":"PATH=/tmp","cwd":"/tmp","object_name":"foreign"}
