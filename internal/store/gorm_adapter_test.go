@@ -554,12 +554,18 @@ func TestModerncDialectorQuoteBindAndClauses(t *testing.T) {
 }
 
 type gormAdapterProbe struct {
-	ID          int64  `gorm:"column:id;primaryKey;autoIncrement:false"`
-	Tenant      string `gorm:"column:tenant"`
-	Value       string `gorm:"column:value"`
-	Version     int64  `gorm:"column:version"`
-	State       string `gorm:"column:state;->"`
-	UpdatedAtUS int64  `gorm:"column:updated_at_us"`
+	// ID 是测试表的显式主键，用于验证 GORM 不依赖自增主键。
+	ID int64 `gorm:"column:id;primaryKey;autoIncrement:false"`
+	// Tenant 标识测试数据的逻辑租户，用于验证条件查询不会越过目标行。
+	Tenant string `gorm:"column:tenant"`
+	// Value 保存需要经参数绑定读写的测试载荷。
+	Value string `gorm:"column:value"`
+	// Version 保存测试行版本，用于验证条件更新和 RETURNING 结果。
+	Version int64 `gorm:"column:version"`
+	// State 映射数据库默认状态且只读，用于验证 RETURNING 回填。
+	State string `gorm:"column:state;->"`
+	// UpdatedAtUS 保存测试用的 Unix 微秒更新时间值。
+	UpdatedAtUS int64 `gorm:"column:updated_at_us"`
 }
 
 func (gormAdapterProbe) TableName() string { return "gorm_adapter_probe" }

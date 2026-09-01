@@ -4,14 +4,14 @@
 
 ```text
 Decision: Accepted
-Validation maturity: REVIEW / Implemented
+Validation maturity: DONE / Implemented
 Date: 2026-09-01
 ```
 
 用户已明确确认 GORM-1a。本 ADR 只授权将 `UnitOfWork.PutParserOutcome` 的单条
 `INSERT` 从手写 SQL 迁移为 GORM `Create`，并为它建立绑定现有 raw `*sql.Tx` 的私有
-适配入口。实现、验证与独立 Tier-3 checkpoint 已完成；本批当前为
-`REVIEW / Implemented`，等待用户 Code Review。本决定不提升 M0 Gate。
+适配入口。实现、验证与独立 Tier-3 checkpoint/final review 已完成，用户 Code Review
+已明确通过；本批当前为 `DONE / Implemented`。本决定不提升 M0 Gate。
 
 ## Context
 

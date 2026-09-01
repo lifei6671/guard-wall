@@ -11,6 +11,7 @@ import (
 
 	"github.com/lifei6671/guard-wall/internal/core"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var errUnitOfWorkClosed = errors.New("unit of work is closed")
@@ -44,17 +45,219 @@ type UnitOfWork struct {
 }
 
 type parserTerminalOutcomeRow struct {
-	DeliveryID    string  `gorm:"column:delivery_id;primaryKey;autoIncrement:false"`
-	ParserID      string  `gorm:"column:parser_id;primaryKey;autoIncrement:false"`
-	ParserVersion string  `gorm:"column:parser_version;primaryKey;autoIncrement:false"`
-	Kind          string  `gorm:"column:kind"`
-	EmittedCount  int64   `gorm:"column:emitted_count"`
-	FailureCode   *string `gorm:"column:failure_code"`
-	CompletedAtUS int64   `gorm:"column:completed_at_us"`
+	// DeliveryID 标识本次处理投递，同时属于复合主键并延迟关联最终 processing receipt。
+	DeliveryID string `gorm:"column:delivery_id;primaryKey;autoIncrement:false"`
+	// ParserID 标识产生终态结果的 parser，并与 ParserVersion 共同引用冻结的 parser revision。
+	ParserID string `gorm:"column:parser_id;primaryKey;autoIncrement:false"`
+	// ParserVersion 标识本次实际执行的 parser 版本，也是复合主键的一部分。
+	ParserVersion string `gorm:"column:parser_version;primaryKey;autoIncrement:false"`
+	// Kind 保存 success、no_match 或 record_permanent 终态分类。
+	Kind string `gorm:"column:kind"`
+	// EmittedCount 保存 parser 成功产生的 Event 数量，非成功终态必须为零。
+	EmittedCount int64 `gorm:"column:emitted_count"`
+	// FailureCode 保存永久失败分类；nil 会写入 SQL NULL，表示没有失败。
+	FailureCode *string `gorm:"column:failure_code"`
+	// CompletedAtUS 保存终态完成时间的 UTC Unix 微秒值。
+	CompletedAtUS int64 `gorm:"column:completed_at_us"`
 }
 
 func (parserTerminalOutcomeRow) TableName() string {
 	return "parser_terminal_outcomes"
+}
+
+type detectionTerminalOutcomeRow struct {
+	// DeliveryID 标识拥有本结果的处理投递，并通过延迟外键关联最终 processing receipt。
+	DeliveryID string `gorm:"column:delivery_id"`
+	// EventID 标识被检测的稳定 Event，也是结果复合主键的一部分。
+	EventID string `gorm:"column:event_id;primaryKey;autoIncrement:false"`
+	// RuleID 标识得出结果的 Rule，并与 RuleVersion 共同引用冻结的 rule revision。
+	RuleID string `gorm:"column:rule_id;primaryKey;autoIncrement:false"`
+	// RuleVersion 标识本次实际评估的 Rule 版本，也是复合主键的一部分。
+	RuleVersion string `gorm:"column:rule_version;primaryKey;autoIncrement:false"`
+	// Kind 保存 success 或 record_permanent 终态分类。
+	Kind string `gorm:"column:kind"`
+	// FailureCode 保存永久失败分类；nil 会写入 SQL NULL，表示检测成功。
+	FailureCode *string `gorm:"column:failure_code"`
+	// CompletedAtUS 保存终态完成时间的 UTC Unix 微秒值。
+	CompletedAtUS int64 `gorm:"column:completed_at_us"`
+}
+
+func (detectionTerminalOutcomeRow) TableName() string {
+	return "detection_terminal_outcomes"
+}
+
+type alertRow struct {
+	// AlertID 标识持久化告警，也是 alerts 表的主键。
+	AlertID string `gorm:"column:alert_id;primaryKey;autoIncrement:false"`
+	// NodeID 标识产生告警的节点，并立即外键关联 node_identity。
+	NodeID string `gorm:"column:node_id"`
+	// EventID 标识触发告警的 Event，并参与检测成员关系的复合唯一键与外键。
+	EventID string `gorm:"column:event_id"`
+	// RuleID 标识命中的 Rule，并与 RuleVersion 共同引用冻结规则和检测成员关系。
+	RuleID string `gorm:"column:rule_id"`
+	// RuleVersion 标识命中时实际执行的 Rule 版本，也是检测成员关系复合键的一部分。
+	RuleVersion string `gorm:"column:rule_version"`
+	// CanonicalTarget 保存告警命中的规范化目标字符串。
+	CanonicalTarget string `gorm:"column:canonical_target"`
+	// ObservedAtUS 保存触发事件观测时间的 UTC Unix 微秒值。
+	ObservedAtUS int64 `gorm:"column:observed_at_us"`
+	// CreatedAtUS 保存告警创建时间的 UTC Unix 微秒值。
+	CreatedAtUS int64 `gorm:"column:created_at_us"`
+}
+
+func (alertRow) TableName() string {
+	return "alerts"
+}
+
+type decisionRow struct {
+	// DecisionID 标识不可变安全决策，也是 decisions 表的主键。
+	DecisionID string `gorm:"column:decision_id;primaryKey;autoIncrement:false"`
+	// NodeID 标识决策所属节点，立即外键关联 node_identity，并参与两条 active partial-unique。
+	NodeID string `gorm:"column:node_id"`
+	// Source 保存 automatic 或 manual 来源枚举，并选择对应的 active partial-unique。
+	Source string `gorm:"column:source"`
+	// RuleID 可选标识自动决策 Rule，与 RuleVersion 组成立即外键并参与 automatic active partial-unique；nil 写入 SQL NULL。
+	RuleID *string `gorm:"column:rule_id"`
+	// RuleVersion 可选标识自动决策冻结的 Rule 版本，并与 RuleID 组成立即外键；nil 写入 SQL NULL。
+	RuleVersion *string `gorm:"column:rule_version"`
+	// AlertID 可选立即外键关联触发自动决策的告警；nil 写入 SQL NULL。
+	AlertID *string `gorm:"column:alert_id"`
+	// CanonicalTarget 保存决策作用的规范化目标字符串，并参与两条 active partial-unique。
+	CanonicalTarget string `gorm:"column:canonical_target"`
+	// CreatedAtUS 保存决策创建时间的 UTC Unix 微秒值。
+	CreatedAtUS int64 `gorm:"column:created_at_us"`
+	// UpdatedAtUS 保存决策最后更新时间的 UTC Unix 微秒值。
+	UpdatedAtUS int64 `gorm:"column:updated_at_us"`
+	// LastTriggeredAtUS 保存决策最近触发时间的 UTC Unix 微秒值。
+	LastTriggeredAtUS int64 `gorm:"column:last_triggered_at_us"`
+	// ExpiresAtUS 保存可选过期时间的 UTC Unix 微秒值；nil 写入 SQL NULL。
+	ExpiresAtUS *int64 `gorm:"column:expires_at_us"`
+	// EndedAtUS 保存可选终止时间的 UTC Unix 微秒值；nil 写入 SQL NULL。
+	EndedAtUS *int64 `gorm:"column:ended_at_us"`
+	// State 保存 active、expired 或 revoked 生命周期状态枚举，并限定 partial-unique 只约束 active 行。
+	State string `gorm:"column:state"`
+	// EndReason 保存可选终止原因枚举；nil 写入 SQL NULL。
+	EndReason *string `gorm:"column:end_reason"`
+	// SuppressedCount 保存自动决策被后续同类事件抑制的累计次数。
+	SuppressedCount uint64 `gorm:"column:suppressed_count"`
+}
+
+func (decisionRow) TableName() string {
+	return "decisions"
+}
+
+type criticalAuditRow struct {
+	// AuditID 标识不可变审计记录，也是 audit_logs 表的主键。
+	AuditID string `gorm:"column:audit_id;primaryKey;autoIncrement:false"`
+	// IdempotencyKey 标识业务审计动作的稳定幂等键，并受数据库唯一约束保护。
+	IdempotencyKey string `gorm:"column:idempotency_key"`
+	// NodeID 标识产生审计记录的节点，并立即外键关联 node_identity。
+	NodeID string `gorm:"column:node_id"`
+	// Category 保存审计事件所属的稳定业务分类。
+	Category string `gorm:"column:category"`
+	// Action 保存触发本条审计记录的稳定业务动作。
+	Action string `gorm:"column:action"`
+	// Result 保存 success、rejected 或 failure 审计结果枚举。
+	Result string `gorm:"column:result"`
+	// Severity 保存 info、warning 或 critical 审计严重度枚举。
+	Severity string `gorm:"column:severity"`
+	// Critical 固定为 1，标记该记录必须与所解释的业务状态原子提交。
+	Critical int64 `gorm:"column:critical"`
+	// ActorType 保存 system、administrator 或 source 审计主体枚举。
+	ActorType string `gorm:"column:actor_type"`
+	// DeliveryID 可选关联处理投递；nil 写入 SQL NULL。
+	DeliveryID *string `gorm:"column:delivery_id"`
+	// AlertID 可选关联告警；nil 写入 SQL NULL。
+	AlertID *string `gorm:"column:alert_id"`
+	// DecisionID 可选关联安全决策；nil 写入 SQL NULL。
+	DecisionID *string `gorm:"column:decision_id"`
+	// ErrorCode 保存可选稳定错误码；nil 写入 SQL NULL。
+	ErrorCode *string `gorm:"column:error_code"`
+	// DetailsJSON 保存已校验的 JSON 文本，空输入规范化为 {}。
+	DetailsJSON string `gorm:"column:details_json"`
+	// CreatedAtUS 保存审计记录创建时间的 UTC Unix 微秒值。
+	CreatedAtUS int64 `gorm:"column:created_at_us"`
+}
+
+func (criticalAuditRow) TableName() string {
+	return "audit_logs"
+}
+
+type detectionContributionRow struct {
+	// EventID 标识被检测的稳定 Event，并与 RuleID、RuleVersion 共同组成复合主键。
+	EventID string `gorm:"column:event_id;primaryKey;autoIncrement:false"`
+	// RuleID 标识贡献所属 Rule，并与 RuleVersion 共同立即外键关联冻结规则版本。
+	RuleID string `gorm:"column:rule_id;primaryKey;autoIncrement:false"`
+	// RuleVersion 标识本次实际评估的 Rule 版本，也是复合主键的一部分。
+	RuleVersion string `gorm:"column:rule_version;primaryKey;autoIncrement:false"`
+	// DeliveryID 标识首次贡献该检测成员关系的投递，并通过延迟外键关联最终 processing receipt。
+	DeliveryID string `gorm:"column:delivery_id"`
+	// ContributedAtUS 保存检测成员关系首次产生时间的 UTC Unix 微秒值。
+	ContributedAtUS int64 `gorm:"column:contributed_at_us"`
+}
+
+func (detectionContributionRow) TableName() string {
+	return "detection_contributions"
+}
+
+type desiredBanProjectionRow struct {
+	// NodeID 标识投影所属节点，立即外键关联 node_identity，并与 CanonicalTarget 共同组成复合主键。
+	NodeID string `gorm:"column:node_id;primaryKey;autoIncrement:false"`
+	// CanonicalTarget 保存规范化目标字符串，也是投影复合主键的一部分。
+	CanonicalTarget string `gorm:"column:canonical_target;primaryKey;autoIncrement:false"`
+	// State 保存 absent 或 present 投影状态枚举。
+	State string `gorm:"column:state"`
+	// ActiveCount 保存当前要求该目标被封禁的 active Decision 数量。
+	ActiveCount uint64 `gorm:"column:active_count"`
+	// EffectiveUntilUS 保存可选生效截止时间的 UTC Unix 微秒值；nil 写入 SQL NULL。
+	EffectiveUntilUS *int64 `gorm:"column:effective_until_us"`
+	// TargetProjectionRevision 保存单目标单调递增 revision，用于拒绝 stale 或冲突写入。
+	TargetProjectionRevision core.TargetProjectionRevision `gorm:"column:target_projection_revision"`
+	// UpdatedAtUS 保存投影最后更新时间的 UTC Unix 微秒值。
+	UpdatedAtUS int64 `gorm:"column:updated_at_us"`
+}
+
+func (desiredBanProjectionRow) TableName() string {
+	return "desired_ban_projections"
+}
+
+type processingReceiptRow struct {
+	// DeliveryID 标识本次处理投递，也是 processing_receipts 表的主键。
+	DeliveryID string `gorm:"column:delivery_id;primaryKey;autoIncrement:false"`
+	// SourceID 标识投递来源，并立即外键关联 sources。
+	SourceID string `gorm:"column:source_id"`
+	// PositionKind 保存 file 或 journald 位置枚举，并决定位置列的 SQL NULL 组合。
+	PositionKind string `gorm:"column:position_kind"`
+	// Generation 保存 file generation，并与 SourceID 组成立即复合外键；journald receipt 为 nil 并写入 SQL NULL。
+	Generation *string `gorm:"column:generation"`
+	// DeviceID 保存 file 设备号；journald receipt 为 nil 并写入 SQL NULL。
+	DeviceID *int64 `gorm:"column:device_id"`
+	// Inode 保存 file inode；journald receipt 为 nil 并写入 SQL NULL。
+	Inode *int64 `gorm:"column:inode"`
+	// StartOffset 保存 file 起始偏移；journald receipt 为 nil 并写入 SQL NULL。
+	StartOffset *int64 `gorm:"column:start_offset"`
+	// EndOffset 保存 file 结束偏移；journald receipt 为 nil 并写入 SQL NULL。
+	EndOffset *int64 `gorm:"column:end_offset"`
+	// JournaldCursor 保存 journald cursor；file receipt 为 nil 并写入 SQL NULL。
+	JournaldCursor *string `gorm:"column:journald_cursor"`
+	// Kind 保存 success 或 record_permanent 终态分类，并决定失败列的 SQL NULL 组合。
+	Kind string `gorm:"column:kind"`
+	// FailureStage 保存永久失败阶段；success receipt 为 nil 并写入 SQL NULL。
+	FailureStage *string `gorm:"column:failure_stage"`
+	// FailureCode 保存永久失败稳定错误码；success receipt 为 nil 并写入 SQL NULL。
+	FailureCode *string `gorm:"column:failure_code"`
+	// SanitizedError 保存永久失败脱敏诊断；success receipt 为 nil 并写入 SQL NULL。
+	SanitizedError *string `gorm:"column:sanitized_error"`
+	// TerminalAction 保存永久失败终态动作；success receipt 为 nil 并写入 SQL NULL。
+	TerminalAction *string `gorm:"column:terminal_action"`
+	// FailureOccurredAtUS 保存永久失败发生时间的 UTC Unix 微秒值；success receipt 为 nil 并写入 SQL NULL。
+	FailureOccurredAtUS *int64 `gorm:"column:failure_occurred_at_us"`
+	// CommittedAtUS 保存 receipt 业务提交时间的 UTC Unix 微秒值。
+	CommittedAtUS int64 `gorm:"column:committed_at_us"`
+}
+
+func (processingReceiptRow) TableName() string {
+	return "processing_receipts"
 }
 
 func (s *Store) newUnitOfWork(tx *sql.Tx) *UnitOfWork {
@@ -125,31 +328,44 @@ func (u *UnitOfWork) PutDetectionContribution(ctx context.Context, contribution 
 	if err := contribution.Validate(); err != nil {
 		return false, u.fail(fmt.Errorf("put detection contribution: validate: %w", err))
 	}
-	result, err := u.tx.ExecContext(ctx, `
-		INSERT INTO detection_contributions(
-			event_id, rule_id, rule_version, delivery_id, contributed_at_us
-		) VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(event_id, rule_id, rule_version) DO NOTHING`,
-		string(contribution.EventID), string(contribution.RuleID), string(contribution.RuleVersion),
-		string(contribution.DeliveryID), contribution.ContributedAt.UTC().UnixMicro())
-	if err != nil {
-		return false, u.fail(fmt.Errorf("put detection contribution for event %q: %w", contribution.EventID, err))
+	sqlResult := gorm.WithResult()
+	result := u.transactionORM.WithContext(ctx).
+		Clauses(sqlResult, clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "event_id"}, {Name: "rule_id"}, {Name: "rule_version"},
+			},
+			DoNothing: true,
+		}).
+		Select("event_id", "rule_id", "rule_version", "delivery_id", "contributed_at_us").
+		Create(&detectionContributionRow{
+			EventID: string(contribution.EventID), RuleID: string(contribution.RuleID),
+			RuleVersion: string(contribution.RuleVersion), DeliveryID: string(contribution.DeliveryID),
+			ContributedAtUS: contribution.ContributedAt.UTC().UnixMicro(),
+		})
+	if result.Error != nil {
+		return false, u.fail(fmt.Errorf("put detection contribution for event %q: %w", contribution.EventID, result.Error))
 	}
-	affected, err := result.RowsAffected()
+	affected, err := sqlResult.Result.RowsAffected()
 	if err != nil {
 		return false, u.fail(fmt.Errorf("put detection contribution for event %q: affected rows: %w", contribution.EventID, err))
 	}
 	if affected == 1 {
 		return true, nil
 	}
-	var deliveryID string
-	if err := u.tx.QueryRowContext(ctx, `
-		SELECT delivery_id FROM detection_contributions
-		WHERE event_id = ? AND rule_id = ? AND rule_version = ?`,
-		string(contribution.EventID), string(contribution.RuleID), string(contribution.RuleVersion)).Scan(&deliveryID); err != nil {
-		return false, u.fail(fmt.Errorf("put detection contribution for event %q: verify duplicate: %w", contribution.EventID, err))
+	var existing detectionContributionRow
+	readback := u.transactionORM.WithContext(ctx).
+		Select("delivery_id").
+		Where("event_id = ? AND rule_id = ? AND rule_version = ?",
+			string(contribution.EventID), string(contribution.RuleID), string(contribution.RuleVersion)).
+		Take(&existing)
+	if readback.Error != nil {
+		readbackErr := readback.Error
+		if errors.Is(readbackErr, gorm.ErrRecordNotFound) {
+			readbackErr = sql.ErrNoRows
+		}
+		return false, u.fail(fmt.Errorf("put detection contribution for event %q: verify duplicate: %w", contribution.EventID, readbackErr))
 	}
-	if deliveryID != string(contribution.DeliveryID) {
+	if existing.DeliveryID != string(contribution.DeliveryID) {
 		return false, u.fail(fmt.Errorf("put detection contribution for event %q: stable delivery identity differs", contribution.EventID))
 	}
 	return false, nil
@@ -167,16 +383,26 @@ func (u *UnitOfWork) PutDetectionOutcome(ctx context.Context, outcome core.Detec
 	if err != nil {
 		return u.fail(err)
 	}
-	_, err = u.tx.ExecContext(ctx, `
-		INSERT INTO detection_terminal_outcomes(
-			delivery_id, event_id, rule_id, rule_version, kind,
-			failure_code, completed_at_us
-		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		string(outcome.DeliveryID), string(outcome.EventID), string(outcome.RuleID),
-		string(outcome.RuleVersion), kind, nullableString(outcome.FailureCode),
-		outcome.CompletedAt.UTC().UnixMicro())
-	if err != nil {
-		return u.fail(fmt.Errorf("put detection outcome for event %q: %w", outcome.EventID, err))
+	var failureCode *string
+	if outcome.FailureCode != "" {
+		failureCode = &outcome.FailureCode
+	}
+	result := u.transactionORM.WithContext(ctx).
+		Select(
+			"delivery_id", "event_id", "rule_id", "rule_version", "kind",
+			"failure_code", "completed_at_us",
+		).
+		Create(&detectionTerminalOutcomeRow{
+			DeliveryID:    string(outcome.DeliveryID),
+			EventID:       string(outcome.EventID),
+			RuleID:        string(outcome.RuleID),
+			RuleVersion:   string(outcome.RuleVersion),
+			Kind:          kind,
+			FailureCode:   failureCode,
+			CompletedAtUS: outcome.CompletedAt.UTC().UnixMicro(),
+		})
+	if result.Error != nil {
+		return u.fail(fmt.Errorf("put detection outcome for event %q: %w", outcome.EventID, result.Error))
 	}
 	return nil
 }
@@ -189,16 +415,23 @@ func (u *UnitOfWork) PutAlert(ctx context.Context, alert core.Alert) error {
 	if err := alert.Validate(); err != nil {
 		return u.fail(fmt.Errorf("put alert: validate: %w", err))
 	}
-	_, err := u.tx.ExecContext(ctx, `
-		INSERT INTO alerts(
-			alert_id, node_id, event_id, rule_id, rule_version,
-			canonical_target, observed_at_us, created_at_us
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		string(alert.ID), string(alert.NodeID), string(alert.EventID), string(alert.RuleID),
-		string(alert.RuleVersion), alert.CanonicalTarget.String(),
-		alert.ObservedAt.UTC().UnixMicro(), alert.CreatedAt.UTC().UnixMicro())
-	if err != nil {
-		return u.fail(fmt.Errorf("put alert %q: %w", alert.ID, err))
+	result := u.transactionORM.WithContext(ctx).
+		Select(
+			"alert_id", "node_id", "event_id", "rule_id", "rule_version",
+			"canonical_target", "observed_at_us", "created_at_us",
+		).
+		Create(&alertRow{
+			AlertID:         string(alert.ID),
+			NodeID:          string(alert.NodeID),
+			EventID:         string(alert.EventID),
+			RuleID:          string(alert.RuleID),
+			RuleVersion:     string(alert.RuleVersion),
+			CanonicalTarget: alert.CanonicalTarget.String(),
+			ObservedAtUS:    alert.ObservedAt.UTC().UnixMicro(),
+			CreatedAtUS:     alert.CreatedAt.UTC().UnixMicro(),
+		})
+	if result.Error != nil {
+		return u.fail(fmt.Errorf("put alert %q: %w", alert.ID, result.Error))
 	}
 	return nil
 }
@@ -231,21 +464,51 @@ func (u *UnitOfWork) PutDecision(ctx context.Context, decision core.Decision) er
 		return u.fail(err)
 	}
 
-	_, err = u.tx.ExecContext(ctx, `
-		INSERT INTO decisions(
-			decision_id, node_id, source, rule_id, rule_version, alert_id,
-			canonical_target, created_at_us, updated_at_us, last_triggered_at_us,
-			expires_at_us, ended_at_us, state, end_reason, suppressed_count
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		string(decision.ID), string(decision.NodeID), source,
-		nullableRuleID(decision.RuleID), nullableRuleVersion(decision.RuleVersion),
-		nullableAlertID(decision.AlertID), decision.CanonicalTarget.String(),
-		decision.CreatedAt.UTC().UnixMicro(), decision.UpdatedAt.UTC().UnixMicro(),
-		decision.LastTriggeredAt.UTC().UnixMicro(), nullableTime(decision.ExpiresAt),
-		nullableTime(decision.EndedAt), state, nullableEndReason(decision.EndReason),
-		decision.SuppressedCount)
-	if err != nil {
-		return u.fail(fmt.Errorf("put decision %q: %w", decision.ID, err))
+	var ruleID, ruleVersion, alertID, endReason *string
+	var expiresAtUS, endedAtUS *int64
+	if decision.RuleID != nil {
+		value := string(*decision.RuleID)
+		ruleID = &value
+	}
+	if decision.RuleVersion != nil {
+		value := string(*decision.RuleVersion)
+		ruleVersion = &value
+	}
+	if decision.AlertID != nil {
+		value := string(*decision.AlertID)
+		alertID = &value
+	}
+	if decision.ExpiresAt != nil {
+		value := decision.ExpiresAt.UTC().UnixMicro()
+		expiresAtUS = &value
+	}
+	if decision.EndedAt != nil {
+		value := decision.EndedAt.UTC().UnixMicro()
+		endedAtUS = &value
+	}
+	if decision.EndReason != nil {
+		value := string(*decision.EndReason)
+		endReason = &value
+	}
+
+	result := u.transactionORM.WithContext(ctx).
+		Select(
+			"decision_id", "node_id", "source", "rule_id", "rule_version", "alert_id",
+			"canonical_target", "created_at_us", "updated_at_us", "last_triggered_at_us",
+			"expires_at_us", "ended_at_us", "state", "end_reason", "suppressed_count",
+		).
+		Create(&decisionRow{
+			DecisionID: string(decision.ID), NodeID: string(decision.NodeID), Source: source,
+			RuleID: ruleID, RuleVersion: ruleVersion, AlertID: alertID,
+			CanonicalTarget:   decision.CanonicalTarget.String(),
+			CreatedAtUS:       decision.CreatedAt.UTC().UnixMicro(),
+			UpdatedAtUS:       decision.UpdatedAt.UTC().UnixMicro(),
+			LastTriggeredAtUS: decision.LastTriggeredAt.UTC().UnixMicro(),
+			ExpiresAtUS:       expiresAtUS, EndedAtUS: endedAtUS, State: state,
+			EndReason: endReason, SuppressedCount: decision.SuppressedCount,
+		})
+	if result.Error != nil {
+		return u.fail(fmt.Errorf("put decision %q: %w", decision.ID, result.Error))
 	}
 	return nil
 }
@@ -282,25 +545,36 @@ func (u *UnitOfWork) PutProjection(
 		return u.fail(fmt.Errorf("put projection: unsupported state %d", projection.State))
 	}
 
-	result, err := u.tx.ExecContext(ctx, `
-		INSERT INTO desired_ban_projections(
-			node_id, canonical_target, state, active_count, effective_until_us,
-			target_projection_revision, updated_at_us
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(node_id, canonical_target) DO UPDATE SET
-			state = excluded.state,
-			active_count = excluded.active_count,
-			effective_until_us = excluded.effective_until_us,
-			target_projection_revision = excluded.target_projection_revision,
-			updated_at_us = excluded.updated_at_us
-		WHERE excluded.target_projection_revision > desired_ban_projections.target_projection_revision`,
-		string(projection.NodeID), projection.CanonicalTarget.String(), state,
-		projection.ActiveCount, nullableTime(projection.EffectiveUntil), projection.Revision,
-		updatedAt.UTC().UnixMicro())
-	if err != nil {
-		return u.fail(fmt.Errorf("put projection %q: %w", projection.CanonicalTarget, err))
+	var effectiveUntilUS *int64
+	if projection.EffectiveUntil != nil {
+		value := projection.EffectiveUntil.UTC().UnixMicro()
+		effectiveUntilUS = &value
 	}
-	affected, err := result.RowsAffected()
+	sqlResult := gorm.WithResult()
+	result := u.transactionORM.WithContext(ctx).
+		Clauses(sqlResult, clause.OnConflict{
+			Columns: []clause.Column{{Name: "node_id"}, {Name: "canonical_target"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"state", "active_count", "effective_until_us",
+				"target_projection_revision", "updated_at_us",
+			}),
+			Where: clause.Where{Exprs: []clause.Expression{clause.Expr{
+				SQL: "excluded.target_projection_revision > desired_ban_projections.target_projection_revision",
+			}}},
+		}).
+		Select(
+			"node_id", "canonical_target", "state", "active_count", "effective_until_us",
+			"target_projection_revision", "updated_at_us",
+		).
+		Create(&desiredBanProjectionRow{
+			NodeID: string(projection.NodeID), CanonicalTarget: projection.CanonicalTarget.String(),
+			State: state, ActiveCount: projection.ActiveCount, EffectiveUntilUS: effectiveUntilUS,
+			TargetProjectionRevision: projection.Revision, UpdatedAtUS: updatedAt.UTC().UnixMicro(),
+		})
+	if result.Error != nil {
+		return u.fail(fmt.Errorf("put projection %q: %w", projection.CanonicalTarget, result.Error))
+	}
+	affected, err := sqlResult.Result.RowsAffected()
 	if err != nil {
 		return u.fail(fmt.Errorf("put projection %q: read affected rows: %w", projection.CanonicalTarget, err))
 	}
@@ -309,19 +583,18 @@ func (u *UnitOfWork) PutProjection(
 	}
 
 	var identical int
-	err = u.tx.QueryRowContext(ctx, `
-		SELECT EXISTS (
-			SELECT 1
-			FROM desired_ban_projections
-			WHERE node_id = ? AND canonical_target = ?
-				AND state = ? AND active_count = ? AND effective_until_us IS ?
-				AND target_projection_revision = ?
-		)`,
-		string(projection.NodeID), projection.CanonicalTarget.String(), state,
-		projection.ActiveCount, nullableTime(projection.EffectiveUntil), projection.Revision,
-	).Scan(&identical)
-	if err != nil {
-		return u.fail(fmt.Errorf("put projection %q: verify idempotent revision: %w", projection.CanonicalTarget, err))
+	readback := u.transactionORM.WithContext(ctx).
+		Model(&desiredBanProjectionRow{}).
+		Select("1").
+		Where(`node_id = ? AND canonical_target = ?
+			AND state = ? AND active_count = ? AND effective_until_us IS ?
+			AND target_projection_revision = ?`,
+			string(projection.NodeID), projection.CanonicalTarget.String(), state,
+			projection.ActiveCount, nullableTime(projection.EffectiveUntil), projection.Revision).
+		Limit(1).
+		Scan(&identical)
+	if readback.Error != nil {
+		return u.fail(fmt.Errorf("put projection %q: verify idempotent revision: %w", projection.CanonicalTarget, readback.Error))
 	}
 	if identical == 1 {
 		return nil
@@ -351,19 +624,39 @@ func (u *UnitOfWork) AppendCriticalAudit(ctx context.Context, audit CriticalAudi
 		return u.fail(fmt.Errorf("append critical audit: details must be valid JSON"))
 	}
 
-	_, err := u.tx.ExecContext(ctx, `
-		INSERT INTO audit_logs(
-			audit_id, idempotency_key, node_id, category, action, result, severity,
-			critical, actor_type, delivery_id, alert_id, decision_id, error_code,
-			details_json, created_at_us
-		) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
-		audit.ID, audit.IdempotencyKey, string(audit.NodeID), audit.Category,
-		audit.Action, audit.Result, audit.Severity, audit.ActorType,
-		nullableDeliveryID(audit.DeliveryID), nullableAlertID(audit.AlertID),
-		nullableDecisionID(audit.DecisionID), nullableString(audit.ErrorCode),
-		string(details), audit.CreatedAt.UTC().UnixMicro())
-	if err != nil {
-		return u.fail(fmt.Errorf("append critical audit %q: %w", audit.ID, err))
+	var deliveryID, alertID, decisionID, errorCode *string
+	if audit.DeliveryID != nil {
+		value := string(*audit.DeliveryID)
+		deliveryID = &value
+	}
+	if audit.AlertID != nil {
+		value := string(*audit.AlertID)
+		alertID = &value
+	}
+	if audit.DecisionID != nil {
+		value := string(*audit.DecisionID)
+		decisionID = &value
+	}
+	if audit.ErrorCode != "" {
+		value := audit.ErrorCode
+		errorCode = &value
+	}
+
+	result := u.transactionORM.WithContext(ctx).
+		Select(
+			"audit_id", "idempotency_key", "node_id", "category", "action", "result", "severity",
+			"critical", "actor_type", "delivery_id", "alert_id", "decision_id", "error_code",
+			"details_json", "created_at_us",
+		).
+		Create(&criticalAuditRow{
+			AuditID: audit.ID, IdempotencyKey: audit.IdempotencyKey, NodeID: string(audit.NodeID),
+			Category: audit.Category, Action: audit.Action, Result: audit.Result,
+			Severity: audit.Severity, Critical: 1, ActorType: audit.ActorType,
+			DeliveryID: deliveryID, AlertID: alertID, DecisionID: decisionID, ErrorCode: errorCode,
+			DetailsJSON: string(details), CreatedAtUS: audit.CreatedAt.UTC().UnixMicro(),
+		})
+	if result.Error != nil {
+		return u.fail(fmt.Errorf("append critical audit %q: %w", audit.ID, result.Error))
 	}
 	return nil
 }
@@ -381,25 +674,53 @@ func (u *UnitOfWork) PutReceipt(ctx context.Context, receipt core.ProcessingRece
 	if err != nil {
 		return u.fail(fmt.Errorf("put receipt: %w", err))
 	}
-	kind, failure, err := encodeReceipt(receipt)
+	kind, err := encodeReceipt(receipt)
 	if err != nil {
 		return u.fail(err)
 	}
 
-	_, err = u.tx.ExecContext(ctx, `
-		INSERT INTO processing_receipts(
-			delivery_id, source_id, position_kind, generation, device_id, inode,
-			start_offset, end_offset, journald_cursor, kind, failure_stage,
-			failure_code, sanitized_error, terminal_action, failure_occurred_at_us,
-			committed_at_us
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		string(receipt.DeliveryID), string(receipt.SourceID), position.kind,
-		position.generation, position.deviceID, position.inode, position.startOffset,
-		position.endOffset, position.cursor, kind, failure.stage, failure.code,
-		failure.sanitizedError, failure.action, failure.occurredAt,
-		receipt.Committed.UTC().UnixMicro())
-	if err != nil {
-		return u.fail(fmt.Errorf("put receipt %q: %w", receipt.DeliveryID, err))
+	row := processingReceiptRow{
+		DeliveryID: string(receipt.DeliveryID), SourceID: string(receipt.SourceID),
+		PositionKind: position.kind, Kind: kind,
+		CommittedAtUS: receipt.Committed.UTC().UnixMicro(),
+	}
+	if file, ok := receipt.Position.File(); ok {
+		generation := file.Generation
+		deviceID := int64(file.DeviceID)
+		inode := int64(file.Inode)
+		startOffset := int64(file.StartOffset)
+		endOffset := int64(file.EndOffset)
+		row.Generation = &generation
+		row.DeviceID = &deviceID
+		row.Inode = &inode
+		row.StartOffset = &startOffset
+		row.EndOffset = &endOffset
+	} else if journald, ok := receipt.Position.Journald(); ok {
+		cursor := journald.Cursor
+		row.JournaldCursor = &cursor
+	}
+	if receipt.Failure != nil {
+		stage := receipt.Failure.Stage
+		code := receipt.Failure.Code
+		sanitizedError := receipt.Failure.SanitizedError
+		action := receipt.Failure.Action
+		occurredAtUS := receipt.Failure.OccurredAt.UTC().UnixMicro()
+		row.FailureStage = &stage
+		row.FailureCode = &code
+		row.SanitizedError = &sanitizedError
+		row.TerminalAction = &action
+		row.FailureOccurredAtUS = &occurredAtUS
+	}
+	result := u.transactionORM.WithContext(ctx).
+		Select(
+			"delivery_id", "source_id", "position_kind", "generation", "device_id", "inode",
+			"start_offset", "end_offset", "journald_cursor", "kind", "failure_stage",
+			"failure_code", "sanitized_error", "terminal_action", "failure_occurred_at_us",
+			"committed_at_us",
+		).
+		Create(&row)
+	if result.Error != nil {
+		return u.fail(fmt.Errorf("put receipt %q: %w", receipt.DeliveryID, result.Error))
 	}
 	return nil
 }
@@ -484,35 +805,22 @@ func encodePosition(position core.SourcePosition) (encodedPosition, error) {
 	return encodedPosition{}, fmt.Errorf("unsupported source position")
 }
 
-type encodedFailure struct {
-	stage          any
-	code           any
-	sanitizedError any
-	action         any
-	occurredAt     any
-}
-
-func encodeReceipt(receipt core.ProcessingReceipt) (string, encodedFailure, error) {
+func encodeReceipt(receipt core.ProcessingReceipt) (string, error) {
 	switch receipt.Kind {
 	case core.ReceiptSuccess:
 		if receipt.Failure != nil {
-			return "", encodedFailure{}, fmt.Errorf("put receipt: success cannot contain failure")
+			return "", fmt.Errorf("put receipt: success cannot contain failure")
 		}
-		return "success", encodedFailure{}, nil
+		return "success", nil
 	case core.ReceiptRecordPermanent:
 		if receipt.Failure == nil || receipt.Failure.Stage == "" ||
 			receipt.Failure.Code == "" || receipt.Failure.SanitizedError == "" ||
 			receipt.Failure.Action == "" || receipt.Failure.OccurredAt.IsZero() {
-			return "", encodedFailure{}, fmt.Errorf("put receipt: permanent failure is incomplete")
+			return "", fmt.Errorf("put receipt: permanent failure is incomplete")
 		}
-		return "record_permanent", encodedFailure{
-			stage: receipt.Failure.Stage, code: receipt.Failure.Code,
-			sanitizedError: receipt.Failure.SanitizedError,
-			action:         receipt.Failure.Action,
-			occurredAt:     receipt.Failure.OccurredAt.UTC().UnixMicro(),
-		}, nil
+		return "record_permanent", nil
 	default:
-		return "", encodedFailure{}, fmt.Errorf("put receipt: unsupported kind %d", receipt.Kind)
+		return "", fmt.Errorf("put receipt: unsupported kind %d", receipt.Kind)
 	}
 }
 
@@ -569,53 +877,4 @@ func nullableTime(value *time.Time) any {
 		return nil
 	}
 	return value.UTC().UnixMicro()
-}
-
-func nullableRuleID(value *core.RuleID) any {
-	if value == nil {
-		return nil
-	}
-	return string(*value)
-}
-
-func nullableRuleVersion(value *core.RuleVersion) any {
-	if value == nil {
-		return nil
-	}
-	return string(*value)
-}
-
-func nullableAlertID(value *core.AlertID) any {
-	if value == nil {
-		return nil
-	}
-	return string(*value)
-}
-
-func nullableDecisionID(value *core.DecisionID) any {
-	if value == nil {
-		return nil
-	}
-	return string(*value)
-}
-
-func nullableDeliveryID(value *core.DeliveryID) any {
-	if value == nil {
-		return nil
-	}
-	return string(*value)
-}
-
-func nullableEndReason(value *core.DecisionEndReason) any {
-	if value == nil {
-		return nil
-	}
-	return string(*value)
-}
-
-func nullableString(value string) any {
-	if value == "" {
-		return nil
-	}
-	return value
 }

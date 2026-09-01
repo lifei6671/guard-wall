@@ -113,6 +113,10 @@ timestamp 的普通 CRUD。以下路径保持 raw SQL，除非新的 ADR 和契�
 禁止默认使用 `Save`、`FirstOrCreate`、association、hook、soft delete、隐式表名/列名/
 时间字段或全局 update/delete。
 
+所有 GORM 持久化映射结构体必须保持未导出，并为每个映射字段提供字段级简体中文注释，
+说明对应列的业务用途。涉及主键/外键、SQL NULL、枚举值、时间单位或只读回填的字段，
+注释还必须明确这些约束；不得只重复 Go 字段名或数据库列名。
+
 ### 6. Context、日志与运行配置
 
 GORM adapter 固定：
