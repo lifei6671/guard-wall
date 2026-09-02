@@ -1,0 +1,13 @@
+services:
+  go-runner:
+    image: golang:1.27
+    working_dir: /workspace
+    command: ["sleep", "infinity"]
+    volumes:
+      - .:/workspace
+      - go-mod:/go/pkg/mod
+      - go-build:/root/.cache/go-build
+
+volumes:
+  go-mod:
+  go-build:

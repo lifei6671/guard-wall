@@ -1,0 +1,59 @@
+name: nftables integration
+
+on:
+  push:
+    paths:
+      - ".github/workflows/nftables-integration.yml"
+      - "internal/firewall/**"
+
+      - "internal/enforcer/**"
+      - "internal/ipc/**"
+      - "cmd/**"
+      - "tests/integration/nftables/**"
+      - "go.mod"
+      - "go.sum"
+  pull_request:
+    paths:
+      - ".github/workflows/nftables-integration.yml"
+      - "internal/firewall/**"
+
+      - "internal/enforcer/**"
+      - "internal/ipc/**"
+      - "cmd/**"
+      - "tests/integration/nftables/**"
+      - "go.mod"
+      - "go.sum"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nftables:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the disposable nftables test image
+        run: >-
+          docker build
+          --file tests/integration/nftables/Dockerfile
+          --tag guard-wall-nftables-integration:${{ github.sha }}
+          .
+
+      - name: Run in an isolated network namespace
+        run: >-
+          docker run --rm
+          --network none
+          --cap-drop ALL
+          --cap-add NET_ADMIN
+          --read-only
+          --tmpfs /run:rw,nosuid,nodev,noexec,size=16m
+          --tmpfs /tmp:rw,exec,nosuid,nodev,size=1g
+          --security-opt no-new-privileges:true
+          guard-wall-nftables-integration:${{ github.sha }}
+
+      - name: Remove the disposable test image
+        if: always()
+        run: docker image rm --force guard-wall-nftables-integration:${{ github.sha }} || true

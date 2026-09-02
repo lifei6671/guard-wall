@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -29,6 +30,7 @@ const (
 	ListenerErrorCodeListenFailed            ListenerErrorCode = "listen_failed"
 	ListenerErrorCodeSocketConfigureFailed   ListenerErrorCode = "socket_configure_failed"
 	ListenerErrorCodeAcceptFailed            ListenerErrorCode = "accept_failed"
+	ListenerErrorCodeAlreadyServing          ListenerErrorCode = "already_serving"
 	ListenerErrorCodeContextCanceled         ListenerErrorCode = "context_canceled"
 	ListenerErrorCodeContextDeadlineExceeded ListenerErrorCode = "context_deadline_exceeded"
 	ListenerErrorCodeCloseFailed             ListenerErrorCode = "close_failed"
@@ -74,6 +76,7 @@ type UnixListener struct {
 	acceptMu       sync.Mutex
 	closeOnce      sync.Once
 	closeErr       error
+	serveOwned     atomic.Bool
 }
 
 // ListenUnix creates the production Enforcer socket as root:guard. The guard
@@ -313,8 +316,20 @@ func removeStaleSocket(socketPath string, ownerUID, ownerGID int) error {
 
 // AcceptRequest accepts, authenticates, and decodes one request. On success
 // the caller owns the returned connection. Every failure closes the accepted
-// connection before returning.
+// connection before returning. It fails while a high-level serve method owns
+// the listener; callers must not overlap this low-level ownership transfer with
+// another serve operation on the same listener.
 func (l *UnixListener) AcceptRequest(ctx context.Context, expectedGuardUID uint32) (*net.UnixConn, Request, error) {
+	releaseServeOwner, err := l.acquireServeOwner()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer releaseServeOwner()
+
+	return l.acceptRequest(ctx, expectedGuardUID)
+}
+
+func (l *UnixListener) acceptRequest(ctx context.Context, expectedGuardUID uint32) (*net.UnixConn, Request, error) {
 	connection, err := l.acceptUnix(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -342,6 +357,13 @@ func (l *UnixListener) AcceptRequest(ctx context.Context, expectedGuardUID uint3
 		return nil, nil, listenerError(ListenerErrorCodeAcceptFailed)
 	}
 	return connection, request, nil
+}
+
+func (l *UnixListener) acquireServeOwner() (func(), error) {
+	if !l.serveOwned.CompareAndSwap(false, true) {
+		return nil, listenerError(ListenerErrorCodeAlreadyServing)
+	}
+	return func() { l.serveOwned.Store(false) }, nil
 }
 
 func (l *UnixListener) acceptUnix(ctx context.Context) (*net.UnixConn, error) {

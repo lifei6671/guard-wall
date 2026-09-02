@@ -37,6 +37,7 @@ func TestListenerContractConstants(t *testing.T) {
 		{name: "listen failed", got: ListenerErrorCodeListenFailed, want: "listen_failed"},
 		{name: "socket configure failed", got: ListenerErrorCodeSocketConfigureFailed, want: "socket_configure_failed"},
 		{name: "accept failed", got: ListenerErrorCodeAcceptFailed, want: "accept_failed"},
+		{name: "already serving", got: ListenerErrorCodeAlreadyServing, want: "already_serving"},
 		{name: "context canceled", got: ListenerErrorCodeContextCanceled, want: "context_canceled"},
 		{name: "context deadline exceeded", got: ListenerErrorCodeContextDeadlineExceeded, want: "context_deadline_exceeded"},
 		{name: "close failed", got: ListenerErrorCodeCloseFailed, want: "close_failed"},

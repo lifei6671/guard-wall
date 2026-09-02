@@ -1,0 +1,25 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify through the canonical Docker environment
+        shell: pwsh
+        run: ./scripts/verify.ps1
+
+      - name: Remove verification containers and volumes
+        if: always()
+        shell: pwsh
+        run: docker compose -f compose.codex.yml down --volumes --remove-orphans

@@ -60,8 +60,13 @@ func (l *UnixListener) ServeProbeCapabilitiesOnce(
 	if err := contextTerminationError(ctx); err != nil {
 		return err
 	}
+	releaseServeOwner, err := l.acquireServeOwner()
+	if err != nil {
+		return err
+	}
+	defer releaseServeOwner()
 
-	connection, request, err := l.AcceptRequest(ctx, expectedGuardUID)
+	connection, request, err := l.acceptRequest(ctx, expectedGuardUID)
 	if err != nil {
 		return err
 	}

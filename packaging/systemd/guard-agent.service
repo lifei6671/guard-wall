@@ -1,0 +1,31 @@
+[Unit]
+Description=GuardWall unprivileged agent readiness process
+Requires=guard-enforcer.service
+After=guard-enforcer.service
+
+[Service]
+Type=exec
+User=guard
+Group=guard
+ExecStart=/usr/local/bin/guard-agent
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+# The agent is a Unix-socket client and receives no writable filesystem path.
+ReadWritePaths=
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

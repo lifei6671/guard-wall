@@ -1,0 +1,32 @@
+[Unit]
+Description=GuardWall privileged firewall enforcer
+After=network.target
+Before=guard-agent.service
+
+[Service]
+Type=exec
+User=root
+Group=root
+SupplementaryGroups=guard
+ExecStart=/usr/local/bin/guard-enforcer
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+# The listener creates and validates /run/guard as root:guard 0750 itself.
+ReadWritePaths=/run/guard
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target
