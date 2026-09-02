@@ -8,6 +8,8 @@
 如果 HANDOFF 缺失、损坏、字段不完整或仍含模板占位符，不得声称已经恢复；按 `$task-continuity` 的缺失或损坏协议处理。
 <!-- TASK_CONTINUITY:END -->
 
+Docker/netns 是 Firewall Integration Test 的权威环境；Disposable Linux VM 是 Host-level E2E 与 Release Gate 的权威环境；WSL2 仅作为开发验证环境，不作为 Release Evidence。
+
 ## No Negative Echo
 
 生成最终产物及其包装时，包括标题、文件名、正文、注释、标签、commit、

@@ -111,7 +111,7 @@ Race 与两路独立终审均通过；初审两项 P1 与一项 P2 已修复，�
 | A4 | Crash Matrix | `COMPLETE` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-a/contract-review.md` | manifest 已审查；runner 执行留给 C3/D5 |
 | B1 | SQLite 并发、事务与 durability Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/sqlite-result.json` | Go driver/PRAGMA/migration 与 Ubuntu WSL2 cross-process SIGKILL→reopen committed/uncommitted matrix 已通过；缺 OS reboot、filesystem barrier 与 power-loss 证据 |
 | B2 | Source identity 与 replay Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/identity-result.json`、`m0-c/source-slice/result.md` | golden vectors、Ubuntu WSL2 clean restart-replay、两个 committed-boundary generation transition SIGKILL 窗口、真实 opaque Journald cursor reopen 与 processing UnitOfWork transaction-internal SIGKILL rollback/direct replay 已通过；缺真实 File/Journald reader、copytruncate、Source-state internal crash、cursor invalidation/vacuum/resume 与 replay/reprocess refs |
-| B3 | nftables Backend Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/nftables-result.json` | 缺 production hook/priority、packet path、Snapshot/Plan、ownership 与恢复证据 |
+| B3 | nftables Backend Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/nftables-result.json`、`artifacts/evidence/M0/worktree/m0-b/nftables-golden-state-result.json` | 隔离基线已覆盖 Provider packet path、Snapshot/Plan/ownership；仍缺 production hook/priority、目标 Linux/UFW/Docker、重启恢复与 Apply-confirm 证据 |
 | B4 | Agent/Enforcer 权限与 IPC Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`artifacts/evidence/M0/worktree/m0-b/ipc-response-codec/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-response-frame/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-request-codec/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-request-frame/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-mutation-client/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-mutation-server/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-snapshot-managed-transport/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-enforcer-loop/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-enforcer-handlers/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-enforcer-cross-uid-runtime/result.md` | WSL2 request framing fail-closed、四操作 allowlist、mutation/Probe/Snapshot typed codec/frame、Linux fixed-socket root-peer client、authenticated single-request server、serial persistent loop、production-neutral closed handler composition 的 Docker Linux Race，以及受控 WSL fixture 的 `/run/guard` root:guard/跨 UID runtime 集成均已通过；仍缺真实 Firewall provider/owner/object-role、production executable/systemd hardening、持续 fuzz、恢复与非 WSL target Linux 证据 |
 | C1 | Source Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/source-slice/result.md` | Queue Seal fixed accepted set、单 Source runtime owner、drain/Flush/Audit/Close、timeout 不提前 Close 与 commit-unknown readback 已通过 race；缺真实 Source reader/management intake、signal executable、进程 restart 与 Linux durability |
 | C2 | Decision/Enforcement Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | Automatic/Manual/expiry generation/SnapshotRevision/Wake、retry/pending-Probe SQLite 恢复、60s scheduler、62s SQLite→Fake 闭环、完整三域 Observed 与 Dispatcher-owned Backend health lifecycle 原语已通过用户 Review；仍缺真实 Enforcer/IPC health 源、可执行进程 composition/runtime startup 与真实进程 restart |
@@ -779,3 +779,22 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
     相关 Race 与 `--network none` 的 nftables 隔离测试均通过；systemd 仅完成静态解析，GitHub CI 尚未运行，
     目标 Linux service 安装、启动与运行权限仍为 `NOT RUN`。B4 总项仍为 `IN_PROGRESS / Implemented`，
     G18.1–G18.3 与 M0 均不提升，未推送。
+69. 用户确认 M0-B3 Golden State 隔离 Spike。新增 Docker `--network none` 三命名空间 IPv4/IPv6
+    流量 fixture 与同名 foreign `inet guard` integration oracle；Debian bookworm / LinuxKit / nftables 1.0.6
+    基线中，Provider 固定布局下 INPUT/FORWARD 的 allow/protected-before-ban、Ban 阻断、失败 batch
+    原子回滚、foreign preservation、ownership conflict、cleanup、Backend readback 及 tagged Race 均通过，记录于
+    `artifacts/evidence/M0/worktree/m0-b/nftables-golden-state-result.json`。用户 Code Review 已通过，当前为
+    `DONE / Implemented`；无 UFW/Docker 的 priority 0 不能作为生产结论，目标 Linux、UFW/Docker、
+    重启恢复与 Apply-confirm 仍未验证，B3/G18/M0 不提升，未提交、未推送。
+70. 用户确认 B3 manager fail-closed integration test。新增隔离 Docker 真实 nft JSON 的 UFW-like 与
+    Docker-like foreign table oracle：Probe 保留 native capability/ownership，但将 UFW/Docker integration
+    与 mutation readiness 同时 fail-closed；Probe 前后 foreign canonical/raw snapshot 不变且不创建 Guard 表。
+    目标包、工作流同构隔离容器及全仓 test/vet/build 均通过；用户 Code Review 已通过，当前为
+    `DONE / Implemented`。它不代表真实 UFW/Docker、目标 Linux priority、reload/restart 或 Apply-confirm，B3/G18/M0
+    不提升，未提交、未推送。
+71. 用户确认 B3 Apply-time manager TOCTOU integration test。新增隔离 Docker 真实 nft JSON 的 UFW-like 与
+    Docker-like 子用例：无 manager 时取得 infrastructure authorization，随后创建 foreign manager table，Apply
+    必须返回 correlated `Rejected/not_ready`，不创建 Guard table，且注入后的 foreign canonical/raw state 不变。
+    目标包、工作流同构隔离容器及全仓 test/vet/build 均通过；当前为 `REVIEW / Implemented`，等待用户 Code Review。
+    该集成 oracle 证明 Apply-time 拒绝与零副作用，不单独证明内部调用序列；不代表真实 UFW/Docker、目标 Linux
+    priority、reload/restart 或 Apply-confirm，B3/G18/M0 不提升，未提交、未推送。

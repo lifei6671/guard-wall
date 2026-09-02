@@ -12,17 +12,8 @@ on:
       - "tests/integration/nftables/**"
       - "go.mod"
       - "go.sum"
-  pull_request:
-    paths:
-      - ".github/workflows/nftables-integration.yml"
-      - "internal/firewall/**"
-
-      - "internal/enforcer/**"
-      - "internal/ipc/**"
-      - "cmd/**"
-      - "tests/integration/nftables/**"
-      - "go.mod"
-      - "go.sum"
+    branches:
+      - master
   workflow_dispatch:
 
 permissions:
@@ -48,10 +39,13 @@ jobs:
           --network none
           --cap-drop ALL
           --cap-add NET_ADMIN
+          --cap-add NET_RAW
+          --cap-add SYS_ADMIN
           --read-only
           --tmpfs /run:rw,nosuid,nodev,noexec,size=16m
           --tmpfs /tmp:rw,exec,nosuid,nodev,size=1g
           --security-opt no-new-privileges:true
+          --security-opt seccomp=unconfined
           guard-wall-nftables-integration:${{ github.sha }}
 
       - name: Remove the disposable test image

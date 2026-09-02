@@ -269,6 +269,19 @@ B3 只有同时满足以下条件，其 evidence 才可标记 `Verified`：
 6. 具体 Go 接口未表达未经验证的 production priority 或超出证据的支持声明。
 
 当前 B3 仍不能标记 `Verified`：现有 JSON 自身声明 `worktree_preliminary` 和
-`PASS_WITH_UNVERIFIED_DOMAINS`，且缺少上述 hook/priority、真实 packet path、完整
-Snapshot/Plan、ownership conflict、Unknown/recovery 与 Golden State 证据。Apply-confirm 仍未验证，
+`PASS_WITH_UNVERIFIED_DOMAINS`。隔离基线已覆盖 Provider packet path、Snapshot/Plan readback、
+ownership conflict 与 Golden State 的最小范围；仍缺目标 Linux 的 production hook/priority、
+UFW/Docker 相对顺序与 reload/restart、Unknown/recovery 故障注入。Apply-confirm 仍未验证，
 但它是独立的 M6/M10 高风险 mutation Gate，不应被伪装成 B3 已完成，也不应与 B3 核心 Slice 混为一项。
+
+## 14. 隔离 Golden State 基线
+
+[`nftables-golden-state-result.json`](../../artifacts/evidence/M0/worktree/m0-b/nftables-golden-state-result.json)
+记录了一次 Docker `--network none` 的 Debian bookworm / LinuxKit / nftables 1.0.6 基线。runner 在
+容器内部创建 left、router、right 三个 network namespace，并用两对临时 veth 发送真实 IPv4/IPv6 INPUT
+与 FORWARD 流量；它验证 Provider 固定布局的 allow/protected-before-ban、Ban 阻断、失败 batch 原子回滚、
+foreign table 保留、同名 foreign `inet guard` ownership conflict、Guard cleanup，以及 Backend 的
+Probe→Snapshot→Apply→Remove readback。
+
+该记录中的 `hook priority 0` 仅是无 UFW、无 Docker 的 disposable 基线观测，不能进入 production Golden
+State，也不缩小第 9 节与第 13 节的未验证范围。

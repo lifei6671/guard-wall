@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lifei6671/guard-wall/internal/enforcer"
 	"github.com/lifei6671/guard-wall/internal/firewall"
 )
 
@@ -150,6 +151,215 @@ func TestNftablesBackendIntegration(t *testing.T) {
 	}
 }
 
+func TestNftablesBackendIntegrationRejectsSameNameForeignTable(t *testing.T) {
+	if os.Geteuid() != 0 || os.Getenv("GUARD_NFTABLES_INTEGRATION") != "1" || os.Getenv("GUARD_NFTABLES_ISOLATED") != "1" {
+		t.Skip("requires the explicit isolated root nftables integration fixture")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := nftFixture(ctx, nil, "--version"); err != nil {
+		t.Skip("nft is unavailable in the isolated fixture")
+	}
+	if err := nftFixture(ctx, []byte("add table inet guard\n"), "--file", "-"); err != nil {
+		t.Fatalf("create foreign same-name table: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = nftFixture(context.Background(), []byte("delete table inet guard\n"), "--file", "-")
+	})
+
+	before, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", "guard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewBackend().Snapshot(ctx); !errors.Is(err, enforcer.ErrMutationBackendOwnershipConflict) {
+		t.Fatalf("Snapshot() same-name foreign table error = %v, want ownership conflict", err)
+	}
+	after, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", "guard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(before)) != strings.TrimSpace(string(after)) {
+		t.Fatal("same-name foreign table changed after ownership conflict")
+	}
+}
+
+func TestNftablesBackendIntegrationKnownManagersFailClosed(t *testing.T) {
+	if os.Geteuid() != 0 || os.Getenv("GUARD_NFTABLES_INTEGRATION") != "1" || os.Getenv("GUARD_NFTABLES_ISOLATED") != "1" {
+		t.Skip("requires the explicit isolated root nftables integration fixture")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := nftFixture(ctx, nil, "--version"); err != nil {
+		t.Skip("nft is unavailable in the isolated fixture")
+	}
+
+	for _, testCase := range []struct {
+		name  string
+		table string
+	}{
+		{name: "ufw", table: "ufw_b3_fixture"},
+		{name: "docker", table: "docker_b3_fixture"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			create := []byte("add table inet " + testCase.table + "\n")
+			if err := nftFixture(ctx, create, "--file", "-"); err != nil {
+				t.Fatalf("create %s fixture: %v", testCase.name, err)
+			}
+			t.Cleanup(func() {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cleanupCancel()
+				_ = nftFixture(cleanupCtx, []byte("delete table inet "+testCase.table+"\n"), "--file", "-")
+			})
+			foreignBefore, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", testCase.table)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			backend := NewBackend()
+			before, err := backend.Snapshot(ctx)
+			if err != nil {
+				t.Fatalf("Snapshot() before %s Probe: %v", testCase.name, err)
+			}
+			if _, present := before.ManagedState().Infrastructure(); present {
+				t.Fatal("manager fixture unexpectedly created Guard infrastructure")
+			}
+			capabilities, err := backend.Probe(ctx)
+			if err != nil {
+				t.Fatalf("Probe() with %s fixture: %v", testCase.name, err)
+			}
+			if capabilities.Backend() != firewall.BackendKindNftablesNative || capabilities.ToolVersion() == "" ||
+				!capabilities.SupportsIPv4() || !capabilities.SupportsIPv6() || !capabilities.SupportsCIDR() ||
+				!capabilities.SupportsNativeSet() || !capabilities.SupportsNativeTimeout() || !capabilities.SupportsCrashSafeExpiry() ||
+				!capabilities.SupportsAtomicBatch() || !capabilities.SupportsHostInput() || !capabilities.SupportsForward() ||
+				!capabilities.OwnershipProven() {
+				t.Fatalf("Probe() with %s fixture lost native capability: %#v", testCase.name, capabilities)
+			}
+			if capabilities.MutationReady() || capabilities.UFWIntegrationProven() || capabilities.DockerIntegrationProven() {
+				t.Fatalf("Probe() with %s fixture = %#v, want fail-closed manager capabilities", testCase.name, capabilities)
+			}
+			after, err := backend.Snapshot(ctx)
+			if err != nil {
+				t.Fatalf("Snapshot() after %s Probe: %v", testCase.name, err)
+			}
+			if after.ForeignContext().Digest() != before.ForeignContext().Digest() {
+				t.Fatalf("Probe() with %s fixture changed foreign context", testCase.name)
+			}
+			foreignAfter, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", testCase.table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(string(foreignAfter)) != strings.TrimSpace(string(foreignBefore)) {
+				t.Fatalf("Probe() with %s fixture changed foreign table", testCase.name)
+			}
+			if err := nftFixture(ctx, nil, "--json", "list", "table", "inet", "guard"); err == nil {
+				t.Fatal("Probe() created Guard infrastructure")
+			}
+		})
+	}
+}
+
+func TestNftablesBackendIntegrationRejectsManagerAppearingAfterAuthorization(t *testing.T) {
+	if os.Geteuid() != 0 || os.Getenv("GUARD_NFTABLES_INTEGRATION") != "1" || os.Getenv("GUARD_NFTABLES_ISOLATED") != "1" {
+		t.Skip("requires the explicit isolated root nftables integration fixture")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := nftFixture(ctx, nil, "--version"); err != nil {
+		t.Skip("nft is unavailable in the isolated fixture")
+	}
+
+	for _, testCase := range []struct {
+		name  string
+		table string
+	}{
+		{name: "ufw", table: "ufw_b3_toctou_fixture"},
+		{name: "docker", table: "docker_b3_toctou_fixture"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if err := nftFixture(ctx, nil, "--json", "list", "table", "inet", "guard"); err == nil {
+				t.Fatal("isolated fixture already contains inet guard")
+			}
+			t.Cleanup(func() {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cleanupCancel()
+				_ = nftFixture(cleanupCtx, []byte("delete table inet "+testCase.table+"\n"), "--file", "-")
+				_ = nftFixture(cleanupCtx, []byte("delete table inet guard\n"), "--file", "-")
+			})
+
+			backend := NewBackend()
+			capabilities, err := backend.Probe(ctx)
+			if err != nil {
+				t.Fatalf("Probe() before %s fixture: %v", testCase.name, err)
+			}
+			if !capabilities.MutationReady() {
+				t.Fatalf("Probe() before %s fixture is not mutation-ready: %#v", testCase.name, capabilities)
+			}
+			basis, err := backend.Snapshot(ctx)
+			if err != nil {
+				t.Fatalf("Snapshot() before %s fixture: %v", testCase.name, err)
+			}
+			if _, present := basis.ManagedState().Infrastructure(); present {
+				t.Fatal("initial snapshot unexpectedly contains Guard infrastructure")
+			}
+			plan, err := firewall.AuthorizeInfrastructureMutation(capabilities, basis, basis.Digest(), 1)
+			if err != nil {
+				t.Fatalf("AuthorizeInfrastructureMutation(): %v", err)
+			}
+
+			if err := nftFixture(ctx, []byte("add table inet "+testCase.table+"\n"), "--file", "-"); err != nil {
+				t.Fatalf("create %s fixture after authorization: %v", testCase.name, err)
+			}
+			foreignBefore, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", testCase.table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			managerSnapshot, err := backend.Snapshot(ctx)
+			if err != nil {
+				t.Fatalf("Snapshot() with %s fixture: %v", testCase.name, err)
+			}
+			foreignDigest := managerSnapshot.ForeignContext().Digest()
+			managerCapabilities, err := backend.Probe(ctx)
+			if err != nil {
+				t.Fatalf("Probe() with %s fixture: %v", testCase.name, err)
+			}
+			if managerCapabilities.MutationReady() || managerCapabilities.UFWIntegrationProven() || managerCapabilities.DockerIntegrationProven() {
+				t.Fatalf("Probe() with %s fixture = %#v, want fail-closed manager capabilities", testCase.name, managerCapabilities)
+			}
+
+			result := backend.Apply(ctx, plan)
+			if err := result.Validate(); err != nil {
+				t.Fatalf("Apply() returned invalid result: %v", err)
+			}
+			if result.Status() != firewall.MutationStatusRejected || result.MutationDigest() != plan.Digest() {
+				t.Fatalf("Apply() result = %#v, want rejected result correlated to authorized plan", result)
+			}
+			if code, ok := result.ErrorCode(); !ok || code != firewall.MutationErrorNotReady {
+				t.Fatalf("Apply() error code = (%q, %v), want not_ready", code, ok)
+			}
+			if err := nftFixture(ctx, nil, "--json", "list", "table", "inet", "guard"); err == nil {
+				t.Fatal("Apply() created Guard infrastructure after manager appeared")
+			}
+			after, err := backend.Snapshot(ctx)
+			if err != nil {
+				t.Fatalf("Snapshot() after Apply with %s fixture: %v", testCase.name, err)
+			}
+			if _, present := after.ManagedState().Infrastructure(); present {
+				t.Fatal("Apply() created Guard infrastructure after manager appeared")
+			}
+			if after.ForeignContext().Digest() != foreignDigest {
+				t.Fatalf("Apply() with %s fixture changed foreign context", testCase.name)
+			}
+			foreignAfter, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", testCase.table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(string(foreignAfter)) != strings.TrimSpace(string(foreignBefore)) {
+				t.Fatalf("Apply() with %s fixture changed foreign table", testCase.name)
+			}
+		})
+	}
+}
+
 func assertConfirmedWithReadback(t *testing.T, backend *Backend, ctx context.Context, before firewall.ManagedSnapshot, result firewall.MutationResult, digest string) {
 	t.Helper()
 	if result.Status() == firewall.MutationStatusConfirmed && result.MutationDigest() == digest {
@@ -182,13 +392,19 @@ func assertTarget(t *testing.T, targets []firewall.TargetObservation, target net
 }
 
 func nftFixture(ctx context.Context, input []byte, args ...string) error {
+	_, err := nftFixtureOutput(ctx, input, args...)
+	return err
+}
+
+func nftFixtureOutput(ctx context.Context, input []byte, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, nftBinary, args...)
 	command.Stdin = strings.NewReader(string(input))
-	if output, err := command.CombinedOutput(); err != nil {
+	output, err := command.CombinedOutput()
+	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
-		return fmt.Errorf("isolated nft fixture command failed: %s", strings.TrimSpace(string(output)))
+		return nil, fmt.Errorf("isolated nft fixture command failed: %s", strings.TrimSpace(string(output)))
 	}
-	return nil
+	return output, nil
 }

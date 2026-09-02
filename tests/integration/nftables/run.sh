@@ -9,10 +9,17 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-if ! capsh --print | grep -q 'cap_net_admin'; then
-  echo "nftables integration runner requires CAP_NET_ADMIN" >&2
-  exit 1
-fi
+current_caps=$(capsh --print | sed -n 's/^Current: //p')
+current_caps=${current_caps%%=*}
+for capability in cap_net_admin cap_net_raw cap_sys_admin; do
+  case ",$current_caps," in
+    *",$capability,"*) ;;
+    *)
+      echo "nftables integration runner requires $capability" >&2
+      exit 1
+      ;;
+  esac
+done
 
 # The workflow creates this container with --network none. nftables state is
 # therefore confined to its disposable network namespace, never the runner.
@@ -20,6 +27,8 @@ nft list tables >/dev/null
 
 export GUARD_NFTABLES_INTEGRATION=1
 export GUARD_NFTABLES_ISOLATED=1
+
+/usr/local/bin/run-nftables-golden-state
 
 if ! go test -tags=integration,nftables -list '^TestNftablesBackendIntegration$' \
   ./internal/firewall/nftables | grep -qx 'TestNftablesBackendIntegration'; then
