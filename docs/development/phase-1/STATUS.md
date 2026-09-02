@@ -773,3 +773,9 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
     为 `REVIEW / Implemented`、用户 Code Review `PENDING`；B4-l18 的用户门也仍独立 `PENDING`。此证据不是
     WSL native Linux、目标发行版、CI 或 commit-bound 结论。records 与交叉集成独立终审均
     `COMPLETE / FRESH / PASSED`、P0-P3 全无；B4/G18/M0 不提升。
+68. B4 端到端交付已合并为本地提交 `a5274ba feat(b4): deliver isolated nftables enforcer path`，包含
+    closed IPC→Enforcer→nftables 路径、受限 `guard-agent`/`guard-enforcer`、systemd 单元、CI workflow 与
+    隔离环境验证。用户已确认 Code Review 通过，本 Delivery Unit 为 `DONE / Implemented`。全仓 test/vet/build、
+    相关 Race 与 `--network none` 的 nftables 隔离测试均通过；systemd 仅完成静态解析，GitHub CI 尚未运行，
+    目标 Linux service 安装、启动与运行权限仍为 `NOT RUN`。B4 总项仍为 `IN_PROGRESS / Implemented`，
+    G18.1–G18.3 与 M0 均不提升，未推送。

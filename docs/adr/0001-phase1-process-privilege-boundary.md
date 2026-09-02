@@ -774,3 +774,8 @@ M0-B/M0-D 必须补齐：
   但涉及权限实现与可执行验证的 Gate 仍必须保持 `FAIL` 或 `NOT RUN`。
 - 任何扩大 IPC operation、capability、可写路径或 Enforcer 职责的修改，都必须通过新的
   ADR 或明确取代本文，并重跑权限与 Firewall 回归测试。
+
+当前 B4 端到端交付已由用户 Code Review 接受并绑定本地提交 `a5274ba`。它证明封闭 IPC、受限
+Enforcer、nftables 隔离路径与打包工件能够在已记录的本地和隔离环境中协同工作；GitHub CI、目标 Linux
+systemd 安装/启动、实际 capability 与跨重启恢复仍须作为独立证据完成。因此 B4 仍为
+`IN_PROGRESS / Implemented`，不提升 G18 或 M0 Gate。
