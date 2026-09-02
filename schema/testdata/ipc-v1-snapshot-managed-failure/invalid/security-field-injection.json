@@ -1,0 +1,1 @@
+{"version":1,"operation":"SnapshotManaged","error_code":"ownership_conflict","message":"raw backend error","details":{"path":"/secret","object_name":"foreign"},"cause":"command failed","command":"nft flush ruleset","binary":"/bin/sh","env":"PATH=/tmp","cwd":"/tmp"}

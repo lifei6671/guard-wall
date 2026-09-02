@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://guard-wall.local/schema/ipc-v1-snapshot-managed-success.schema.json",
+  "title": "Guard Wall Agent/Enforcer IPC v1 SnapshotManaged Success Response",
+  "description": "The authoritative success-only response schema for SnapshotManaged.",
+  "x-guard-max-frame-bytes": 1048576,
+  "x-guard-max-response-bytes": 1048576,
+  "x-guard-max-instance-depth": 4,
+  "x-guard-max-json-tokens": 32768,
+  "type": "object",
+  "additionalProperties": false,
+  "maxProperties": 3,
+  "required": ["version", "operation", "payload"],
+  "properties": {
+    "version": { "type": "integer", "const": 1, "minimum": 1, "maximum": 1 },
+    "operation": { "type": "string", "const": "SnapshotManaged", "maxLength": 32 },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "required": ["snapshot_digest", "infrastructure", "policy", "targets", "foreign_context_digest"],
+      "properties": {
+        "snapshot_digest": { "$ref": "#/$defs/digest" },
+        "infrastructure": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 4,
+              "required": ["backend", "owner_version", "schema_version", "digest"],
+              "properties": {
+                "backend": { "type": "string", "enum": ["nftables-native", "iptables-nft", "iptables-legacy"], "maxLength": 16 },
+                "owner_version": { "type": "string", "const": "guard/v1", "maxLength": 8 },
+                "schema_version": { "type": "integer", "const": 1, "minimum": 1, "maximum": 1 },
+                "digest": { "$ref": "#/$defs/digest" }
+              }
+            }
+          ]
+        },
+        "policy": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 1,
+              "required": ["relation_digest"],
+              "properties": { "relation_digest": { "$ref": "#/$defs/digest" } }
+            }
+          ]
+        },
+        "targets": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "maxProperties": 6,
+            "required": ["target", "membership", "timeout_mode", "effective_until_unix_us", "input", "forward"],
+            "properties": {
+              "target": { "type": "string", "minLength": 3, "maxLength": 43, "pattern": "^[0-9A-Fa-f:.]+/[0-9]{1,3}$" },
+              "membership": { "type": "string", "const": "present", "maxLength": 7 },
+              "timeout_mode": { "type": "string", "enum": ["none", "native"], "maxLength": 6 },
+              "effective_until_unix_us": {
+                "oneOf": [
+                  { "type": "null" },
+                  { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 }
+                ]
+              },
+              "input": { "type": "boolean" },
+              "forward": { "type": "boolean" }
+            }
+          }
+        },
+        "foreign_context_digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$" }
+  }
+}

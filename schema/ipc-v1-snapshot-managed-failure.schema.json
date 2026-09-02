@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://guard-wall.local/schema/ipc-v1-snapshot-managed-failure.schema.json",
+  "title": "Guard Wall Agent/Enforcer IPC v1 SnapshotManaged Failure Response",
+  "description": "The authoritative fail-closed failure schema for SnapshotManaged.",
+  "x-guard-max-frame-bytes": 1048576,
+  "x-guard-max-response-bytes": 1048576,
+  "x-guard-max-instance-depth": 4,
+  "x-guard-max-json-tokens": 32768,
+  "type": "object",
+  "additionalProperties": false,
+  "maxProperties": 3,
+  "required": ["version", "operation", "error_code"],
+  "properties": {
+    "version": { "type": "integer", "const": 1, "minimum": 1, "maximum": 1 },
+    "operation": { "type": "string", "const": "SnapshotManaged", "maxLength": 32 },
+    "error_code": {
+      "type": "string",
+      "enum": ["unsupported", "not_ready", "ownership_conflict"],
+      "maxLength": 32
+    }
+  }
+}

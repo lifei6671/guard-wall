@@ -1,0 +1,39 @@
+{
+  "valid": [
+    {"path":"valid/empty-managed.json","layer":"schema","classification":"accepted"},
+    {"path":"valid/full-native.json","layer":"semantic","classification":"accepted"},
+    {"path":"valid/iptables-partial.json","layer":"semantic","classification":"accepted"}
+  ],
+  "invalid": [
+    {"path":"invalid/malformed-json.json","layer":"decoder","classification":"invalid_json"},
+    {"path":"invalid/multiple-json-values.json","layer":"decoder","classification":"invalid_json"},
+    {"path":"invalid/duplicate-key.json","layer":"decoder","classification":"duplicate_key"},
+    {"path":"invalid/invalid-utf8.json","layer":"decoder","classification":"invalid_utf8","fixture_encoding":"replace_marker_with_hex"},
+    {"path":"invalid/unknown-version.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/unknown-operation.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/missing-payload.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/unknown-root-field.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/unknown-payload-field.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/payload-type-confusion.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/uppercase-snapshot-digest.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/short-foreign-digest.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/unknown-backend.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/owner-version-mismatch.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/schema-version-float.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/policy-unknown-field.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/noncanonical-target.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/noncanonical-ipv6-target.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/snapshot-digest-mismatch.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/unordered-targets.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/duplicate-target.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/protected-loopback-target.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/membership-absent.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/unknown-timeout-mode.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/none-with-expiry.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/native-without-expiry.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/both-scopes-false.json","layer":"semantic","classification":"semantic_rejected"},
+    {"path":"invalid/input-type-confusion.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/unknown-target-field.json","layer":"schema","classification":"schema_rejected"},
+    {"path":"invalid/security-field-injection.json","layer":"schema","classification":"schema_rejected"}
+  ]
+}
