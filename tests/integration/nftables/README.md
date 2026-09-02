@@ -15,9 +15,9 @@ Go 缓存。
 `./internal/enforcer` 两个 tagged package。这样 CI 同时覆盖真实 Backend 生命周期与
 Enforcer Runtime/IPC 组合，而非只验证后端直连。
 
-执行范围精确限制为这两个函数。仓库另有需要 root:guard 用户 fixture 的通用
-`integration` 测试，它不属于 nftables 容器的身份模型，不能因共享 build tag 被隐式执行。
-Firewall 包仍完整执行，Enforcer 包仅运行其固定的 E2E 函数。
+这两个函数仅是 runner 的入口存在性前置检查。Firewall 包会完整执行全部适用的
+`integration,nftables` 测试；Enforcer 包仅运行其固定的 E2E 函数。仓库另有需要 root:guard
+用户 fixture 的通用 `integration` 测试，它不属于 nftables 容器的身份模型，不能因共享 build tag 被隐式执行。
 Runner 只在完成容器与 capability 前置检查后导出
 `GUARD_NFTABLES_INTEGRATION=1` 和 `GUARD_NFTABLES_ISOLATED=1`，使该测试不会
 以 Skip 冒充隔离验证。

@@ -795,6 +795,29 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
 71. 用户确认 B3 Apply-time manager TOCTOU integration test。新增隔离 Docker 真实 nft JSON 的 UFW-like 与
     Docker-like 子用例：无 manager 时取得 infrastructure authorization，随后创建 foreign manager table，Apply
     必须返回 correlated `Rejected/not_ready`，不创建 Guard table，且注入后的 foreign canonical/raw state 不变。
-    目标包、工作流同构隔离容器及全仓 test/vet/build 均通过；当前为 `REVIEW / Implemented`，等待用户 Code Review。
+    目标包、工作流同构隔离容器及全仓 test/vet/build 均通过；用户 Code Review 已通过，当前为
+    `DONE / Implemented`。
     该集成 oracle 证明 Apply-time 拒绝与零副作用，不单独证明内部调用序列；不代表真实 UFW/Docker、目标 Linux
     priority、reload/restart 或 Apply-confirm，B3/G18/M0 不提升，未提交、未推送。
+72. 用户确认 B3 P2 consistency repair。README 现说明两个函数仅为入口存在性检查、Firewall package 完整运行全部
+    适用 tagged tests、Enforcer package 才限定 E2E；新增 Linux unit test 用 `runtime.Caller` 读取 Golden State
+    script 并提取固定 nft heredoc，归一 CRLF/LF 后逐字节比对私有 `infrastructureBatch()`，防止 layout drift。
+    目标包、工作流同构隔离容器及全仓 test/vet/build 均通过；用户 Code Review 已通过，当前为
+    `DONE / Implemented`。
+    不改生产逻辑、shell script、API、配置、依赖、workflow、目标环境或宿主 Firewall；B3/G18/M0 不提升，未提交、未推送。
+73. 用户确认 B3 removal authorization manager TOCTOU integration test。仅在现有隔离 nftables integration test
+    新增 UFW-like 与 Docker-like 子用例：无 manager 时创建 Guard infrastructure 并取得 removal authorization，随后
+    注入 foreign manager table；`RemoveManagedInfrastructure` 必须返回 correlated `Rejected/not_ready`，Guard raw JSON 与
+    managed state、foreign canonical/raw state 均保持不变。该黑盒 oracle 证明删除前拒绝与零删除，不单独证明内部调用时序，
+    也不代表真实 UFW/Docker、priority、reload/restart、Apply-confirm 或宿主 Firewall。目标包、工作流同构隔离 Docker
+    runner 及全仓 test/vet/build 均通过；用户 Code Review 已通过，当前为 `DONE / Implemented`。冻结测试 SHA256
+    `ACF1CD9D...FD6179E` 未漂移；本次仅同步验收记录，不重跑代码验证。B3/G18/M0 不提升，未提交、未推送。
+74. 用户确认 B3 foreign-context Apply-time TOCTOU integration test。仅在现有隔离 nftables test 中新增中性 foreign
+    table 子用例：无 manager 时完成 `Probe → Snapshot → AuthorizeInfrastructureMutation`，随后注入没有 packet path 的
+    foreign table。Probe 必须仍 mutation-ready，但 fresh Snapshot 的 foreign digest 已改变；`Apply` 必须返回 correlated
+    `Rejected/not_ready`，不创建 Guard，且 foreign canonical/raw state 保持不变。该 oracle 正交覆盖 Apply 对授权 basis
+    snapshot 的二次校验，不依赖 manager fail-closed 路径；不单独证明内部调用时序或极窄 recheck-to-batch 竞争窗，也不代表
+    真实 UFW/Docker、priority、reload/restart、Apply-confirm 或宿主 Firewall。独立语义审查的 capability snapshot 等值 P2
+    已在 repair round 1 闭合；目标包、工作流同构隔离 Docker runner 与全仓 test/vet/build 均在 repair 后通过，两个 fresh
+    独立复审 P0-P3 均无。用户 Code Review 已通过，当前为 `DONE / Implemented`；冻结测试 SHA256
+    `311001D3...C77C7E98` 未漂移，本次仅同步验收记录，不重跑代码验证。B3/G18/M0 不提升，未提交、未推送。

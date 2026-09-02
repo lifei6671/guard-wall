@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -355,6 +356,223 @@ func TestNftablesBackendIntegrationRejectsManagerAppearingAfterAuthorization(t *
 			}
 			if strings.TrimSpace(string(foreignAfter)) != strings.TrimSpace(string(foreignBefore)) {
 				t.Fatalf("Apply() with %s fixture changed foreign table", testCase.name)
+			}
+		})
+	}
+}
+
+func TestNftablesBackendIntegrationRejectsForeignContextAppearingAfterAuthorization(t *testing.T) {
+	if os.Geteuid() != 0 || os.Getenv("GUARD_NFTABLES_INTEGRATION") != "1" || os.Getenv("GUARD_NFTABLES_ISOLATED") != "1" {
+		t.Skip("requires the explicit isolated root nftables integration fixture")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := nftFixture(ctx, nil, "--version"); err != nil {
+		t.Skip("nft is unavailable in the isolated fixture")
+	}
+
+	const foreignTable = "foreign_b3_apply_toctou_fixture"
+	if err := nftFixture(ctx, nil, "--json", "list", "table", "inet", "guard"); err == nil {
+		t.Fatal("isolated fixture already contains inet guard")
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_ = nftFixture(cleanupCtx, []byte("delete table inet "+foreignTable+"\n"), "--file", "-")
+		_ = nftFixture(cleanupCtx, []byte("delete table inet guard\n"), "--file", "-")
+	})
+
+	backend := NewBackend()
+	capabilities, err := backend.Probe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !capabilities.MutationReady() {
+		t.Fatalf("Probe() before foreign context is not mutation-ready: %#v", capabilities)
+	}
+	basis, err := backend.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := firewall.AuthorizeInfrastructureMutation(capabilities, basis, basis.Digest(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := nftFixture(ctx, []byte("add table inet "+foreignTable+"\n"), "--file", "-"); err != nil {
+		t.Fatalf("create neutral foreign table after authorization: %v", err)
+	}
+	foreignBefore, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", foreignTable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshCapabilities, err := backend.Probe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !freshCapabilities.MutationReady() || !freshCapabilities.UFWIntegrationProven() || !freshCapabilities.DockerIntegrationProven() {
+		t.Fatalf("Probe() with neutral foreign context = %#v, want mutation-ready coexistence", freshCapabilities)
+	}
+	if !reflect.DeepEqual(freshCapabilities, capabilities) {
+		t.Fatalf("Probe() capability drift after neutral foreign context: before=%#v after=%#v", capabilities, freshCapabilities)
+	}
+	freshSnapshot, err := backend.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignDigest := freshSnapshot.ForeignContext().Digest()
+	if foreignDigest == basis.ForeignContext().Digest() {
+		t.Fatal("neutral foreign table did not change foreign context")
+	}
+
+	result := backend.Apply(ctx, plan)
+	if err := result.Validate(); err != nil {
+		t.Fatalf("Apply() returned invalid result: %v", err)
+	}
+	if result.Status() != firewall.MutationStatusRejected || result.MutationDigest() != plan.Digest() {
+		t.Fatalf("Apply() result = %#v, want rejected result correlated to authorized plan", result)
+	}
+	if code, ok := result.ErrorCode(); !ok || code != firewall.MutationErrorNotReady {
+		t.Fatalf("Apply() error code = (%q, %v), want not_ready", code, ok)
+	}
+	if err := nftFixture(ctx, nil, "--json", "list", "table", "inet", "guard"); err == nil {
+		t.Fatal("Apply() created Guard infrastructure after foreign context changed")
+	}
+	after, err := backend.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := after.ManagedState().Infrastructure(); present {
+		t.Fatal("Apply() created Guard infrastructure after foreign context changed")
+	}
+	if after.ForeignContext().Digest() != foreignDigest {
+		t.Fatal("Apply() changed foreign context after rejecting stale authorization")
+	}
+	foreignAfter, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", foreignTable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(foreignAfter)) != strings.TrimSpace(string(foreignBefore)) {
+		t.Fatal("Apply() changed neutral foreign table after rejecting stale authorization")
+	}
+}
+
+func TestNftablesBackendIntegrationRejectsManagerAppearingAfterRemovalAuthorization(t *testing.T) {
+	if os.Geteuid() != 0 || os.Getenv("GUARD_NFTABLES_INTEGRATION") != "1" || os.Getenv("GUARD_NFTABLES_ISOLATED") != "1" {
+		t.Skip("requires the explicit isolated root nftables integration fixture")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := nftFixture(ctx, nil, "--version"); err != nil {
+		t.Skip("nft is unavailable in the isolated fixture")
+	}
+
+	for _, testCase := range []struct {
+		name  string
+		table string
+	}{
+		{name: "ufw", table: "ufw_b3_remove_toctou_fixture"},
+		{name: "docker", table: "docker_b3_remove_toctou_fixture"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if err := nftFixture(ctx, nil, "--json", "list", "table", "inet", "guard"); err == nil {
+				t.Fatal("isolated fixture already contains inet guard")
+			}
+			t.Cleanup(func() {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cleanupCancel()
+				_ = nftFixture(cleanupCtx, []byte("delete table inet "+testCase.table+"\n"), "--file", "-")
+				_ = nftFixture(cleanupCtx, []byte("delete table inet guard\n"), "--file", "-")
+			})
+
+			backend := NewBackend()
+			capabilities, err := backend.Probe(ctx)
+			if err != nil {
+				t.Fatalf("Probe() before %s fixture: %v", testCase.name, err)
+			}
+			if !capabilities.MutationReady() {
+				t.Fatalf("Probe() before %s fixture is not mutation-ready: %#v", testCase.name, capabilities)
+			}
+			basis, err := backend.Snapshot(ctx)
+			if err != nil {
+				t.Fatalf("Snapshot() before %s fixture: %v", testCase.name, err)
+			}
+			plan, err := firewall.AuthorizeInfrastructureMutation(capabilities, basis, basis.Digest(), 1)
+			if err != nil {
+				t.Fatalf("AuthorizeInfrastructureMutation(): %v", err)
+			}
+			assertConfirmedWithReadback(t, backend, ctx, basis, backend.Apply(ctx, plan), plan.Digest())
+
+			snapshot, err := backend.Snapshot(ctx)
+			if err != nil {
+				t.Fatalf("Snapshot() before removal authorization: %v", err)
+			}
+			if _, present := snapshot.ManagedState().Infrastructure(); !present {
+				t.Fatal("infrastructure was not observed before removal authorization")
+			}
+			guardBefore, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", "guard")
+			if err != nil {
+				t.Fatal(err)
+			}
+			removal, alreadyAbsent, err := firewall.AuthorizeManagedRemoval(capabilities, snapshot, firewall.ManagedOwnerVersionV1)
+			if err != nil || alreadyAbsent || removal == nil {
+				t.Fatalf("AuthorizeManagedRemoval() = (%v, %v, %v)", removal, alreadyAbsent, err)
+			}
+
+			if err := nftFixture(ctx, []byte("add table inet "+testCase.table+"\n"), "--file", "-"); err != nil {
+				t.Fatalf("create %s fixture after removal authorization: %v", testCase.name, err)
+			}
+			foreignBefore, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", testCase.table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			managerSnapshot, err := backend.Snapshot(ctx)
+			if err != nil {
+				t.Fatalf("Snapshot() with %s fixture: %v", testCase.name, err)
+			}
+			foreignDigest := managerSnapshot.ForeignContext().Digest()
+			managerCapabilities, err := backend.Probe(ctx)
+			if err != nil {
+				t.Fatalf("Probe() with %s fixture: %v", testCase.name, err)
+			}
+			if managerCapabilities.MutationReady() || managerCapabilities.UFWIntegrationProven() || managerCapabilities.DockerIntegrationProven() {
+				t.Fatalf("Probe() with %s fixture = %#v, want fail-closed manager capabilities", testCase.name, managerCapabilities)
+			}
+
+			result := backend.RemoveManagedInfrastructure(ctx, removal)
+			if err := result.Validate(); err != nil {
+				t.Fatalf("RemoveManagedInfrastructure() returned invalid result: %v", err)
+			}
+			if result.Status() != firewall.MutationStatusRejected || result.MutationDigest() != removal.Digest() {
+				t.Fatalf("RemoveManagedInfrastructure() result = %#v, want rejected result correlated to removal authorization", result)
+			}
+			if code, ok := result.ErrorCode(); !ok || code != firewall.MutationErrorNotReady {
+				t.Fatalf("RemoveManagedInfrastructure() error code = (%q, %v), want not_ready", code, ok)
+			}
+
+			guardAfter, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", "guard")
+			if err != nil {
+				t.Fatalf("Guard infrastructure disappeared after %s manager appeared: %v", testCase.name, err)
+			}
+			if strings.TrimSpace(string(guardAfter)) != strings.TrimSpace(string(guardBefore)) {
+				t.Fatalf("RemoveManagedInfrastructure() with %s fixture changed Guard table", testCase.name)
+			}
+			after, err := backend.Snapshot(ctx)
+			if err != nil {
+				t.Fatalf("Snapshot() after RemoveManagedInfrastructure() with %s fixture: %v", testCase.name, err)
+			}
+			if _, present := after.ManagedState().Infrastructure(); !present {
+				t.Fatal("RemoveManagedInfrastructure() removed Guard infrastructure after manager appeared")
+			}
+			if after.ForeignContext().Digest() != foreignDigest {
+				t.Fatalf("RemoveManagedInfrastructure() with %s fixture changed foreign context", testCase.name)
+			}
+			foreignAfter, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", testCase.table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(string(foreignAfter)) != strings.TrimSpace(string(foreignBefore)) {
+				t.Fatalf("RemoveManagedInfrastructure() with %s fixture changed foreign table", testCase.name)
 			}
 		})
 	}

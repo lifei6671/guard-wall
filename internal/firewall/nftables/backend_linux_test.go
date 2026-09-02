@@ -6,6 +6,9 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +18,37 @@ import (
 )
 
 const emptyRuleset = `{"nftables":[{"metainfo":{"version":"1.0.2"}}]}`
+
+func TestGoldenStateScriptMatchesInfrastructureBatch(t *testing.T) {
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate backend_linux_test.go")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", "..", ".."))
+	scriptPath := filepath.Join(root, "tests", "integration", "nftables", "golden-state.sh")
+	script, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read Golden State script: %v", err)
+	}
+	scriptText := strings.ReplaceAll(string(script), "\r\n", "\n")
+
+	const start = "ip netns exec \"$router\" nft -f - <<'NFT'\n"
+	const end = "\nNFT\n"
+	if strings.Count(scriptText, start) != 1 {
+		t.Fatalf("Golden State infrastructure heredoc start count = %d, want 1", strings.Count(scriptText, start))
+	}
+	_, batch, found := strings.Cut(scriptText, start)
+	if !found {
+		t.Fatal("Golden State infrastructure heredoc start is missing")
+	}
+	batch, _, found = strings.Cut(batch, end)
+	if !found {
+		t.Fatal("Golden State infrastructure heredoc end is missing")
+	}
+	if batch+"\n" != infrastructureBatch() {
+		t.Fatal("Golden State infrastructure layout drifted from infrastructureBatch")
+	}
+}
 
 func managedInfrastructureRuleset() string {
 	entries := []string{`{"metainfo":{"version":"1.0.2"}}`, `{"table":{"family":"inet","name":"guard"}}`}
