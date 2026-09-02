@@ -134,13 +134,13 @@ func mutationResponseMatchesRequest(request MutationRequest, response MutationRe
 	}
 
 	switch typedRequest := request.(type) {
-	case ApplyManagedPlanRequest:
-		typedResponse, ok := response.(ApplyManagedPlanResponse)
-		plan := typedRequest.Plan()
-		return ok && plan != nil && typedResponse.Domain() == plan.Domain()
-	case RemoveManagedInfrastructureRequest:
-		_, ok := response.(RemoveManagedInfrastructureResponse)
-		return ok
+	case *applyManagedPlanRequest:
+		typedResponse, ok := response.(*applyManagedPlanResponse)
+		return ok && typedRequest != nil && typedRequest.plan != nil && typedResponse != nil &&
+			typedResponse.domain == typedRequest.plan.Domain()
+	case *removeManagedInfrastructureRequest:
+		typedResponse, ok := response.(*removeManagedInfrastructureResponse)
+		return ok && typedRequest != nil && typedResponse != nil
 	default:
 		return false
 	}
