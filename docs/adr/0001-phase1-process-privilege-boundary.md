@@ -485,7 +485,9 @@ B4-l9 只证明 closed observation transport 与 injected provider plumbing。�
 Backend，不证明 backend auto-detection、tool/version、ownership、UFW/Docker coexistence、packet path 或生产
 `mutation_ready=true`，也不包含 SnapshotManaged、通用 Enforcer accept loop/executable、配置、依赖、数据库、
 systemd 或真实 Firewall mutation。用户已明确回复 `确认 B4-l9`，允许按上述公共 wire/API 边界实施；完成状态、
-验证结论与用户 Code Review 门仍分别记录。
+验证结论与用户 Code Review 门仍分别记录。用户随后明确回复 `B4-l9 Code Review 通过`，本 Delivery Unit 当前为
+`DONE / Implemented`、用户门为 `PASSED`，但不描述为 `Verified`。实现身份继续由本地提交 `04546f3` 绑定；
+本次验收仅同步记录，未重跑代码验证、未新增提交、未推送。
 
 B4-l10 将 `SnapshotManaged` 落为一个完整 closed observation transport。platform-neutral domain 只暴露
 immutable `ManagedSnapshot`、`ManagedState`、`ForeignContext` 以及 infrastructure/policy/target observations；
@@ -528,8 +530,196 @@ B4-l11 不含通用 accept loop、并发/优雅停机、Backend executor/provide
 真实 Firewall、配置、依赖、数据库、systemd 或 executable composition；也不提升 B4、G18.1-G18.3 或
 M0 Gate。
 
+B4-l12 在 production `internal/firewall` 中冻结 platform-neutral closed mutation authority：Apply 仅允许
+infrastructure、policy、target 三个单 domain，Remove 仅允许固定 `guard/v1` owner。每个授权值绑定选定 backend、
+完整 `FirewallCapabilities`、当前 `ManagedSnapshot` digest、revision/generation 与 domain payload，并通过固定字段顺序
+JSON preimage + SHA-256 生成 deterministic digest。Policy/Target slice 均由构造过程复制，concrete type 与可变字段
+不导出；result 仅能从授权值构造为 confirmed、rejected 或 unknown，并继承 operation/domain/authorization digest。
+Apply rejected 允许 `invalid_plan | ownership_conflict | unsupported | not_ready | backend_rejected`；Remove 禁止
+`invalid_plan`；unknown 只能使用 `unknown_result`。API 不接受 raw backend error、command、binary、env、cwd 或
+物理对象名。
+
+特权侧 `internal/enforcer` 对 sealed IPC request 做显式类型与 enum 映射，并以 capabilities/snapshot 二次授权。
+授权要求两者自身有效、`mutation_ready` 与 ownership 已证明、已观察 infrastructure backend 与 capability backend
+一致；Apply basis 必须精确匹配当前 snapshot digest。Policy/Target 独立重验 canonical prefix、family、CIDR、scope
+与 native timeout/crash-safe expiry。Atomic batch 不作为所有 backend 的统一门；nftables-ready 的 atomic 约束由
+capability authority 保证，iptables 的非原子失败结果仍须由后续 Backend 按 post-state certainty 选择 Rejected 或
+Unknown。Remove 只有在 infrastructure、policy、targets 全部为空时才直接 confirmed no-op；任何 managed residue
+仍生成 snapshot-scoped cleanup authority。result mapper 在 operation/domain/digest 不关联时返回稳定本地
+`result_mismatch`，不伪造 IPC success/rejection。
+
+B4-l12 的 targeted Race `count=20`、全仓 normal/Race/Vet/module 与 Windows amd64、Linux amd64、Linux arm64
+CGo-free test-compile 均通过。独立 Tier 3 FULL_SCOPE 初审发现 partial-state Remove 一个 P1 与 mapper assertions
+一个 P2；repair round 1 后 fresh-delta 为 `APPROVED / FRESH / PASSED`、P0-P3 全无。当前为
+`DONE / Implemented`，用户 Code Review 门为 `PASSED`；验收时四个冻结 Go 文件身份未漂移，未重跑代码验证。
+
+B4-l12 的纯函数只绑定调用方提供的 authority value，不能证明 Probe/Snapshot 是同一 executor attempt 中刚取得的；
+fresh acquisition、Apply 前再次校验、Backend/provider、handler/executor/serve loop、真实 nftables/iptables、
+Probe-first/retry/Reconcile、配置、依赖、数据库、systemd 与 executable composition 均属于后续批次。B4、
+G18.1-G18.3 与 M0 Gate 不提升。
+
+B4-l13 在 `internal/enforcer` 冻结消费侧最窄 `MutationBackend` 与单请求 `MutationExecutor`。端口仅接收
+B4-l12 closed `OperationPlan` 或 `RemovalAuthorization`，不接收 IPC DTO、raw request、command、binary、
+args、env、cwd 或物理对象名。每个 executor 不缓存 authority/observation、不 retry/fallback；context-aware
+单槽 gate 覆盖
+同一 backend/context 下完整 `Probe → Snapshot → Authorize → Apply/Remove/Immediate → result mapping`。
+无法关联的 request、pre-dispatch cancellation、Probe/Snapshot/authorization failure 均在 mutation 前
+fail-closed；valid-but-not-ready capability 在 Snapshot 前停止。完全空 managed state 的 Remove 保持 immediate
+confirmed，任何 residue 都 dispatch 一次 snapshot-scoped removal。
+
+Backend port 要求实现方在首次 side effect 前重新验证 authority 绑定的 backend、capabilities、ownership 与
+snapshot basis；只有证明零副作用或完整回滚才可返回 Rejected，无法证明 post-state 必须返回 Unknown。executor
+对 mutation 返回的零值、非法或 operation/domain/digest 不关联结果，使用原 authority 构造 correlated
+`Unknown/unknown_result`；不把底层错误文本或执行细节带入 IPC。该契约只冻结 future Backend 的义务，本批
+scripted backend 不能证明真实外部 writer TOCTOU、真实 nftables/iptables post-state 或 foreign preservation。
+
+B4-l13 使用 context-aware 单槽 gate 串行完整 attempt；排队请求可在前一 attempt 释放前按自身 context 返回
+`rejected/not_ready`，不调用 Backend，gate 释放后可继续服务后续 fresh request。targeted Windows 与 Docker
+Linux Race `count=20`、全仓 normal/Race/Vet/module、Windows amd64、
+Linux amd64、Linux arm64 六项 CGo-free test-compile 均通过。独立 Tier 3 代码检查点发现 full-attempt
+serialization oracle 一个 P1 与 typed-nil request oracle 一个 P2；repair round 1 后增量复审为
+`APPROVED / CHILD_AGENT / COMPLETE / FRESH / PASSED`。final FULL_SCOPE 初审另发现不可取消 mutex admission
+一个 P1 与 STATUS 摘要一个 P2；context-aware gate 与摘要修复后，repair round 1 integration closure 为
+`APPROVED / CHILD_AGENT / COMPLETE / FRESH / PASSED`、P0-P3 全无。当前 B4-l13 为
+`DONE / Implemented`，用户 Code Review 门为 `PASSED`；验收时两个冻结 Go 文件身份未漂移，代码验证未重跑。
+未提交、未推送。B4-l9 随后获用户 Code Review 通过并更新为 `DONE / Implemented`；上级 Gate 状态不变。
+
+B4-l14 在 Linux-only `internal/ipc` 冻结 unified authenticated single-connection router。`EnforcerHandlers`
+只组合既有 `ProbeCapabilitiesHandler`、`SnapshotManagedHandler` 与 `MutationHandler`，不增加 generic/raw
+request、response、JSON 或 command handler。`ServeEnforcerOnce` 在 Accept 前要求三个 handler 全部存在，仅调用
+一次 `AcceptRequest`；认证与 decode 完成后按 closed concrete request type 精确路由 Probe、Snapshot、Apply 或
+Remove。Apply/Remove 共用 closed mutation handler，但每个 request 最多调用一个 handler 一次。
+
+Router 对 mutation response 复用既有 operation/domain correlation；三类 response 均须先完整 encode，再设置
+caller context deadline 并开始首次写入。handler 后取消必须零写；partial frame failure 后关闭连接且不 retry；
+完整 frame 是交付点，随后 cancellation 不覆盖成功。Accept 成功后 router 负责关闭 accepted connection，但不关闭
+caller-owned listener；同一 listener 可继续服务后续独立单连接调用。stable local router error 不包含 UID、socket、
+payload、syscall 或 handler-controlled 文本。
+
+用户明确回复 `确认 B4-l14` 后完成实现。WSL2 Linux/amd64 targeted `count=20`、Docker Go 1.27 targeted Race
+`count=20`、Windows targeted/full normal 与 full Race、Vet/module、Docker full IPC Race、Windows amd64/
+Linux amd64/Linux arm64 CGo-free test-compile、141 包依赖闭包与格式/凭据/readback 均通过。三路独立 Tier 3
+CONTRACT/SECURITY/TEST-QUALITY checkpoint 均为 `CHILD_AGENT / COMPLETE / FRESH / PASSED`、P0-P3
+全无。最终 PARTITIONED_PLUS_INTEGRATION 初审 P0/P1 全无，仅发现 Evidence durable replay identity 一个 P2；
+补齐 WSL Linux/amd64 binary SHA256 与 exact host build/run、Docker image/read-only/no-network recipe 和三目标
+exact cross-build 后，repair round 1 fresh-delta 为 `APPROVED / CHILD_AGENT / COMPLETE / FRESH / PASSED`、
+P0-P3 全无。用户随后明确回复 `B4-l14 Code Review 通过`，当前为 `DONE / Implemented`、用户 Code Review
+门为 `PASSED`，但不描述为 `Verified`；验收时两个冻结 Go 文件身份未漂移，代码验证未重跑，未提交、未推送。
+
+B4-l14 不实现持续 accept loop、continue/fatal policy、额外 per-request timeout、listener shutdown ownership、
+failure observer、真实 Backend/Firewall、配置、依赖、数据库、systemd 或 executable composition。caller 必须提供
+合适 context budget；本批不证明真实 `/run/guard` root:guard、生产跨 UID 或客户端已处理完整写出的 frame。
+
+B4-l15 在 Linux-only `internal/ipc` 冻结 injected handlers 上的串行 persistent unified Enforcer serve loop。
+`EnforcerServeOptions` 要求有限正值 per-connection timeout 与非空同步 failure observer；`ServeEnforcer` 的 idle
+Accept 只受 parent context，request timeout 在 raw Accept 成功后、SO_PEERCRED 前启动，覆盖认证、decode、handler、
+encode 与 write。peer UID mismatch、有界 malformed/truncated frame、validation、write failure 与 request deadline
+属于 request-local：accepted connection 先关闭，observer 再收到一次稳定脱敏错误，随后继续；listener/credential、
+handler response contract/correlation、invariant 与未知错误均 fail-closed 返回。parent cancel/deadline 终止循环并保留
+`errors.Is` 身份；完整 response frame 仍是交付点，listener 始终 caller-owned。
+
+同一 `UnixListener` 的 race-free serve ownership 覆盖 persistent loop、四个 one-shot adapter 与导出的
+`AcceptRequest` admission。竞争入口在 Accept 前返回 `ListenerErrorCodeAlreadyServing`，因此 active loop 不会被
+另一个入口窃取连接或阻塞式重入；低层 `AcceptRequest` 成功完成认证/decode 后仍把 connection ownership 转给
+caller。handlers 必须协作 request context，observer 必须及时返回且不得在同一 listener 上重入 blocking serve。
+
+用户明确回复 `确认 B4-l15` 后完成实现。Linux/amd64 与 Linux/arm64 CGo-free test-compile、WSL2 targeted
+`count=20`、Docker Go 1.27 read-only/no-network targeted Race `count=20` 与 full IPC Race、全仓 normal/Race、
+Windows/Linux Vet、module verify/tidy diff 与格式检查均通过。首轮独立安全审查发现 loop-only gate 可被 one-shot
+Serve/`AcceptRequest` 绕过的 P1；repair round 2 已统一 listener serve ownership 并增加六入口竞争 oracle。
+repair-round 安全终审随后发现 handler panic 会跳过普通语句式 connection Close/child cancel、先释放 owner 的 P1；
+repair round 3 将每个 accepted connection 封装为 inner-defer attempt，确保 panic unwind 时先关闭 connection、
+取消 child，最后释放 listener owner，并以通道握手 recover oracle 冻结 bounded peer close、child cancellation、
+observer 零调用与同 listener persistent-loop 复用。repair round 3 CONTRACT/API 与 SECURITY/LIFECYCLE
+终审均 `CHILD_AGENT / COMPLETE / FRESH / PASSED`、P0-P3 全无；TEST-QUALITY 终审同样 PASSED，保留一个
+非阻断 P2：serial max-in-flight oracle 仍含 100 ms bounded negative window。Evidence replay identity 与 B4
+总表摘要两个 records-only P2 已修复，fresh-delta 为
+`APPROVED / CHILD_AGENT / COMPLETE / FRESH / PASSED`、P0-P3 全无。验收前为 `REVIEW / Implemented`，
+用户随后明确回复 `B4-l15 Code Review 通过`，当前为 `DONE / Implemented`、用户 Code Review 门为
+`PASSED`；验收时九个冻结 Go 文件身份未漂移。本次仅同步验收记录，代码验证未重跑，未提交、未推送。
+
+B4-l15 不实现真实 Firewall/Backend/provider、production handler composition、并发连接、rate-limit/backoff、
+systemd/executable、生产 `/run/guard`、配置、依赖或数据库，也不证明 target host shutdown/recovery。
+
+B4-l16 经用户明确回复 `确认 B4-l16` 后实现 Linux-only、production-neutral handler composition。新增
+`NewEnforcerHandlers(backend MutationBackend) (ipc.EnforcerHandlers, error)`，由一个私有状态同时持有
+backend、既有 `MutationExecutor` 与 context-aware 单槽 gate。三个闭包必须捕获同一状态；即使
+`ipc.EnforcerHandlers` 被复制或被多个 caller 并发调用，同一 backend 的 Probe、Snapshot 与完整 Mutation
+attempt 仍最多一个在途。构造期拒绝 nil/typed-nil backend，并复用既有 `ErrMutationBackendRequired`，不新增
+可由调用方拆分或改写闭合语义的导出状态类型。
+
+Probe handler 每次只读取一次 fresh `backend.Probe(ctx)`；合法但 `MutationReady=false` 仍是 success，
+`ErrMutationBackendUnsupported` 映射 `unsupported`，其余 error 或非法 capabilities 映射 `not_ready`。
+Snapshot handler 每次只读取一次 fresh `backend.Snapshot(ctx)`，不缓存、不以 DB/旧 observation 伪造事实，也不
+隐式增加一次 Probe；Probe-first mutation 不变量继续由 `MutationExecutor` 在每个 mutation attempt 内保证。
+Snapshot 的 unsupported、typed/wrapped ownership conflict 与其他失败分别映射为 `unsupported`、
+`ownership_conflict`、`not_ready`，非法 snapshot 映射 `not_ready`。所有分类只使用 typed sentinel、
+`errors.Is`/`errors.As`，不把 backend 文本、命令输出或对象身份带入 IPC。
+
+预取消或等待共享 gate 期间取消必须零 backend 调用并返回 closed `not_ready`；统一 router 随后按既有 context
+检查零写返回本地取消。success constructor 必须验证 domain value；固定 failure constructor 若发生不变量级失败，
+返回 nil 让既有 codec/router fail-closed，不伪装成业务失败。backend panic 不恢复、不 fallback，但 gate 必须通过
+defer 释放。专项 Linux Race 必须覆盖 handler copy 后的跨操作最大在途数 1、排队取消不补执行、错误脱敏、
+非法 observation、panic 后 gate 复用与代表性 Apply/Remove 委托。
+
+B4-l16 只新增 `internal/enforcer/handlers_linux.go` 与对应 Linux test，不修改 IPC wire/schema/DTO/failure enum、
+`MutationBackend`、`MutationExecutor` 或 Firewall authority；不实现真实 nftables/iptables provider、backend 自动
+选择、物理对象 role/name、`/run/guard`、UID/GID、systemd、capability、executable、配置、依赖、数据库、
+retry/backoff/rate-limit 或并发连接。WSL2/Docker Linux Race、Windows 全仓回归、Linux 双架构编译/Vet 与
+repair round 1 三路独立 fresh-delta 均通过；初审两项 P1、三项 P2 已全部 `RESOLVED`，最终 P0-P3 全无。
+用户 Code Review 已通过，当前 `DONE / Implemented`，不提升 B4 或 M0 Gate。
+
 以上不证明真实 `/run/guard` root:guard、生产跨 UID、executable accept loop、response/executor、
 systemd、root capability 或 Firewall 行为，也不提升 B4 总项或任何 M0 Gate。
+
+B4-l17 经用户明确回复 `确认 B4-l17` 后新增 Linux-only `EnforcerRuntime` 与
+`NewEnforcerRuntime(backend, listener, expectedGuardUID, options)`。构造期恰好一次创建闭合 handler set，并将
+注入 listener 的生命周期所有权转交给 runtime。`Run` 只委托既有 `ServeEnforcer`；任何 terminal serve result、
+parent cancellation、fatal failure 或 panic unwind 后，runtime 都关闭 listener。Serve 与 Close 同时失败时使用
+`errors.Join` 保留两个错误身份。
+
+runtime 自身用原子状态阻止重复或并发 `Run` 关闭活动 loop。只有现有 listener 返回 typed
+`already_serving` 时，本次尝试不关闭 listener 并回到可重试状态，以免干扰外部既有 owner；该路径也不得重复构造
+handler set。构造失败不接管 listener。该批不修改 IPC wire/schema/DTO、listener/socket 实现、
+`MutationBackend`/`MutationExecutor` 或 Firewall authority，不接真实 provider、`/run/guard`、UID/GID、
+systemd/executable、配置、依赖、数据库或部署。
+
+Linux factory/error/lifecycle tests 覆盖一次构造、options observer 原样转发、external-owner retry、Close-only 和
+joined error identity、并发 Run 与 panic cleanup。Windows targeted/full、Linux amd64/arm64 CGo-free compile/Vet、
+WSL2 `count=20`、Docker read-only/no-network Race 和两路独立终审均通过；用户 Code Review 已通过，当前
+`DONE / Implemented`，不提升 B4 或 M0 Gate。
+
+用户回复“继续”后，B4-l18 只读预检将下一最小单元定为 Linux native `/run/guard` root:guard 跨 UID
+Enforcer runtime 集成证据。它仅复用现有 `ListenUnix`、`NewEnforcerRuntime` 和 test-only closed
+`MutationBackend`，在受控 WSL fixture 中验证 production socket owner/mode、`guard` 请求准入、非预期 UID
+在 `SO_PEERCRED` 前被拒绝、backend 零调用及 cancel 后按 socket identity 清理。该批不新增 Go API、IPC
+wire/schema 或新的 authority；不接真实 Firewall/provider、systemd/executable、配置、依赖、数据库和部署。
+因为 fixture 需要短暂创建并精确清理 root 级 `/run/guard` 与临时 `guard` 用户/组，实施前仍须用户明确
+`确认 B4-l18`；当前 `IN_PROGRESS / Specified`、实施 `NO-GO`、验证 `NOT RUN`，且不提升 B4 或 M0 Gate。
+
+用户随后明确回复 `确认 B4-l18`。本批新增一份 `linux && integration` test-only 集成测试，不修改 production
+Go API、IPC wire/schema 或 authority。受控 Ubuntu WSL root fixture 创建临时 `guard` 用户/组与 root:guard
+`/run/guard`，再用 `ListenUnix → NewEnforcerRuntime` 启动 test-only closed backend。root 通过固定 production
+Probe client 连接以证明 `SO_PEERCRED` UID mismatch 在任何 backend 调用前被 observer 记录为 request-local；
+`guard` 子进程用同一 client 成功完成一次 Probe；cancel 后 runtime 保留 `context.Canceled`，listener 仅按
+自身 socket identity 清理 socket。测试在 `ListenUnix` 成功后立即登记 idempotent listener cleanup，覆盖属性
+断言失败路径；root client 因 peer close 仅接受稳定的 `truncated_length` 或 `write_failed` 本地 frame 分类。
+
+Windows targeted/full Race、全仓 normal/Race/Vet/module、Linux integration amd64/arm64 CGo-free compile/Vet
+以及 WSL2 `count=20` 均通过。WSL 环境缺 Linux Go 工具链，native Linux `-race` integration 为
+`UNAVAILABLE`，不被描述为通过。临时 WSL 用户/组、`/run/guard` 与 `/tmp` test binary 均已 read-back 清理；
+Windows workspace 的 ignored cross-compiled fixture binary 受宿主删除策略阻止，保留待显式清理。当前
+三路独立终审为 `COMPLETE / FRESH / PASSED`、P0-P3 全无；当前 `REVIEW / Implemented`，等待用户 Code Review；
+这仍不证明真实 Firewall/provider、systemd/executable、
+capability、部署、CI 或 B4/M0 Gate。
+
+用户随后确认 B4-l19 并明确允许联网。联网仅用于从官方 Go 1.27 Linux/amd64 digest 构建一次带 Race 的既有
+integration test binary，并对锁定模块执行 `go mod verify`；实际 test fixture 在另一只 `--network none`、
+`--rm` 容器中运行 `count=20`。容器不挂载 workspace、宿主 `/run`、Docker socket、可写宿主目录或端口，只以
+tmpfs 提供 `/run`/`/tmp`，临时 guard user/group 与 `/run/guard` 由 trap 清理。该 Docker Linux Race 已通过，
+但仅构成 B4-l19 `REVIEW / Implemented` 的容器证据；B4-l18 与 B4-l19 用户 Code Review 均仍 PENDING，且不能
+推导 WSL native Linux、目标发行版、CI、commit-bound、真实 Firewall/provider、systemd/executable、capability、
+部署或 B4/M0 Gate 已通过。records 与交叉集成独立终审均为 `COMPLETE / FRESH / PASSED`、P0-P3 全无。
 
 这些结果证明 IPC v1 request Schema/golden contract、production frame reader、payload decoder/typed
 validator、accepted-connection peer identity gate 与 listener/socket lifecycle library 在当前 worktree
@@ -546,9 +736,9 @@ validator、accepted-connection peer identity gate 与 listener/socket lifecycle
    真实 Snapshot digest、installed owner、capability 与 Guard-owned object-role mapping 尚未接入。
 4. Agent/Enforcer restart、timeout、cancellation 和 unknown result 恢复。
 5. root Enforcer 的 `CAP_NET_ADMIN` bounding、Agent 无 capability 及实际 nftables 权限。
-6. production frame reader/payload decoder、accepted Unix connection peer credential gate 与 listener/
-   socket lifecycle library 已集成；仍无真实 `/run/guard` root:guard、生产跨 UID、executable accept
-   loop、response/executor 或持续 fuzz campaign。当前只证明 frozen golden、framing/JSON 资源
+6. production frame reader/payload decoder、accepted Unix connection peer credential gate、listener/
+   socket lifecycle library 与 injected-handler serial persistent serve loop 已集成；仍无真实 `/run/guard`
+   root:guard、生产跨 UID、executable composition、真实 Backend/executor 或持续 fuzz campaign。当前只证明 frozen golden、framing/JSON 资源
    exact/one-over、seed invariants 与临时 same-UID/mismatched-expected-UID socket 通过 production library。
 7. 非 WSL2 的目标 Linux 发行版、内核和 systemd 支持矩阵。
 
