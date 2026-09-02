@@ -487,6 +487,47 @@ Backend，不证明 backend auto-detection、tool/version、ownership、UFW/Dock
 systemd 或真实 Firewall mutation。用户已明确回复 `确认 B4-l9`，允许按上述公共 wire/API 边界实施；完成状态、
 验证结论与用户 Code Review 门仍分别记录。
 
+B4-l10 将 `SnapshotManaged` 落为一个完整 closed observation transport。platform-neutral domain 只暴露
+immutable `ManagedSnapshot`、`ManagedState`、`ForeignContext` 以及 infrastructure/policy/target observations；
+target 按 canonical prefix string 严格排序且唯一，scope 固定为 input/forward，禁止与 IPv4/IPv6 loopback
+重叠，snapshot digest 由 `guard-managed-snapshot/v1` 版本化 canonical preimage 重算。wire success root 精确为
+`{version,operation,payload}`；failure root 精确为 `{version,operation,error_code}`，closed failure code 仅为
+`unsupported | not_ready | ownership_conflict`。成功 payload 不携带命令、backend raw error、物理对象名、UID、
+socket 或任意执行参数。
+
+Snapshot response 的 fail-closed 上限为 1 MiB、maximum depth 4、32768 JSON tokens 与 1024 targets；target
+wire 使用两个 required boolean scope 字段以保持 depth 4。production decoder 必须经 Firewall domain constructors
+重建并核对 snapshot digest，Schema semantic oracle 使用同一 authority。Linux client/server 固定
+`/run/guard/enforcer.sock`、root peer、caller context-only、单连接、单请求、零重试，并沿用认证后才调用 typed
+handler、最多写一个 response、完整 frame 为 delivery point 的语义。用户已明确回复 `确认 B4-l10`，允许该
+公共 API/wire/resource 边界实施；用户随后明确回复 `B4-l10 Code Review 通过`，当前为
+`DONE / Implemented`，但不描述为 `Verified`。
+
+B4-l10 不实现或注册真实 nftables/iptables snapshot provider，不冻结 production physical names/priorities，
+不包含 Probe-first orchestration、通用 executor/serve loop、systemd、配置、依赖、数据库或真实 Firewall mutation。
+Windows targeted Race `count=20`、全仓 normal/Race/Vet/module、三项 fuzz、三目标 CGo-free compile、WSL2
+真实 Unix socket `count=20` 与 Docker Linux targeted Race `count=20` 已通过。这些结果不提升 B4、
+G18.1-G18.3 或 M0 Gate。
+
+B4-l11 在既有 mutation request/response codec、frame、Linux client 与 B4-k listener/peer gate 之上增加
+Linux-only authenticated single-request server adapter。导出 `MutationHandler` 与
+`(*UnixListener).ServeMutationOnce`；adapter 必须通过 `AcceptRequest` 完成 peer authentication 与 request
+decode 后才调用 handler，且只接受 closed `MutationRequest`。handler 只能返回 closed typed
+`MutationResponse`；adapter 在写入首字节前完成 operation/type/domain correlation 与完整 payload encode。
+本地错误仅暴露稳定脱敏的 `unavailable | handler_required | unexpected_operation | response_mismatch` 分类。
+
+每次调用只接受一个 connection、处理一个 request、最多写一个 response frame，并在所有返回路径关闭
+accepted connection；listener 所有权仍归调用方。caller context 是 accept/I/O 的唯一时间预算；frame 未完整
+写入时 cancellation 保留 `context.Canceled`/`context.DeadlineExceeded` identity，完整 frame 写入后达到
+delivery point，随后 cancellation 不覆盖成功。专项 Linux Unix socket、Docker Race、WSL2、全仓
+normal/Race/Vet/module 与三目标 CGo-free compile 已通过；独立 Tier 3 FULL_SCOPE 终审为
+`APPROVED / CHILD_AGENT / COMPLETE / FRESH / PASSED`、P0-P3 全无。当前 B4-l11 为
+`DONE / Implemented`，用户 Code Review 门为 `PASSED`，但不描述为 `Verified`。
+
+B4-l11 不含通用 accept loop、并发/优雅停机、Backend executor/provider、Plan/result mapping、Probe-first、
+真实 Firewall、配置、依赖、数据库、systemd 或 executable composition；也不提升 B4、G18.1-G18.3 或
+M0 Gate。
+
 以上不证明真实 `/run/guard` root:guard、生产跨 UID、executable accept loop、response/executor、
 systemd、root capability 或 Firewall 行为，也不提升 B4 总项或任何 M0 Gate。
 

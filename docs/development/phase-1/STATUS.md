@@ -17,7 +17,7 @@
 | M0 证据状态 | `Implemented`（worktree preliminary；尚未 `Verified`） |
 | Phase 1 发布状态 | `Not Released` |
 | 当前 Evidence | `artifacts/evidence/M0/worktree/m0-a/`、`m0-b/`、`m0-c/`、`m0-d/` |
-| 最近更新 | `2026-09-01` |
+| 最近更新 | `2026-09-02` |
 
 当前仓库已有 M0-A Contract、Crash Matrix manifest、两份 ADR、Go Core、SQLite
 migration/Store、Config Schema、安全 credential reader、single-document YAML loader、SMTP credential
@@ -43,13 +43,17 @@ modernc Dialector/non-closing ConnPool；GORM-1a 至 GORM-1e 已迁移五个普�
 至此 UnitOfWork 八个 processing writer 全部使用 GORM，`uow.go` 无 direct raw SQL；checksummed
 migration、PRAGMA、snapshot、commit-unknown、checkpoint/source/Decision/reconcile lifecycle、
 Schema、公共 API、Store pool 与事务最终化所有权保持不变。
-另按用户确认的 B4-l2 至 B4-l6 边界，mutation-only response sealed typed DTO/payload codec/frame、typed
-mutation request constructors/encoder/frame writer 与 Linux Unix round-trip client 均已实现；raw frame
-helper 保持 private。40 response golden、29 request golden、资源 exact/one-over、constructor/allowlist/
-version/nil/脱敏/fuzz seeds、framing/partial-write、peer-before-write、context cancellation、response
-correlation、单连接/零重试、Windows/Linux 全仓验证、Linux IPC Race `count=20` 与三目标 CGo-free compile
-已通过。Probe/Snapshot success、Probe-first 编排、Enforcer executor/serve loop 与真实 production
-root/cross-UID 仍缺失。
+另按用户确认的 B4-l2 至 B4-l11 边界，mutation request/response、`ProbeCapabilities` 与
+`SnapshotManaged` 三条闭集 typed IPC 链路均已实现；raw frame helper 保持 private。B4-l10 新增 immutable
+managed snapshot domain、success/failure Schema 与 53 个 fixture、1 MiB/depth 4/token 32768/target 1024
+边界、Linux fixed-socket/root-peer/context-only/single-connection/zero-retry transport。targeted/full
+normal/Race/Vet/module、三项 5s fuzz、Windows/Linux amd64/Linux arm64 CGo-free compile、WSL2 真实 Unix
+socket `count=20` 与 Docker Linux targeted Race `count=20` 已通过。真实 Firewall snapshot provider、
+Probe-first 编排、通用 Enforcer executor/serve loop、production root:guard 跨 UID 与 systemd 仍缺失。
+B4-l10 用户 Code Review 已明确通过，当前为 `DONE / Implemented`；B4-l9 仍独立保持
+`REVIEW / Implemented`。B4-l11 已补齐 authenticated mutation single-request server adapter，并通过专项/
+全仓/WSL2/Docker/交叉编译与独立 Tier 3 FULL_SCOPE 终审；用户 Code Review 已明确通过，当前为
+`DONE / Implemented`。B4-l10 与 B4-l11 代码已分别本地提交为 `9e2925a` 与 `0edeaad`，未推送。
 
 ## 2. 状态字段
 
@@ -76,7 +80,7 @@ root/cross-UID 仍缺失。
 | B1 | SQLite 并发、事务与 durability Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/sqlite-result.json` | Go driver/PRAGMA/migration 与 Ubuntu WSL2 cross-process SIGKILL→reopen committed/uncommitted matrix 已通过；缺 OS reboot、filesystem barrier 与 power-loss 证据 |
 | B2 | Source identity 与 replay Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/identity-result.json`、`m0-c/source-slice/result.md` | golden vectors、Ubuntu WSL2 clean restart-replay、两个 committed-boundary generation transition SIGKILL 窗口、真实 opaque Journald cursor reopen 与 processing UnitOfWork transaction-internal SIGKILL rollback/direct replay 已通过；缺真实 File/Journald reader、copytruncate、Source-state internal crash、cursor invalidation/vacuum/resume 与 replay/reprocess refs |
 | B3 | nftables Backend Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/nftables-result.json` | 缺 production hook/priority、packet path、Snapshot/Plan、ownership 与恢复证据 |
-| B4 | Agent/Enforcer 权限与 IPC Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`artifacts/evidence/M0/worktree/m0-b/ipc-response-codec/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-response-frame/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-request-codec/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-request-frame/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-mutation-client/result.md` | WSL2 request framing fail-closed、四操作 allowlist、正式 IPC v1 request Schema、mutation-only response Schema、production request/response payload codec/frame、mutation request typed constructors/encoder/frame writer、Linux mutation Unix client、双向 `SO_PEERCRED` gate 与 listener/socket lifecycle library 已通过；缺 Probe/Snapshot 成功响应、Probe-first 编排、Enforcer executor/serve loop、真实 `/run/guard` root:guard/跨 UID、真实 Snapshot/owner/capability/object-role、systemd hardening、持续 fuzz 与恢复证据 |
+| B4 | Agent/Enforcer 权限与 IPC Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`artifacts/evidence/M0/worktree/m0-b/ipc-response-codec/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-response-frame/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-request-codec/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-request-frame/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-mutation-client/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-mutation-server/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-snapshot-managed-transport/result.md` | WSL2 request framing fail-closed、四操作 allowlist、mutation/Probe/Snapshot typed codec/frame、Linux fixed-socket root-peer client、authenticated single-request server 与 Docker Linux targeted Race 已通过；缺 Probe-first 编排、通用 Enforcer executor/serve loop、真实 `/run/guard` root:guard/跨 UID、真实 Firewall provider/owner/object-role、systemd hardening、持续 fuzz 与恢复证据 |
 | C1 | Source Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/source-slice/result.md` | Queue Seal fixed accepted set、单 Source runtime owner、drain/Flush/Audit/Close、timeout 不提前 Close 与 commit-unknown readback 已通过 race；缺真实 Source reader/management intake、signal executable、进程 restart 与 Linux durability |
 | C2 | Decision/Enforcement Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | Automatic/Manual/expiry generation/SnapshotRevision/Wake、retry/pending-Probe SQLite 恢复、60s scheduler、62s SQLite→Fake 闭环、完整三域 Observed 与 Dispatcher-owned Backend health lifecycle 原语已通过用户 Review；仍缺真实 Enforcer/IPC health 源、可执行进程 composition/runtime startup 与真实进程 restart |
 | C3 | 完整 Crash Matrix | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 C1、C2 Verified |
@@ -285,6 +289,12 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
 | 2026-09-01 | B4-l9 ProbeCapabilities IPC transport 完整批次 | `NOT_STARTED / Specified` | `IN_PROGRESS / Specified` | 拟新增 Probe failure Schema/golden、typed response codec/frame、fixed Probe request frame、Linux client、认证后单请求 server adapter、真实临时 Unix socket E2E、`artifacts/evidence/M0/worktree/m0-b/ipc-probe-capabilities-transport/result.md`，并更新 ADR-0001 | 用户明确回复 `确认 B4-l9`，一次授权公共 failure wire 与 exported Go API。failure exact root `{version,operation,error_code}`，closed code 仅 `unsupported|not_ready`，无 status/payload/message/details/cause/raw error；B4-l8 success 保持不变，可信完整事实但不可 mutation 仍返回 success + `mutation_ready=false`。transport 固定 production socket/root UID、peer-before-write、context-only 单连接单 request/response、严格 operation correlation、零自动重试；server 只能在 `AcceptRequest` 认证/解码后调用 typed handler并取得连接所有权。该批不实现/注册真实 nftables/iptables Backend，不证明 production ownership、UFW/Docker、packet path 或 `mutation_ready=true`，不含 Snapshot、通用 accept loop/executable、配置/依赖/DB/systemd。当前进入整体实现与验证；B4/G18/M0 不提升，未提交、未推送。 |
 | 2026-09-01 | B4-l9 ProbeCapabilities IPC transport 实现、验证与独立终审 | `IN_PROGRESS / Specified` | `REVIEW / Implemented` | `internal/ipc/probe_request.go`、`internal/ipc/probe_request_frame.go`、`internal/ipc/probe_response.go`、`internal/ipc/probe_response_frame.go`、`internal/ipc/probe_client_linux.go`、`internal/ipc/probe_server_linux.go`、对应测试、failure Schema/2 valid + 20 invalid golden、`artifacts/evidence/M0/worktree/m0-b/ipc-probe-capabilities-transport/result.md`、ADR-0001 | fixed request、sealed success/failure DTO、deterministic codec、4 KiB/depth2/token64 decoder、1 MiB frame、Linux fixed socket/root peer client、认证后单请求 server adapter与 typed remote failure 已整体闭合。Windows targeted Race count=20、Docker Linux targeted Race count=20、WSL2 真实临时 Unix Socket count=100、三项 5s fuzz、全仓 normal/Race/Vet/module、145 包依赖闭包、Windows/Linux amd64/Linux arm64 六个 CGo-free IPC/Schema test builds 均 PASS。首次并行 full suite 的既有 reconcile 时序波动已以 exact count=20、独立 full normal/Race 闭合并如实记录。CONTRACT/SECURITY checkpoint P0-P3 全无；TEST-QUALITY 初审发现 server partial-write cancellation 丢失 context identity 一个 P1，已修复并补 incomplete/complete linearization tests，fresh delta closure 为 `APPROVED / CHILD_AGENT / COMPLETE / FRESH / PASSED`、P0-P3 全无。FULL_SCOPE/INTEGRATION 为 `APPROVED_WITH_FOLLOWUPS / CHILD_AGENT / COMPLETE / FRESH / PASSED`；两轮 Evidence-only P2（实时状态未推进、diff-check 覆盖被夸大）均已修复，最终 record-only closure 为 `APPROVED / CHILD_AGENT / COMPLETE / FRESH / PASSED`、P0-P3 全无。当前仅等待用户 Code Review，不描述为 Verified。真实 Firewall prober/Backend、Snapshot、通用 Enforcer runtime/systemd、目标主机 production facts、CI/commit-bound Evidence 未验证；B4/G18/M0 不提升，未提交、未推送。 |
 | 2026-09-01 | GORM UnitOfWork 与 B4 typed Firewall IPC 本地提交 | `REVIEW / Implemented` | `REVIEW / Implemented` | `4642cfb feat(store): complete GORM unit-of-work writers`；`04546f3 feat(ipc): add typed firewall transport stack` | 用户明确要求“把代码提交”。提交前完整审计 staged/unstaged/untracked/deleted，按两个独立逻辑范围提交：GORM ADR/UnitOfWork/tests 为 15 files、5137 insertions/195 deletions；Firewall domain/typed mutation+Probe IPC/Schema/golden/STATUS 为 82 files、9596 insertions/16 deletions。两次 staged diff-check 与敏感信息模式扫描均无阻断；提交后标准 `git status --porcelain` 为空。`master` 相对 `origin/master` ahead 3（含既有一个本地提交）；未推送。该提交操作不替代 B4-l9 用户 Code Review，不把其提升为 DONE/Verified，不提升 B4/G18/M0。 |
+| 2026-09-02 | B4-l10 SnapshotManaged 完整功能单元 | `IN_PROGRESS / Specified` | `REVIEW / Implemented` | `internal/firewall/snapshot.go`、`internal/ipc/snapshot_*.go`、success/failure Schema 与 53 个 fixture、`artifacts/evidence/M0/worktree/m0-b/ipc-snapshot-managed-transport/result.md`、ADR-0001 | 用户明确回复 `确认 B4-l10`。immutable managed snapshot domain、versioned canonical digest、sealed success/failure codec/frame、Linux fixed-socket/root-peer client 与认证后单请求 server 已闭合；targeted/full normal/Race/Vet/module、三项 fuzz、六项跨目标编译、WSL2 与 Docker Linux Race 均通过。三个分区 checkpoint 和 final integration fresh-delta closure 最终 `CHILD_AGENT / COMPLETE / FRESH / PASSED`、P0-P3 全无；等待用户 Code Review。真实 Firewall provider、Probe-first、通用 executor/runtime、root:guard/systemd、CI/commit-bound Evidence 与上级 Gate 不在本批。 |
+| 2026-09-02 | B4-l10 SnapshotManaged Code Review 通过 | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-b/ipc-snapshot-managed-transport/result.md`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 用户明确回复 `B4-l10 Code Review 通过`，用户门更新为 `PASSED`；仅关闭 B4-l10 Delivery Unit，不描述为 `Verified`。冻结实现与 53 个 fixture 身份未漂移，本次仅同步验收记录，未重跑代码验证；未提交、未推送。B4-l9 保持 `REVIEW / Implemented`，B4 保持 `IN_PROGRESS / Implemented`，G18.1-G18.3 保持 `FAIL`，M0 保持 `NO-GO`。 |
+| 2026-09-02 | B4-l11 authenticated mutation server adapter 只读预检 | `NOT_STARTED / Specified` | `IN_PROGRESS / Specified` | 拟新增 Linux-only `MutationHandler`、`(*UnixListener).ServeMutationOnce`、stable local server error 与专项真实 Unix socket 测试 | B4-l2-l6 已冻结 mutation request/response codec/frame/client，B4-k 已冻结 listener/peer gate；当前最短依赖满足项是补齐认证后 mutation 单请求 server adapter。拟要求 authentication/decode-before-handler、closed typed response、operation/domain correlation-before-write、context-only deadline、单连接/单请求/最多一帧、完整 frame delivery point 与错误脱敏。该导出 API 命中 Ask First，当前实现 `NO-GO`、验证 `NOT RUN`。不含 accept loop、并发/优雅停机、Backend executor/provider、Plan/result mapping、Probe-first、真实 Firewall、配置/依赖/DB/systemd；B4/G18/M0 不提升。 |
+| 2026-09-02 | B4-l11 authenticated mutation server adapter | `IN_PROGRESS / Specified` | `REVIEW / Implemented` | `internal/ipc/client_linux.go`、`internal/ipc/mutation_server_linux.go`、`internal/ipc/mutation_server_linux_test.go`、`artifacts/evidence/M0/worktree/m0-b/ipc-mutation-server/result.md`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 用户明确回复 `确认 B4-l11`。Linux-only `MutationHandler`、`(*UnixListener).ServeMutationOnce` 与 stable server errors 已实现；`AcceptRequest` 保证认证/解码先于 handler，closed typed response 在首字节前完成 operation/domain correlation 与 encode，context-only deadline、单连接/单请求/最多一帧、完整 frame delivery point、accepted connection ownership 与 typed-nil fail-closed 均由专项测试冻结。targeted Docker Race `count=20`、全仓 normal/Race/Vet/module、WSL2 两组 `count=20`、三目标 CGo-free compile、格式/凭据扫描均通过；独立 Tier 3 FULL_SCOPE 为 `APPROVED / CHILD_AGENT / COMPLETE / FRESH / PASSED`，P0-P3 全无。当前等待用户 Code Review；未提交、未推送。通用 accept loop、Backend executor/provider、Plan/result mapping、Probe-first、真实 Firewall、配置/依赖/DB/systemd/runtime 与 B4/G18/M0 均不提升。 |
+| 2026-09-02 | B4-l11 authenticated mutation server adapter Code Review 通过 | `REVIEW / Implemented` | `DONE / Implemented` | `artifacts/evidence/M0/worktree/m0-b/ipc-mutation-server/result.md`、`docs/adr/0001-phase1-process-privilege-boundary.md` | 用户明确回复 `B4-l11 Code Review 通过`，用户门更新为 `PASSED`；仅关闭 B4-l11 Delivery Unit，不描述为 `Verified`。三个冻结代码文件 SHA256 未漂移，既有 targeted/full、WSL2、Docker、三目标 CGo-free compile 与独立终审结论继续有效；本次仅同步验收记录，未重跑代码验证。未提交、未推送。B4-l9 保持 `REVIEW / Implemented`，B4 保持 `IN_PROGRESS / Implemented`，G18.1-G18.3 保持 `FAIL`，M0 保持 `NO-GO`。 |
+| 2026-09-02 | B4-l10/B4-l11 本地代码提交 | `DONE / Implemented` | `DONE / Implemented` | `9e2925a`、`0edeaad` | 用户明确要求先提交代码。B4-l10 的 69 个 managed snapshot domain/typed transport/Schema/fixture 文件提交为 `9e2925a feat(ipc): add managed snapshot transport`；B4-l11 的 3 个 mutation server adapter 文件提交为 `0edeaad feat(ipc): add authenticated mutation server`。提交前全仓 normal tests、Vet、module verify、gofmt/diff-check 与分组 credential-value scan 均通过；两个提交后 `origin/master...HEAD = 0 6`，未推送。ADR/STATUS 由独立记录提交同步。 |
 
 ## 7. 下一步队列
 
@@ -571,3 +581,23 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
 43. 用户要求提交代码；已按逻辑范围创建本地提交 `4642cfb`（GORM UnitOfWork）与 `04546f3`
     （typed Firewall IPC/Probe transport）。提交后标准 worktree clean，`master` 相对 `origin/master` ahead 3；
     未推送。B4-l9 仍为 `REVIEW / Implemented`，下一门仅为用户 Code Review。
+44. B4-l10 SnapshotManaged 完整功能单元已实现并通过完整验证与独立终审，用户已明确回复
+    `B4-l10 Code Review 通过`，当前为 `DONE / Implemented`，用户门为 `PASSED`。仅关闭 B4-l10，
+    不描述为 `Verified`；B4-l9、B4/G18/M0 与真实 Firewall/runtime 边界不变。
+45. B4-l11 只读预检完成，当前为 `IN_PROGRESS / Specified`。下一最小批拟仅新增 Linux-only
+    authenticated mutation single-request server adapter：认证/解码后才调用 closed typed handler，响应在写入前
+    强制 operation/domain correlation，沿用 context-only deadline、单连接、最多一帧与完整 frame delivery point。
+    新导出 API 等待用户 Ask First 明确确认；当前实现 `NO-GO`、验证 `NOT RUN`。
+    通用 accept loop、并发/优雅停机、Backend executor/provider、Plan/result mapping、Probe-first、真实 Firewall、
+    配置/依赖/数据库/systemd/runtime composition 均另批，B4/G18/M0 不提升。
+46. 用户已明确回复 `确认 B4-l11`。authenticated mutation single-request server adapter 已实现并通过 targeted
+    Docker Race `count=20`、全仓 normal/Race/Vet/module、WSL2 两组 `count=20`、三目标 CGo-free compile 与
+    独立 Tier 3 FULL_SCOPE 终审，最终 `APPROVED / CHILD_AGENT / COMPLETE / FRESH / PASSED`、P0-P3 全无。
+    当前为 `REVIEW / Implemented`，下一门仅为用户 Code Review；B4-l9 仍独立保持 `REVIEW / Implemented`，
+    B4/G18/M0 与真实 Firewall/runtime 边界不变。
+47. 用户已明确回复 `B4-l11 Code Review 通过`，本 Delivery Unit 当前为 `DONE / Implemented`，用户门为
+    `PASSED`。冻结代码身份未漂移，本次仅同步验收记录，未重跑代码验证；B4-l9 仍独立保持
+    `REVIEW / Implemented`，B4/G18/M0 与真实 Firewall/runtime 边界不变。下一任务须重新做只读候选预检。
+48. 用户明确要求先提交代码；B4-l10 与 B4-l11 已分别创建本地提交 `9e2925a`、`0edeaad`。提交前全仓
+    normal tests、Vet、module verify、gofmt/diff-check 与 credential-value scan 均通过；未推送。B4-l9、
+    B4/G18/M0 与生产排除边界不变。
