@@ -301,8 +301,10 @@ func (u *UnitOfWork) PutParserOutcome(ctx context.Context, outcome core.ParserTe
 	}
 	result := u.transactionORM.WithContext(ctx).
 		Select(
-			"delivery_id", "parser_id", "parser_version", "kind",
-			"emitted_count", "failure_code", "completed_at_us",
+			ParserTerminalOutcomeColumns.DeliveryID, ParserTerminalOutcomeColumns.ParserID,
+			ParserTerminalOutcomeColumns.ParserVersion, ParserTerminalOutcomeColumns.Kind,
+			ParserTerminalOutcomeColumns.EmittedCount, ParserTerminalOutcomeColumns.FailureCode,
+			ParserTerminalOutcomeColumns.CompletedAtUS,
 		).
 		Create(&parserTerminalOutcomeRow{
 			DeliveryID:    string(outcome.DeliveryID),
@@ -332,11 +334,17 @@ func (u *UnitOfWork) PutDetectionContribution(ctx context.Context, contribution 
 	result := u.transactionORM.WithContext(ctx).
 		Clauses(sqlResult, clause.OnConflict{
 			Columns: []clause.Column{
-				{Name: "event_id"}, {Name: "rule_id"}, {Name: "rule_version"},
+				{Name: DetectionContributionColumns.EventID},
+				{Name: DetectionContributionColumns.RuleID},
+				{Name: DetectionContributionColumns.RuleVersion},
 			},
 			DoNothing: true,
 		}).
-		Select("event_id", "rule_id", "rule_version", "delivery_id", "contributed_at_us").
+		Select(
+			DetectionContributionColumns.EventID, DetectionContributionColumns.RuleID,
+			DetectionContributionColumns.RuleVersion, DetectionContributionColumns.DeliveryID,
+			DetectionContributionColumns.ContributedAtUS,
+		).
 		Create(&detectionContributionRow{
 			EventID: string(contribution.EventID), RuleID: string(contribution.RuleID),
 			RuleVersion: string(contribution.RuleVersion), DeliveryID: string(contribution.DeliveryID),
@@ -354,9 +362,11 @@ func (u *UnitOfWork) PutDetectionContribution(ctx context.Context, contribution 
 	}
 	var existing detectionContributionRow
 	readback := u.transactionORM.WithContext(ctx).
-		Select("delivery_id").
-		Where("event_id = ? AND rule_id = ? AND rule_version = ?",
-			string(contribution.EventID), string(contribution.RuleID), string(contribution.RuleVersion)).
+		Select(DetectionContributionColumns.DeliveryID).
+		Where(&detectionContributionRow{
+			EventID: string(contribution.EventID), RuleID: string(contribution.RuleID),
+			RuleVersion: string(contribution.RuleVersion),
+		}).
 		Take(&existing)
 	if readback.Error != nil {
 		readbackErr := readback.Error
@@ -389,8 +399,10 @@ func (u *UnitOfWork) PutDetectionOutcome(ctx context.Context, outcome core.Detec
 	}
 	result := u.transactionORM.WithContext(ctx).
 		Select(
-			"delivery_id", "event_id", "rule_id", "rule_version", "kind",
-			"failure_code", "completed_at_us",
+			DetectionTerminalOutcomeColumns.DeliveryID, DetectionTerminalOutcomeColumns.EventID,
+			DetectionTerminalOutcomeColumns.RuleID, DetectionTerminalOutcomeColumns.RuleVersion,
+			DetectionTerminalOutcomeColumns.Kind, DetectionTerminalOutcomeColumns.FailureCode,
+			DetectionTerminalOutcomeColumns.CompletedAtUS,
 		).
 		Create(&detectionTerminalOutcomeRow{
 			DeliveryID:    string(outcome.DeliveryID),
@@ -417,8 +429,9 @@ func (u *UnitOfWork) PutAlert(ctx context.Context, alert core.Alert) error {
 	}
 	result := u.transactionORM.WithContext(ctx).
 		Select(
-			"alert_id", "node_id", "event_id", "rule_id", "rule_version",
-			"canonical_target", "observed_at_us", "created_at_us",
+			AlertColumns.AlertID, AlertColumns.NodeID, AlertColumns.EventID, AlertColumns.RuleID,
+			AlertColumns.RuleVersion, AlertColumns.CanonicalTarget, AlertColumns.ObservedAtUS,
+			AlertColumns.CreatedAtUS,
 		).
 		Create(&alertRow{
 			AlertID:         string(alert.ID),
@@ -493,9 +506,11 @@ func (u *UnitOfWork) PutDecision(ctx context.Context, decision core.Decision) er
 
 	result := u.transactionORM.WithContext(ctx).
 		Select(
-			"decision_id", "node_id", "source", "rule_id", "rule_version", "alert_id",
-			"canonical_target", "created_at_us", "updated_at_us", "last_triggered_at_us",
-			"expires_at_us", "ended_at_us", "state", "end_reason", "suppressed_count",
+			DecisionColumns.DecisionID, DecisionColumns.NodeID, DecisionColumns.Source,
+			DecisionColumns.RuleID, DecisionColumns.RuleVersion, DecisionColumns.AlertID,
+			DecisionColumns.CanonicalTarget, DecisionColumns.CreatedAtUS, DecisionColumns.UpdatedAtUS,
+			DecisionColumns.LastTriggeredAtUS, DecisionColumns.ExpiresAtUS, DecisionColumns.EndedAtUS,
+			DecisionColumns.State, DecisionColumns.EndReason, DecisionColumns.SuppressedCount,
 		).
 		Create(&decisionRow{
 			DecisionID: string(decision.ID), NodeID: string(decision.NodeID), Source: source,
@@ -550,27 +565,21 @@ func (u *UnitOfWork) PutProjection(
 		value := projection.EffectiveUntil.UTC().UnixMicro()
 		effectiveUntilUS = &value
 	}
+	wanted := desiredBanProjectionRow{
+		NodeID: string(projection.NodeID), CanonicalTarget: projection.CanonicalTarget.String(),
+		State: state, ActiveCount: projection.ActiveCount, EffectiveUntilUS: effectiveUntilUS,
+		TargetProjectionRevision: projection.Revision, UpdatedAtUS: updatedAt.UTC().UnixMicro(),
+	}
 	sqlResult := gorm.WithResult()
 	result := u.transactionORM.WithContext(ctx).
-		Clauses(sqlResult, clause.OnConflict{
-			Columns: []clause.Column{{Name: "node_id"}, {Name: "canonical_target"}},
-			DoUpdates: clause.AssignmentColumns([]string{
-				"state", "active_count", "effective_until_us",
-				"target_projection_revision", "updated_at_us",
-			}),
-			Where: clause.Where{Exprs: []clause.Expression{clause.Expr{
-				SQL: "excluded.target_projection_revision > desired_ban_projections.target_projection_revision",
-			}}},
-		}).
+		Clauses(sqlResult, clause.OnConflict{DoNothing: true}).
 		Select(
-			"node_id", "canonical_target", "state", "active_count", "effective_until_us",
-			"target_projection_revision", "updated_at_us",
+			DesiredBanProjectionColumns.NodeID, DesiredBanProjectionColumns.CanonicalTarget,
+			DesiredBanProjectionColumns.State, DesiredBanProjectionColumns.ActiveCount,
+			DesiredBanProjectionColumns.EffectiveUntilUS,
+			DesiredBanProjectionColumns.TargetProjectionRevision, DesiredBanProjectionColumns.UpdatedAtUS,
 		).
-		Create(&desiredBanProjectionRow{
-			NodeID: string(projection.NodeID), CanonicalTarget: projection.CanonicalTarget.String(),
-			State: state, ActiveCount: projection.ActiveCount, EffectiveUntilUS: effectiveUntilUS,
-			TargetProjectionRevision: projection.Revision, UpdatedAtUS: updatedAt.UTC().UnixMicro(),
-		})
+		Create(&wanted)
 	if result.Error != nil {
 		return u.fail(fmt.Errorf("put projection %q: %w", projection.CanonicalTarget, result.Error))
 	}
@@ -582,26 +591,56 @@ func (u *UnitOfWork) PutProjection(
 		return nil
 	}
 
-	var identical int
+	var existing desiredBanProjectionRow
 	readback := u.transactionORM.WithContext(ctx).
-		Model(&desiredBanProjectionRow{}).
-		Select("1").
-		Where(`node_id = ? AND canonical_target = ?
-			AND state = ? AND active_count = ? AND effective_until_us IS ?
-			AND target_projection_revision = ?`,
-			string(projection.NodeID), projection.CanonicalTarget.String(), state,
-			projection.ActiveCount, nullableTime(projection.EffectiveUntil), projection.Revision).
-		Limit(1).
-		Scan(&identical)
+		Where(&desiredBanProjectionRow{NodeID: wanted.NodeID, CanonicalTarget: wanted.CanonicalTarget}).
+		Take(&existing)
 	if readback.Error != nil {
-		return u.fail(fmt.Errorf("put projection %q: verify idempotent revision: %w", projection.CanonicalTarget, readback.Error))
+		return u.fail(fmt.Errorf("put projection %q: read existing revision: %w", projection.CanonicalTarget, readback.Error))
 	}
-	if identical == 1 {
+	if projectionRowsEqual(existing, wanted) {
+		return nil
+	}
+	if existing.TargetProjectionRevision >= wanted.TargetProjectionRevision {
+		return u.fail(fmt.Errorf(
+			"put projection %q: stale or conflicting revision %d",
+			projection.CanonicalTarget, projection.Revision))
+	}
+	result = u.transactionORM.WithContext(ctx).
+		Model(&desiredBanProjectionRow{}).
+		Where(map[string]any{
+			DesiredBanProjectionColumns.NodeID:                   wanted.NodeID,
+			DesiredBanProjectionColumns.CanonicalTarget:          wanted.CanonicalTarget,
+			DesiredBanProjectionColumns.TargetProjectionRevision: existing.TargetProjectionRevision,
+		}).
+		Updates(map[string]any{
+			DesiredBanProjectionColumns.State:                    wanted.State,
+			DesiredBanProjectionColumns.ActiveCount:              wanted.ActiveCount,
+			DesiredBanProjectionColumns.EffectiveUntilUS:         wanted.EffectiveUntilUS,
+			DesiredBanProjectionColumns.TargetProjectionRevision: wanted.TargetProjectionRevision,
+			DesiredBanProjectionColumns.UpdatedAtUS:              wanted.UpdatedAtUS,
+		})
+	if result.Error != nil {
+		return u.fail(fmt.Errorf("put projection %q: update revision: %w", projection.CanonicalTarget, result.Error))
+	}
+	if result.RowsAffected == 1 {
 		return nil
 	}
 	return u.fail(fmt.Errorf(
 		"put projection %q: stale or conflicting revision %d",
 		projection.CanonicalTarget, projection.Revision))
+}
+
+func projectionRowsEqual(left, right desiredBanProjectionRow) bool {
+	if left.NodeID != right.NodeID || left.CanonicalTarget != right.CanonicalTarget ||
+		left.State != right.State || left.ActiveCount != right.ActiveCount ||
+		left.TargetProjectionRevision != right.TargetProjectionRevision {
+		return false
+	}
+	if left.EffectiveUntilUS == nil || right.EffectiveUntilUS == nil {
+		return left.EffectiveUntilUS == nil && right.EffectiveUntilUS == nil
+	}
+	return *left.EffectiveUntilUS == *right.EffectiveUntilUS
 }
 
 // AppendCriticalAudit appends a critical audit row in this UnitOfWork.
@@ -644,9 +683,12 @@ func (u *UnitOfWork) AppendCriticalAudit(ctx context.Context, audit CriticalAudi
 
 	result := u.transactionORM.WithContext(ctx).
 		Select(
-			"audit_id", "idempotency_key", "node_id", "category", "action", "result", "severity",
-			"critical", "actor_type", "delivery_id", "alert_id", "decision_id", "error_code",
-			"details_json", "created_at_us",
+			CriticalAuditColumns.AuditID, CriticalAuditColumns.IdempotencyKey,
+			CriticalAuditColumns.NodeID, CriticalAuditColumns.Category, CriticalAuditColumns.Action,
+			CriticalAuditColumns.Result, CriticalAuditColumns.Severity, CriticalAuditColumns.Critical,
+			CriticalAuditColumns.ActorType, CriticalAuditColumns.DeliveryID, CriticalAuditColumns.AlertID,
+			CriticalAuditColumns.DecisionID, CriticalAuditColumns.ErrorCode, CriticalAuditColumns.DetailsJSON,
+			CriticalAuditColumns.CreatedAtUS,
 		).
 		Create(&criticalAuditRow{
 			AuditID: audit.ID, IdempotencyKey: audit.IdempotencyKey, NodeID: string(audit.NodeID),
@@ -713,10 +755,14 @@ func (u *UnitOfWork) PutReceipt(ctx context.Context, receipt core.ProcessingRece
 	}
 	result := u.transactionORM.WithContext(ctx).
 		Select(
-			"delivery_id", "source_id", "position_kind", "generation", "device_id", "inode",
-			"start_offset", "end_offset", "journald_cursor", "kind", "failure_stage",
-			"failure_code", "sanitized_error", "terminal_action", "failure_occurred_at_us",
-			"committed_at_us",
+			ProcessingReceiptColumns.DeliveryID, ProcessingReceiptColumns.SourceID,
+			ProcessingReceiptColumns.PositionKind, ProcessingReceiptColumns.Generation,
+			ProcessingReceiptColumns.DeviceID, ProcessingReceiptColumns.Inode,
+			ProcessingReceiptColumns.StartOffset, ProcessingReceiptColumns.EndOffset,
+			ProcessingReceiptColumns.JournaldCursor, ProcessingReceiptColumns.Kind,
+			ProcessingReceiptColumns.FailureStage, ProcessingReceiptColumns.FailureCode,
+			ProcessingReceiptColumns.SanitizedError, ProcessingReceiptColumns.TerminalAction,
+			ProcessingReceiptColumns.FailureOccurredAtUS, ProcessingReceiptColumns.CommittedAtUS,
 		).
 		Create(&row)
 	if result.Error != nil {
@@ -870,11 +916,4 @@ func decisionStateValue(state core.DecisionState) (string, error) {
 	default:
 		return "", fmt.Errorf("put decision: unsupported state %d", state)
 	}
-}
-
-func nullableTime(value *time.Time) any {
-	if value == nil {
-		return nil
-	}
-	return value.UTC().UnixMicro()
 }

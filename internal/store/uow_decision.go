@@ -2,14 +2,16 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
 	"github.com/lifei6671/guard-wall/internal/decision"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // InsertAutomaticDecision inserts a candidate without treating the expected
@@ -25,20 +27,31 @@ func (u *UnitOfWork) InsertAutomaticDecision(ctx context.Context, value core.Dec
 		value.RuleVersion == nil || value.AlertID == nil {
 		return false, u.fail(fmt.Errorf("insert automatic decision: automatic references are required"))
 	}
-	result, err := u.tx.ExecContext(ctx, `
-		INSERT INTO decisions(
-			decision_id, node_id, source, rule_id, rule_version, alert_id,
-			canonical_target, created_at_us, updated_at_us, last_triggered_at_us,
-			expires_at_us, ended_at_us, state, end_reason, suppressed_count
-		) VALUES (?, ?, 'automatic', ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'active', NULL, 0)
-		ON CONFLICT DO NOTHING`,
-		string(value.ID), string(value.NodeID), string(*value.RuleID), string(*value.RuleVersion),
-		string(*value.AlertID), value.CanonicalTarget.String(), value.CreatedAt.UTC().UnixMicro(),
-		value.UpdatedAt.UTC().UnixMicro(), value.LastTriggeredAt.UTC().UnixMicro(), nullableTime(value.ExpiresAt))
-	if err != nil {
-		return false, u.fail(fmt.Errorf("insert automatic decision %q: %w", value.ID, err))
+	ruleID := string(*value.RuleID)
+	ruleVersion := string(*value.RuleVersion)
+	alertID := string(*value.AlertID)
+	sqlResult := gorm.WithResult()
+	result := u.transactionORM.WithContext(ctx).
+		Clauses(sqlResult, clause.OnConflict{DoNothing: true}).
+		Select(
+			DecisionColumns.DecisionID, DecisionColumns.NodeID, DecisionColumns.Source,
+			DecisionColumns.RuleID, DecisionColumns.RuleVersion, DecisionColumns.AlertID,
+			DecisionColumns.CanonicalTarget, DecisionColumns.CreatedAtUS, DecisionColumns.UpdatedAtUS,
+			DecisionColumns.LastTriggeredAtUS, DecisionColumns.ExpiresAtUS, DecisionColumns.EndedAtUS,
+			DecisionColumns.State, DecisionColumns.EndReason, DecisionColumns.SuppressedCount,
+		).
+		Create(&decisionRow{
+			DecisionID: string(value.ID), NodeID: string(value.NodeID), Source: "automatic",
+			RuleID: &ruleID, RuleVersion: &ruleVersion, AlertID: &alertID,
+			CanonicalTarget: value.CanonicalTarget.String(),
+			CreatedAtUS:     value.CreatedAt.UTC().UnixMicro(), UpdatedAtUS: value.UpdatedAt.UTC().UnixMicro(),
+			LastTriggeredAtUS: value.LastTriggeredAt.UTC().UnixMicro(),
+			ExpiresAtUS:       decisionTimeMicroseconds(value.ExpiresAt), State: "active",
+		})
+	if result.Error != nil {
+		return false, u.fail(fmt.Errorf("insert automatic decision %q: %w", value.ID, result.Error))
 	}
-	affected, err := result.RowsAffected()
+	affected, err := sqlResult.Result.RowsAffected()
 	if err != nil {
 		return false, u.fail(fmt.Errorf("insert automatic decision %q: affected rows: %w", value.ID, err))
 	}
@@ -54,18 +67,21 @@ func (u *UnitOfWork) FindActiveAutomaticDecision(
 	if err := u.ready(ctx); err != nil {
 		return core.Decision{}, false, err
 	}
-	row := u.tx.QueryRowContext(ctx, `
-		SELECT decision_id, node_id, source, rule_id, rule_version, alert_id,
-			canonical_target, created_at_us, updated_at_us, last_triggered_at_us,
-			expires_at_us, ended_at_us, state, end_reason, suppressed_count
-		FROM decisions
-		WHERE node_id = ? AND rule_id = ? AND canonical_target = ?
-			AND source = 'automatic' AND state = 'active'`,
-		string(nodeID), string(ruleID), target.String())
-	value, err := scanDecision(row)
-	if err == sql.ErrNoRows {
+	var row decisionRow
+	result := u.transactionORM.WithContext(ctx).
+		Where(map[string]any{
+			DecisionColumns.NodeID: string(nodeID), DecisionColumns.RuleID: string(ruleID),
+			DecisionColumns.CanonicalTarget: target.String(), DecisionColumns.Source: "automatic",
+			DecisionColumns.State: "active",
+		}).
+		Take(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return core.Decision{}, false, nil
 	}
+	if result.Error != nil {
+		return core.Decision{}, false, u.fail(fmt.Errorf("find active automatic decision: %w", result.Error))
+	}
+	value, err := decisionFromRow(row)
 	if err != nil {
 		return core.Decision{}, false, u.fail(fmt.Errorf("find active automatic decision: %w", err))
 	}
@@ -79,14 +95,17 @@ func (u *UnitOfWork) FindDecisionByID(
 	if err := u.ready(ctx); err != nil {
 		return core.Decision{}, false, err
 	}
-	value, err := scanDecision(u.tx.QueryRowContext(ctx, `
-		SELECT decision_id, node_id, source, rule_id, rule_version, alert_id,
-			canonical_target, created_at_us, updated_at_us, last_triggered_at_us,
-			expires_at_us, ended_at_us, state, end_reason, suppressed_count
-		FROM decisions WHERE decision_id = ?`, string(id)))
-	if err == sql.ErrNoRows {
+	var row decisionRow
+	result := u.transactionORM.WithContext(ctx).
+		Where(&decisionRow{DecisionID: string(id)}).
+		Take(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return core.Decision{}, false, nil
 	}
+	if result.Error != nil {
+		return core.Decision{}, false, u.fail(fmt.Errorf("find decision %q: %w", id, result.Error))
+	}
+	value, err := decisionFromRow(row)
 	if err != nil {
 		return core.Decision{}, false, u.fail(fmt.Errorf("find decision %q: %w", id, err))
 	}
@@ -101,28 +120,44 @@ func (u *UnitOfWork) SuppressAutomaticDecision(
 	if err := u.ready(ctx); err != nil {
 		return core.Decision{}, err
 	}
-	result, err := u.tx.ExecContext(ctx, `
-		UPDATE decisions
-		SET last_triggered_at_us = MAX(last_triggered_at_us, ?),
-			suppressed_count = suppressed_count + 1
-		WHERE decision_id = ? AND source = 'automatic' AND state = 'active'
-			AND suppressed_count < 9223372036854775807`,
-		triggeredAt.UTC().UnixMicro(), string(id))
-	if err != nil {
-		return core.Decision{}, u.fail(fmt.Errorf("suppress automatic decision %q: %w", id, err))
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return core.Decision{}, u.fail(fmt.Errorf("suppress automatic decision %q: affected rows: %w", id, err))
-	}
-	if affected != 1 {
+	var row decisionRow
+	result := u.transactionORM.WithContext(ctx).
+		Where(&decisionRow{DecisionID: string(id), Source: "automatic", State: "active"}).
+		Take(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return core.Decision{}, u.fail(decision.ErrSuppressionOverflow)
 	}
-	value, err := scanDecision(u.tx.QueryRowContext(ctx, `
-		SELECT decision_id, node_id, source, rule_id, rule_version, alert_id,
-			canonical_target, created_at_us, updated_at_us, last_triggered_at_us,
-			expires_at_us, ended_at_us, state, end_reason, suppressed_count
-		FROM decisions WHERE decision_id = ?`, string(id)))
+	if result.Error != nil {
+		return core.Decision{}, u.fail(fmt.Errorf("suppress automatic decision %q: %w", id, result.Error))
+	}
+	const maxSuppressedCount uint64 = ^uint64(0) >> 1
+	if row.SuppressedCount >= maxSuppressedCount {
+		return core.Decision{}, u.fail(decision.ErrSuppressionOverflow)
+	}
+	lastTriggeredAtUS := triggeredAt.UTC().UnixMicro()
+	if row.LastTriggeredAtUS > lastTriggeredAtUS {
+		lastTriggeredAtUS = row.LastTriggeredAtUS
+	}
+	suppressedCount := row.SuppressedCount + 1
+	result = u.transactionORM.WithContext(ctx).
+		Model(&decisionRow{}).
+		Where(&decisionRow{
+			DecisionID: string(id), Source: "automatic", State: "active",
+			SuppressedCount: row.SuppressedCount,
+		}).
+		Updates(map[string]any{
+			DecisionColumns.LastTriggeredAtUS: lastTriggeredAtUS,
+			DecisionColumns.SuppressedCount:   suppressedCount,
+		})
+	if result.Error != nil {
+		return core.Decision{}, u.fail(fmt.Errorf("suppress automatic decision %q: %w", id, result.Error))
+	}
+	if result.RowsAffected != 1 {
+		return core.Decision{}, u.fail(decision.ErrSuppressionOverflow)
+	}
+	row.LastTriggeredAtUS = lastTriggeredAtUS
+	row.SuppressedCount = suppressedCount
+	value, err := decisionFromRow(row)
 	if err != nil {
 		return core.Decision{}, u.fail(fmt.Errorf("read suppressed automatic decision %q: %w", id, err))
 	}
@@ -137,27 +172,25 @@ func (u *UnitOfWork) ListActiveDecisions(
 	if err := u.ready(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := u.tx.QueryContext(ctx, `
-		SELECT decision_id, node_id, source, rule_id, rule_version, alert_id,
-			canonical_target, created_at_us, updated_at_us, last_triggered_at_us,
-			expires_at_us, ended_at_us, state, end_reason, suppressed_count
-		FROM decisions
-		WHERE node_id = ? AND canonical_target = ? AND state = 'active'
-		ORDER BY decision_id`, string(nodeID), target.String())
-	if err != nil {
-		return nil, u.fail(fmt.Errorf("list active decisions: %w", err))
+	rows := make([]decisionRow, 0)
+	result := u.transactionORM.WithContext(ctx).
+		Where(map[string]any{
+			DecisionColumns.NodeID:          string(nodeID),
+			DecisionColumns.CanonicalTarget: target.String(),
+			DecisionColumns.State:           "active",
+		}).
+		Clauses(orderByColumns(DecisionColumns.DecisionID)).
+		Find(&rows)
+	if result.Error != nil {
+		return nil, u.fail(fmt.Errorf("list active decisions: %w", result.Error))
 	}
-	defer rows.Close()
-	values := make([]core.Decision, 0)
-	for rows.Next() {
-		value, err := scanDecision(rows)
+	values := make([]core.Decision, 0, len(rows))
+	for _, row := range rows {
+		value, err := decisionFromRow(row)
 		if err != nil {
-			return nil, u.fail(fmt.Errorf("list active decisions: scan: %w", err))
+			return nil, u.fail(fmt.Errorf("list active decisions: decode persisted row: %w", err))
 		}
 		values = append(values, value)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, u.fail(fmt.Errorf("list active decisions: rows: %w", err))
 	}
 	return values, nil
 }
@@ -170,41 +203,52 @@ func (u *UnitOfWork) FindDecisionProjection(
 	if err := u.ready(ctx); err != nil {
 		return core.DesiredBanProjection{}, false, err
 	}
-	var state string
-	var activeCount, revision uint64
-	var effectiveUntil sql.NullInt64
-	err := u.tx.QueryRowContext(ctx, `
-		SELECT state, active_count, effective_until_us, target_projection_revision
-		FROM desired_ban_projections
-		WHERE node_id = ? AND canonical_target = ?`, string(nodeID), target.String()).Scan(
-		&state, &activeCount, &effectiveUntil, &revision,
-	)
-	if err == sql.ErrNoRows {
+	var row desiredBanProjectionRow
+	result := u.transactionORM.WithContext(ctx).
+		Where(&desiredBanProjectionRow{NodeID: string(nodeID), CanonicalTarget: target.String()}).
+		Take(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return core.DesiredBanProjection{}, false, nil
 	}
+	if result.Error != nil {
+		return core.DesiredBanProjection{}, false, u.fail(fmt.Errorf("find target projection: %w", result.Error))
+	}
+	projection, err := projectionFromRow(row)
 	if err != nil {
 		return core.DesiredBanProjection{}, false, u.fail(fmt.Errorf("find target projection: %w", err))
 	}
-	projection := core.DesiredBanProjection{
-		NodeID: nodeID, CanonicalTarget: target, ActiveCount: activeCount,
-		Revision: core.TargetProjectionRevision(revision),
-	}
-	switch state {
-	case "absent":
-		projection.State = core.BanProjectionAbsent
-	case "present":
-		projection.State = core.BanProjectionPresent
-	default:
-		return core.DesiredBanProjection{}, false, u.fail(fmt.Errorf("unsupported projection state %q", state))
-	}
-	if effectiveUntil.Valid {
-		value := time.UnixMicro(effectiveUntil.Int64).UTC()
-		projection.EffectiveUntil = &value
-	}
-	if err := projection.Validate(); err != nil {
-		return core.DesiredBanProjection{}, false, u.fail(fmt.Errorf("validate persisted projection: %w", err))
-	}
 	return projection, true, nil
+}
+
+// ListDecisionProjections returns the complete materialized Projection set in
+// canonical target order for one node inside the caller-owned transaction.
+func (u *UnitOfWork) ListDecisionProjections(
+	ctx context.Context,
+	nodeID core.NodeID,
+) ([]core.DesiredBanProjection, error) {
+	if err := u.ready(ctx); err != nil {
+		return nil, err
+	}
+	rows := make([]desiredBanProjectionRow, 0)
+	result := u.transactionORM.WithContext(ctx).
+		Where(&desiredBanProjectionRow{NodeID: string(nodeID)}).
+		Clauses(orderByColumns(DesiredBanProjectionColumns.CanonicalTarget)).
+		Find(&rows)
+	if result.Error != nil {
+		return nil, u.fail(fmt.Errorf("list decision projections: %w", result.Error))
+	}
+	projections := make([]core.DesiredBanProjection, 0, len(rows))
+	for _, row := range rows {
+		projection, err := projectionFromRow(row)
+		if err != nil {
+			return nil, u.fail(fmt.Errorf("list decision projections: %w", err))
+		}
+		if projection.NodeID != nodeID {
+			return nil, u.fail(fmt.Errorf("list decision projections: persisted node %q differs from %q", projection.NodeID, nodeID))
+		}
+		projections = append(projections, projection)
+	}
+	return projections, nil
 }
 
 func (u *UnitOfWork) PutDecisionProjection(
@@ -244,43 +288,25 @@ func (u *UnitOfWork) AppendAutomaticSuppressedAudit(ctx context.Context, audit d
 	})
 }
 
-type decisionScanner interface {
-	Scan(...any) error
-}
-
-func scanDecision(scanner decisionScanner) (core.Decision, error) {
-	var (
-		id, nodeID, source, target, state       string
-		ruleID, ruleVersion, alertID, endReason sql.NullString
-		createdAt, updatedAt, lastTriggeredAt   int64
-		expiresAt, endedAt                      sql.NullInt64
-		suppressedCount                         uint64
-	)
-	if err := scanner.Scan(
-		&id, &nodeID, &source, &ruleID, &ruleVersion, &alertID, &target,
-		&createdAt, &updatedAt, &lastTriggeredAt, &expiresAt, &endedAt,
-		&state, &endReason, &suppressedCount,
-	); err != nil {
-		return core.Decision{}, err
-	}
-	prefix, err := netip.ParsePrefix(target)
+func decisionFromRow(row decisionRow) (core.Decision, error) {
+	prefix, err := netip.ParsePrefix(row.CanonicalTarget)
 	if err != nil {
 		return core.Decision{}, fmt.Errorf("parse canonical target: %w", err)
 	}
 	value := core.Decision{
-		ID: core.DecisionID(id), NodeID: core.NodeID(nodeID), CanonicalTarget: prefix,
-		CreatedAt: time.UnixMicro(createdAt).UTC(), UpdatedAt: time.UnixMicro(updatedAt).UTC(),
-		LastTriggeredAt: time.UnixMicro(lastTriggeredAt).UTC(), SuppressedCount: suppressedCount,
+		ID: core.DecisionID(row.DecisionID), NodeID: core.NodeID(row.NodeID), CanonicalTarget: prefix,
+		CreatedAt: time.UnixMicro(row.CreatedAtUS).UTC(), UpdatedAt: time.UnixMicro(row.UpdatedAtUS).UTC(),
+		LastTriggeredAt: time.UnixMicro(row.LastTriggeredAtUS).UTC(), SuppressedCount: row.SuppressedCount,
 	}
-	switch source {
+	switch row.Source {
 	case "automatic":
 		value.Source = core.DecisionSourceAutomatic
 	case "manual":
 		value.Source = core.DecisionSourceManual
 	default:
-		return core.Decision{}, fmt.Errorf("unsupported decision source %q", source)
+		return core.Decision{}, fmt.Errorf("unsupported decision source %q", row.Source)
 	}
-	switch state {
+	switch row.State {
 	case "active":
 		value.State = core.DecisionActive
 	case "expired":
@@ -288,34 +314,61 @@ func scanDecision(scanner decisionScanner) (core.Decision, error) {
 	case "revoked":
 		value.State = core.DecisionRevoked
 	default:
-		return core.Decision{}, fmt.Errorf("unsupported decision state %q", state)
+		return core.Decision{}, fmt.Errorf("unsupported decision state %q", row.State)
 	}
-	if ruleID.Valid {
-		converted := core.RuleID(ruleID.String)
+	if row.RuleID != nil {
+		converted := core.RuleID(*row.RuleID)
 		value.RuleID = &converted
 	}
-	if ruleVersion.Valid {
-		converted := core.RuleVersion(ruleVersion.String)
+	if row.RuleVersion != nil {
+		converted := core.RuleVersion(*row.RuleVersion)
 		value.RuleVersion = &converted
 	}
-	if alertID.Valid {
-		converted := core.AlertID(alertID.String)
+	if row.AlertID != nil {
+		converted := core.AlertID(*row.AlertID)
 		value.AlertID = &converted
 	}
-	if expiresAt.Valid {
-		converted := time.UnixMicro(expiresAt.Int64).UTC()
+	if row.ExpiresAtUS != nil {
+		converted := time.UnixMicro(*row.ExpiresAtUS).UTC()
 		value.ExpiresAt = &converted
 	}
-	if endedAt.Valid {
-		converted := time.UnixMicro(endedAt.Int64).UTC()
+	if row.EndedAtUS != nil {
+		converted := time.UnixMicro(*row.EndedAtUS).UTC()
 		value.EndedAt = &converted
 	}
-	if endReason.Valid {
-		converted := core.DecisionEndReason(endReason.String)
+	if row.EndReason != nil {
+		converted := core.DecisionEndReason(*row.EndReason)
 		value.EndReason = &converted
 	}
 	if err := value.Validate(); err != nil {
 		return core.Decision{}, fmt.Errorf("validate persisted decision: %w", err)
 	}
 	return value, nil
+}
+
+func projectionFromRow(row desiredBanProjectionRow) (core.DesiredBanProjection, error) {
+	prefix, err := netip.ParsePrefix(row.CanonicalTarget)
+	if err != nil || !prefix.IsValid() || prefix != prefix.Masked() {
+		return core.DesiredBanProjection{}, fmt.Errorf("persisted target %q is not canonical", row.CanonicalTarget)
+	}
+	projection := core.DesiredBanProjection{
+		NodeID: core.NodeID(row.NodeID), CanonicalTarget: prefix,
+		ActiveCount: row.ActiveCount, Revision: row.TargetProjectionRevision,
+	}
+	switch row.State {
+	case "absent":
+		projection.State = core.BanProjectionAbsent
+	case "present":
+		projection.State = core.BanProjectionPresent
+	default:
+		return core.DesiredBanProjection{}, fmt.Errorf("unsupported projection state %q", row.State)
+	}
+	if row.EffectiveUntilUS != nil {
+		value := time.UnixMicro(*row.EffectiveUntilUS).UTC()
+		projection.EffectiveUntil = &value
+	}
+	if err := projection.Validate(); err != nil {
+		return core.DesiredBanProjection{}, fmt.Errorf("validate persisted projection: %w", err)
+	}
+	return projection, nil
 }

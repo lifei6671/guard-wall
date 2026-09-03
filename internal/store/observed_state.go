@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ApplyObservedFirewallUpdate atomically persists the included physical
@@ -20,7 +22,7 @@ func (s *Store) ApplyObservedFirewallUpdate(ctx context.Context, update core.Obs
 	if err := validateObservedFirewallUpdate(update); err != nil {
 		return fmt.Errorf("apply Observed firewall update: %w", err)
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	transaction, err := s.beginStoreORMTransaction(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("apply Observed firewall update: begin: %w", err)
 	}
@@ -29,20 +31,20 @@ func (s *Store) ApplyObservedFirewallUpdate(ctx context.Context, update core.Obs
 		if committed {
 			return
 		}
-		rollbackErr := tx.Rollback()
+		rollbackErr := transaction.tx.Rollback()
 		if rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
 			returnErr = joinErrors(returnErr,
 				fmt.Errorf("apply Observed firewall update: rollback: %w", rollbackErr))
 		}
 	}()
 
-	if err := s.requireNodeIdentity(ctx, tx, update.NodeID); err != nil {
+	if err := requireObservedNodeIdentity(ctx, transaction.orm, update.NodeID); err != nil {
 		return fmt.Errorf("apply Observed firewall update: %w", err)
 	}
-	if err := writeObservedFirewallUpdate(ctx, tx, update); err != nil {
+	if err := writeObservedFirewallUpdate(ctx, transaction.orm, update); err != nil {
 		return fmt.Errorf("apply Observed firewall update: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := transaction.tx.Commit(); err != nil {
 		return core.NewReconcileCommitUnknownError(
 			fmt.Errorf("apply Observed firewall update: commit: %w", err))
 	}
@@ -62,7 +64,7 @@ func (s *Store) LoadObservedFirewallSnapshot(
 	if !isLowerHex128(string(nodeID)) {
 		return core.ObservedFirewallSnapshot{}, fmt.Errorf("load Observed firewall snapshot: node id must be 128-bit lowercase hex")
 	}
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	transaction, err := s.beginStoreORMTransaction(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return core.ObservedFirewallSnapshot{}, fmt.Errorf("load Observed firewall snapshot: begin read transaction: %w", err)
 	}
@@ -71,68 +73,46 @@ func (s *Store) LoadObservedFirewallSnapshot(
 		if committed {
 			return
 		}
-		rollbackErr := tx.Rollback()
+		rollbackErr := transaction.tx.Rollback()
 		if rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
 			returnErr = joinErrors(returnErr,
 				fmt.Errorf("load Observed firewall snapshot: rollback read transaction: %w", rollbackErr))
 		}
 	}()
 
-	if err := s.requireNodeIdentity(ctx, tx, nodeID); err != nil {
+	if err := requireObservedNodeIdentity(ctx, transaction.orm, nodeID); err != nil {
 		return core.ObservedFirewallSnapshot{}, fmt.Errorf("load Observed firewall snapshot: %w", err)
 	}
 	snapshot.NodeID = nodeID
-	if observed, found, err := loadInfrastructureObserved(ctx, tx); err != nil {
+	if observed, found, err := loadInfrastructureObserved(ctx, transaction.orm); err != nil {
 		return core.ObservedFirewallSnapshot{}, fmt.Errorf("load Observed firewall snapshot: infrastructure: %w", err)
 	} else if found {
 		snapshot.Infrastructure = &observed
 	}
-	if observed, found, err := loadPolicyObserved(ctx, tx); err != nil {
+	if observed, found, err := loadPolicyObserved(ctx, transaction.orm); err != nil {
 		return core.ObservedFirewallSnapshot{}, fmt.Errorf("load Observed firewall snapshot: policy: %w", err)
 	} else if found {
 		snapshot.Policy = &observed
 	}
 
-	rows, err := tx.QueryContext(ctx, `
-		SELECT canonical_target, observed_membership, observed_at_us,
-			observed_backend, observed_policy_coverage,
-			observed_policy_relation_digest, observed_timeout_mode,
-			observed_native_expiry_us, observed_scopes,
-			observed_address_family, observed_owner_version,
-			observed_last_error_code, confirmed_target_enforcement_generation
-		FROM enforcement_states
-		WHERE node_id = ? AND observed_at_us IS NOT NULL
-		ORDER BY canonical_target`, string(nodeID))
-	if err != nil {
-		return core.ObservedFirewallSnapshot{}, fmt.Errorf("load Observed firewall snapshot: targets: %w", err)
+	var rows []targetObservedRow
+	result := transaction.orm.WithContext(ctx).
+		Where(clause.Eq{Column: clause.Column{Name: EnforcementStateColumns.NodeID}, Value: string(nodeID)}).
+		Where(clause.Neq{Column: clause.Column{Name: EnforcementStateColumns.ObservedAtUS}, Value: nil}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: EnforcementStateColumns.CanonicalTarget}}).
+		Find(&rows)
+	if result.Error != nil {
+		return core.ObservedFirewallSnapshot{}, fmt.Errorf("load Observed firewall snapshot: targets: %w", result.Error)
 	}
 	snapshot.Targets = make([]core.TargetObservedState, 0)
-	for rows.Next() {
-		observed, scanErr := scanTargetObservedState(rows)
-		if scanErr != nil {
-			closeErr := rows.Close()
-			if closeErr != nil {
-				closeErr = fmt.Errorf("close target rows: %w", closeErr)
-			}
-			return core.ObservedFirewallSnapshot{}, joinErrors(
-				fmt.Errorf("load Observed firewall snapshot: scan target: %w", scanErr),
-				closeErr)
+	for _, row := range rows {
+		observed, decodeErr := decodeTargetObservedRow(row)
+		if decodeErr != nil {
+			return core.ObservedFirewallSnapshot{}, fmt.Errorf("load Observed firewall snapshot: decode target: %w", decodeErr)
 		}
 		snapshot.Targets = append(snapshot.Targets, observed)
 	}
-	if err := rows.Err(); err != nil {
-		closeErr := rows.Close()
-		if closeErr != nil {
-			closeErr = fmt.Errorf("close target rows: %w", closeErr)
-		}
-		return core.ObservedFirewallSnapshot{}, joinErrors(
-			fmt.Errorf("load Observed firewall snapshot: iterate targets: %w", err),
-			closeErr)
-	}
-	if err := rows.Close(); err != nil {
-		return core.ObservedFirewallSnapshot{}, fmt.Errorf("load Observed firewall snapshot: close targets: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
+	if err := transaction.tx.Commit(); err != nil {
 		return core.ObservedFirewallSnapshot{}, fmt.Errorf("load Observed firewall snapshot: commit read transaction: %w", err)
 	}
 	committed = true
@@ -174,19 +154,19 @@ func validateObservedFirewallUpdate(update core.ObservedFirewallUpdate) error {
 	return nil
 }
 
-func writeObservedFirewallUpdate(ctx context.Context, tx *sql.Tx, update core.ObservedFirewallUpdate) error {
+func writeObservedFirewallUpdate(ctx context.Context, orm *gorm.DB, update core.ObservedFirewallUpdate) error {
 	if update.Infrastructure != nil {
-		if err := upsertInfrastructureObserved(ctx, tx, update.NodeID, *update.Infrastructure); err != nil {
+		if err := upsertInfrastructureObserved(ctx, orm, update.NodeID, *update.Infrastructure); err != nil {
 			return fmt.Errorf("write infrastructure: %w", err)
 		}
 	}
 	if update.Policy != nil {
-		if err := upsertPolicyObserved(ctx, tx, update.NodeID, *update.Policy); err != nil {
+		if err := upsertPolicyObserved(ctx, orm, update.NodeID, *update.Policy); err != nil {
 			return fmt.Errorf("write policy: %w", err)
 		}
 	}
 	for _, target := range update.Targets {
-		if err := updateTargetObserved(ctx, tx, update.NodeID, target); err != nil {
+		if err := updateTargetObserved(ctx, orm, update.NodeID, target); err != nil {
 			return fmt.Errorf("write target %s: %w", target.CanonicalTarget, err)
 		}
 	}
@@ -195,7 +175,7 @@ func writeObservedFirewallUpdate(ctx context.Context, tx *sql.Tx, update core.Ob
 
 func upsertInfrastructureObserved(
 	ctx context.Context,
-	tx *sql.Tx,
+	orm *gorm.DB,
 	nodeID core.NodeID,
 	observed core.InfrastructureObservedState,
 ) error {
@@ -203,36 +183,44 @@ func upsertInfrastructureObserved(
 	if err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `
-		INSERT INTO infrastructure_observed_state(
-			singleton, node_id, presence, observed_at_us, backend,
-			owner_version, digest, confirmed_infrastructure_revision,
-			last_error_code)
-		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(singleton) DO UPDATE SET
-			node_id = excluded.node_id,
-			presence = excluded.presence,
-			observed_at_us = excluded.observed_at_us,
-			backend = excluded.backend,
-			owner_version = excluded.owner_version,
-			digest = excluded.digest,
-			confirmed_infrastructure_revision = excluded.confirmed_infrastructure_revision,
-			last_error_code = excluded.last_error_code
-		WHERE excluded.observed_at_us > infrastructure_observed_state.observed_at_us`,
-		string(nodeID), presence, observed.ObservedAt.UTC().UnixMicro(), observed.Backend,
-		observed.OwnerVersion, observed.Digest, nullableObservedUint64(uint64(observed.ConfirmedRevision)),
-		observed.LastErrorCode)
-	if err != nil {
-		return err
+	row := infrastructureObservedRow{
+		Singleton: 1, NodeID: string(nodeID), Presence: presence,
+		ObservedAtUS: observed.ObservedAt.UTC().UnixMicro(), Backend: observed.Backend,
+		OwnerVersion: observed.OwnerVersion, Digest: observed.Digest,
+		LastErrorCode: observed.LastErrorCode,
 	}
-	affected, err := result.RowsAffected()
+	if observed.ConfirmedRevision != 0 {
+		row.ConfirmedRevision = sql.NullInt64{Int64: int64(observed.ConfirmedRevision), Valid: true}
+	}
+	sqlResult := gorm.WithResult()
+	result := orm.WithContext(ctx).Clauses(sqlResult, clause.OnConflict{
+		Columns: []clause.Column{{Name: InfrastructureObservedStateColumns.Singleton}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			InfrastructureObservedStateColumns.NodeID, InfrastructureObservedStateColumns.Presence,
+			InfrastructureObservedStateColumns.ObservedAtUS, InfrastructureObservedStateColumns.Backend,
+			InfrastructureObservedStateColumns.OwnerVersion, InfrastructureObservedStateColumns.Digest,
+			InfrastructureObservedStateColumns.ConfirmedInfrastructureRevision,
+			InfrastructureObservedStateColumns.LastErrorCode,
+		}),
+		Where: clause.Where{Exprs: []clause.Expression{clause.Gt{Column: clause.Column{Table: "excluded", Name: InfrastructureObservedStateColumns.ObservedAtUS}, Value: clause.Column{Table: "infrastructure_observed_state", Name: InfrastructureObservedStateColumns.ObservedAtUS}}}},
+	}).Select(
+		InfrastructureObservedStateColumns.Singleton, InfrastructureObservedStateColumns.NodeID,
+		InfrastructureObservedStateColumns.Presence, InfrastructureObservedStateColumns.ObservedAtUS,
+		InfrastructureObservedStateColumns.Backend, InfrastructureObservedStateColumns.OwnerVersion,
+		InfrastructureObservedStateColumns.Digest, InfrastructureObservedStateColumns.ConfirmedInfrastructureRevision,
+		InfrastructureObservedStateColumns.LastErrorCode,
+	).Create(&row)
+	if result.Error != nil {
+		return result.Error
+	}
+	affected, err := sqlResult.Result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("affected rows: %w", err)
 	}
 	if affected == 1 {
 		return nil
 	}
-	persisted, found, err := loadInfrastructureObserved(ctx, tx)
+	persisted, found, err := loadInfrastructureObserved(ctx, orm)
 	if err != nil {
 		return fmt.Errorf("read existing observation: %w", err)
 	}
@@ -246,7 +234,7 @@ func upsertInfrastructureObserved(
 
 func upsertPolicyObserved(
 	ctx context.Context,
-	tx *sql.Tx,
+	orm *gorm.DB,
 	nodeID core.NodeID,
 	observed core.PolicyObservedState,
 ) error {
@@ -254,33 +242,40 @@ func upsertPolicyObserved(
 	if err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `
-		INSERT INTO policy_observed_state(
-			singleton, node_id, presence, observed_at_us, relation_digest,
-			confirmed_policy_revision, last_error_code)
-		VALUES (1, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(singleton) DO UPDATE SET
-			node_id = excluded.node_id,
-			presence = excluded.presence,
-			observed_at_us = excluded.observed_at_us,
-			relation_digest = excluded.relation_digest,
-			confirmed_policy_revision = excluded.confirmed_policy_revision,
-			last_error_code = excluded.last_error_code
-		WHERE excluded.observed_at_us > policy_observed_state.observed_at_us`,
-		string(nodeID), presence, observed.ObservedAt.UTC().UnixMicro(),
-		observed.RelationDigest, nullableObservedUint64(uint64(observed.ConfirmedRevision)),
-		observed.LastErrorCode)
-	if err != nil {
-		return err
+	row := policyObservedRow{
+		Singleton: 1, NodeID: string(nodeID), Presence: presence,
+		ObservedAtUS: observed.ObservedAt.UTC().UnixMicro(), RelationDigest: observed.RelationDigest,
+		LastErrorCode: observed.LastErrorCode,
 	}
-	affected, err := result.RowsAffected()
+	if observed.ConfirmedRevision != 0 {
+		row.ConfirmedRevision = sql.NullInt64{Int64: int64(observed.ConfirmedRevision), Valid: true}
+	}
+	sqlResult := gorm.WithResult()
+	result := orm.WithContext(ctx).Clauses(sqlResult, clause.OnConflict{
+		Columns: []clause.Column{{Name: PolicyObservedStateColumns.Singleton}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			PolicyObservedStateColumns.NodeID, PolicyObservedStateColumns.Presence,
+			PolicyObservedStateColumns.ObservedAtUS, PolicyObservedStateColumns.RelationDigest,
+			PolicyObservedStateColumns.ConfirmedPolicyRevision, PolicyObservedStateColumns.LastErrorCode,
+		}),
+		Where: clause.Where{Exprs: []clause.Expression{clause.Gt{Column: clause.Column{Table: "excluded", Name: PolicyObservedStateColumns.ObservedAtUS}, Value: clause.Column{Table: "policy_observed_state", Name: PolicyObservedStateColumns.ObservedAtUS}}}},
+	}).Select(
+		PolicyObservedStateColumns.Singleton, PolicyObservedStateColumns.NodeID,
+		PolicyObservedStateColumns.Presence, PolicyObservedStateColumns.ObservedAtUS,
+		PolicyObservedStateColumns.RelationDigest, PolicyObservedStateColumns.ConfirmedPolicyRevision,
+		PolicyObservedStateColumns.LastErrorCode,
+	).Create(&row)
+	if result.Error != nil {
+		return result.Error
+	}
+	affected, err := sqlResult.Result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("affected rows: %w", err)
 	}
 	if affected == 1 {
 		return nil
 	}
-	persisted, found, err := loadPolicyObserved(ctx, tx)
+	persisted, found, err := loadPolicyObserved(ctx, orm)
 	if err != nil {
 		return fmt.Errorf("read existing observation: %w", err)
 	}
@@ -294,12 +289,12 @@ func upsertPolicyObserved(
 
 func updateTargetObserved(
 	ctx context.Context,
-	tx *sql.Tx,
+	orm *gorm.DB,
 	nodeID core.NodeID,
 	observed core.TargetObservedState,
 ) error {
 	desiredGeneration, persisted, found, err := loadTargetObservedForUpdate(
-		ctx, tx, nodeID, observed.CanonicalTarget)
+		ctx, orm, nodeID, observed.CanonicalTarget)
 	if err != nil {
 		return fmt.Errorf("read Desired fence and existing observation: %w", err)
 	}
@@ -333,64 +328,81 @@ func updateTargetObserved(
 	if err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `
-		UPDATE enforcement_states
-		SET observed_membership = ?, observed_at_us = ?, observed_backend = ?,
-			observed_policy_coverage = ?, observed_policy_relation_digest = ?,
-			observed_timeout_mode = ?, observed_native_expiry_us = ?,
-			observed_scopes = ?, observed_address_family = ?,
-			observed_owner_version = ?, observed_last_error_code = ?,
-			confirmed_target_enforcement_generation = ?, confirmed_snapshot_revision = NULL
-		WHERE node_id = ? AND canonical_target = ?
-			AND target_enforcement_generation = ?
-			AND (observed_at_us IS NULL OR observed_at_us < ?)`,
-		membership, observed.ObservedAt.UTC().UnixMicro(), observed.Backend,
-		policyCoverage, observed.PolicyRelationDigest, timeoutMode,
-		encodeOptionalTime(observed.NativeExpiry), int64(observed.Scopes),
-		encodeObservedAddressFamily(observed.AddressFamily), observed.OwnerVersion, observed.LastErrorCode,
-		nullableObservedUint64(uint64(observed.ConfirmedGeneration)), string(nodeID),
-		observed.CanonicalTarget.String(), int64(desiredGeneration),
-		observed.ObservedAt.UTC().UnixMicro())
-	if err != nil {
-		return err
+	nextObservedAt := observed.ObservedAt.UTC().UnixMicro()
+	result := orm.WithContext(ctx).Model(&targetObservedRow{}).
+		Where(clause.Eq{Column: clause.Column{Name: EnforcementStateColumns.NodeID}, Value: string(nodeID)}).
+		Where(clause.Eq{Column: clause.Column{Name: EnforcementStateColumns.CanonicalTarget}, Value: observed.CanonicalTarget.String()}).
+		Where(clause.Eq{Column: clause.Column{Name: EnforcementStateColumns.TargetEnforcementGeneration}, Value: int64(desiredGeneration)}).
+		Where(clause.Or(
+			clause.Eq{Column: clause.Column{Name: EnforcementStateColumns.ObservedAtUS}, Value: nil},
+			clause.Lt{Column: clause.Column{Name: EnforcementStateColumns.ObservedAtUS}, Value: nextObservedAt},
+		)).Updates(map[string]any{
+		EnforcementStateColumns.ObservedMembership:                   membership,
+		EnforcementStateColumns.ObservedAtUS:                         nextObservedAt,
+		EnforcementStateColumns.ObservedEvidence:                     encodeTargetObservationEvidence(observed.Evidence),
+		EnforcementStateColumns.ObservedBackend:                      observed.Backend,
+		EnforcementStateColumns.ObservedPolicyCoverage:               policyCoverage,
+		EnforcementStateColumns.ObservedPolicyRelationDigest:         observed.PolicyRelationDigest,
+		EnforcementStateColumns.ObservedTimeoutMode:                  timeoutMode,
+		EnforcementStateColumns.ObservedNativeExpiryUS:               encodeOptionalTime(observed.NativeExpiry),
+		EnforcementStateColumns.ObservedScopes:                       int64(observed.Scopes),
+		EnforcementStateColumns.ObservedAddressFamily:                encodeObservedAddressFamily(observed.AddressFamily),
+		EnforcementStateColumns.ObservedOwnerVersion:                 observed.OwnerVersion,
+		EnforcementStateColumns.ObservedLastErrorCode:                observed.LastErrorCode,
+		EnforcementStateColumns.ConfirmedTargetEnforcementGeneration: nullableObservedUint64(uint64(observed.ConfirmedGeneration)),
+		EnforcementStateColumns.ConfirmedSnapshotRevision:            nil,
+	})
+	if result.Error != nil {
+		return result.Error
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("affected rows: %w", err)
-	}
-	if affected != 1 {
+	if result.RowsAffected != 1 {
 		return fmt.Errorf("Desired generation or observation changed concurrently")
 	}
 	return nil
 }
 
-func loadInfrastructureObserved(
-	ctx context.Context,
-	queryer reconcileQueryRower,
-) (core.InfrastructureObservedState, bool, error) {
-	var presence, backend, ownerVersion, digest, lastError string
-	var observedAt int64
-	var confirmed sql.NullInt64
-	err := queryer.QueryRowContext(ctx, `
-		SELECT presence, observed_at_us, backend, owner_version, digest,
-			confirmed_infrastructure_revision, last_error_code
-		FROM infrastructure_observed_state WHERE singleton = 1`).Scan(
-		&presence, &observedAt, &backend, &ownerVersion, &digest, &confirmed, &lastError)
-	if errors.Is(err, sql.ErrNoRows) {
+func requireObservedNodeIdentity(ctx context.Context, orm *gorm.DB, nodeID core.NodeID) error {
+	var row observedNodeIdentityRow
+	result := orm.WithContext(ctx).
+		Where(clause.Eq{Column: clause.Column{Name: NodeIdentityColumns.Singleton}, Value: 1}).
+		Select(NodeIdentityColumns.NodeID).Take(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("read node identity: %w", sql.ErrNoRows)
+	}
+	if result.Error != nil {
+		return fmt.Errorf("read node identity: %w", result.Error)
+	}
+	if row.NodeID != string(nodeID) {
+		return fmt.Errorf("persisted node %q differs from %q", row.NodeID, nodeID)
+	}
+	return nil
+}
+
+func loadInfrastructureObserved(ctx context.Context, orm *gorm.DB) (core.InfrastructureObservedState, bool, error) {
+	var row infrastructureObservedRow
+	result := orm.WithContext(ctx).
+		Where(clause.Eq{Column: clause.Column{Name: InfrastructureObservedStateColumns.Singleton}, Value: 1}).
+		Select(
+			InfrastructureObservedStateColumns.Presence, InfrastructureObservedStateColumns.ObservedAtUS,
+			InfrastructureObservedStateColumns.Backend, InfrastructureObservedStateColumns.OwnerVersion,
+			InfrastructureObservedStateColumns.Digest, InfrastructureObservedStateColumns.ConfirmedInfrastructureRevision,
+			InfrastructureObservedStateColumns.LastErrorCode,
+		).Take(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return core.InfrastructureObservedState{}, false, nil
 	}
-	if err != nil {
-		return core.InfrastructureObservedState{}, false, err
+	if result.Error != nil {
+		return core.InfrastructureObservedState{}, false, result.Error
 	}
-	decodedPresence, err := decodeObservedPresence(presence)
+	decodedPresence, err := decodeObservedPresence(row.Presence)
 	if err != nil {
 		return core.InfrastructureObservedState{}, false, err
 	}
 	observed := core.InfrastructureObservedState{
-		Presence: decodedPresence, ObservedAt: time.UnixMicro(observedAt).UTC(),
-		Backend: backend, OwnerVersion: ownerVersion, Digest: digest,
-		ConfirmedRevision: core.InfrastructureRevision(nullInt64Value(confirmed)),
-		LastErrorCode:     lastError,
+		Presence: decodedPresence, ObservedAt: time.UnixMicro(row.ObservedAtUS).UTC(),
+		Backend: row.Backend, OwnerVersion: row.OwnerVersion, Digest: row.Digest,
+		ConfirmedRevision: core.InfrastructureRevision(nullInt64Value(row.ConfirmedRevision)),
+		LastErrorCode:     row.LastErrorCode,
 	}
 	if err := observed.Validate(); err != nil {
 		return core.InfrastructureObservedState{}, false,
@@ -399,33 +411,30 @@ func loadInfrastructureObserved(
 	return observed, true, nil
 }
 
-func loadPolicyObserved(
-	ctx context.Context,
-	queryer reconcileQueryRower,
-) (core.PolicyObservedState, bool, error) {
-	var presence, relationDigest, lastError string
-	var observedAt int64
-	var confirmed sql.NullInt64
-	err := queryer.QueryRowContext(ctx, `
-		SELECT presence, observed_at_us, relation_digest,
-			confirmed_policy_revision, last_error_code
-		FROM policy_observed_state WHERE singleton = 1`).Scan(
-		&presence, &observedAt, &relationDigest, &confirmed, &lastError)
-	if errors.Is(err, sql.ErrNoRows) {
+func loadPolicyObserved(ctx context.Context, orm *gorm.DB) (core.PolicyObservedState, bool, error) {
+	var row policyObservedRow
+	result := orm.WithContext(ctx).
+		Where(clause.Eq{Column: clause.Column{Name: PolicyObservedStateColumns.Singleton}, Value: 1}).
+		Select(
+			PolicyObservedStateColumns.Presence, PolicyObservedStateColumns.ObservedAtUS,
+			PolicyObservedStateColumns.RelationDigest, PolicyObservedStateColumns.ConfirmedPolicyRevision,
+			PolicyObservedStateColumns.LastErrorCode,
+		).Take(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return core.PolicyObservedState{}, false, nil
 	}
-	if err != nil {
-		return core.PolicyObservedState{}, false, err
+	if result.Error != nil {
+		return core.PolicyObservedState{}, false, result.Error
 	}
-	decodedPresence, err := decodeObservedPresence(presence)
+	decodedPresence, err := decodeObservedPresence(row.Presence)
 	if err != nil {
 		return core.PolicyObservedState{}, false, err
 	}
 	observed := core.PolicyObservedState{
-		Presence: decodedPresence, ObservedAt: time.UnixMicro(observedAt).UTC(),
-		RelationDigest:    relationDigest,
-		ConfirmedRevision: core.PolicyRevision(nullInt64Value(confirmed)),
-		LastErrorCode:     lastError,
+		Presence: decodedPresence, ObservedAt: time.UnixMicro(row.ObservedAtUS).UTC(),
+		RelationDigest:    row.RelationDigest,
+		ConfirmedRevision: core.PolicyRevision(nullInt64Value(row.ConfirmedRevision)),
+		LastErrorCode:     row.LastErrorCode,
 	}
 	if err := observed.Validate(); err != nil {
 		return core.PolicyObservedState{}, false,
@@ -436,65 +445,52 @@ func loadPolicyObserved(
 
 func loadTargetObservedForUpdate(
 	ctx context.Context,
-	queryer reconcileQueryRower,
+	orm *gorm.DB,
 	nodeID core.NodeID,
 	target netip.Prefix,
 ) (core.TargetEnforcementGeneration, core.TargetObservedState, bool, error) {
-	var membership, backend, policyCoverage, policyDigest, timeoutMode, ownerVersion, lastError string
-	var generation int64
-	var observedAt, nativeExpiry, confirmed sql.NullInt64
-	var scopes, addressFamily int64
-	err := queryer.QueryRowContext(ctx, `
-		SELECT target_enforcement_generation, observed_membership, observed_at_us,
-			observed_backend, observed_policy_coverage,
-			observed_policy_relation_digest, observed_timeout_mode,
-			observed_native_expiry_us, observed_scopes,
-			observed_address_family, observed_owner_version,
-			observed_last_error_code, confirmed_target_enforcement_generation
-		FROM enforcement_states
-		WHERE node_id = ? AND canonical_target = ?`, string(nodeID), target.String()).Scan(
-		&generation, &membership, &observedAt, &backend, &policyCoverage,
-		&policyDigest, &timeoutMode, &nativeExpiry, &scopes, &addressFamily,
-		&ownerVersion, &lastError, &confirmed)
-	if errors.Is(err, sql.ErrNoRows) {
+	var row targetObservedRow
+	result := orm.WithContext(ctx).
+		Where(clause.Eq{Column: clause.Column{Name: EnforcementStateColumns.NodeID}, Value: string(nodeID)}).
+		Where(clause.Eq{Column: clause.Column{Name: EnforcementStateColumns.CanonicalTarget}, Value: target.String()}).
+		Select(
+			EnforcementStateColumns.CanonicalTarget, EnforcementStateColumns.TargetEnforcementGeneration,
+			EnforcementStateColumns.ObservedMembership, EnforcementStateColumns.ObservedAtUS,
+			EnforcementStateColumns.ObservedEvidence, EnforcementStateColumns.ObservedBackend,
+			EnforcementStateColumns.ObservedPolicyCoverage, EnforcementStateColumns.ObservedPolicyRelationDigest,
+			EnforcementStateColumns.ObservedTimeoutMode, EnforcementStateColumns.ObservedNativeExpiryUS,
+			EnforcementStateColumns.ObservedScopes, EnforcementStateColumns.ObservedAddressFamily,
+			EnforcementStateColumns.ObservedOwnerVersion, EnforcementStateColumns.ObservedLastErrorCode,
+			EnforcementStateColumns.ConfirmedTargetEnforcementGeneration,
+		).Take(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return 0, core.TargetObservedState{}, false, nil
 	}
+	if result.Error != nil {
+		return 0, core.TargetObservedState{}, false, result.Error
+	}
+	if !row.ObservedAtUS.Valid {
+		return core.TargetEnforcementGeneration(row.TargetGeneration), core.TargetObservedState{}, false, nil
+	}
+	observed, err := decodeTargetObservedRow(row)
 	if err != nil {
 		return 0, core.TargetObservedState{}, false, err
 	}
-	if !observedAt.Valid {
-		return core.TargetEnforcementGeneration(generation), core.TargetObservedState{}, false, nil
-	}
-	observed, err := decodeTargetObservedState(
-		target.String(), membership, observedAt.Int64, backend, policyCoverage,
-		policyDigest, timeoutMode, nativeExpiry, scopes, addressFamily,
-		ownerVersion, lastError, confirmed)
-	if err != nil {
-		return 0, core.TargetObservedState{}, false, err
-	}
-	return core.TargetEnforcementGeneration(generation), observed, true, nil
+	return core.TargetEnforcementGeneration(row.TargetGeneration), observed, true, nil
 }
 
-func scanTargetObservedState(scanner rowScanner) (core.TargetObservedState, error) {
-	var target, membership, backend, policyCoverage, policyDigest, timeoutMode, ownerVersion, lastError string
-	var observedAt, scopes, addressFamily int64
-	var nativeExpiry, confirmed sql.NullInt64
-	if err := scanner.Scan(
-		&target, &membership, &observedAt, &backend, &policyCoverage,
-		&policyDigest, &timeoutMode, &nativeExpiry, &scopes, &addressFamily,
-		&ownerVersion, &lastError, &confirmed,
-	); err != nil {
-		return core.TargetObservedState{}, err
-	}
+func decodeTargetObservedRow(row targetObservedRow) (core.TargetObservedState, error) {
 	return decodeTargetObservedState(
-		target, membership, observedAt, backend, policyCoverage, policyDigest,
-		timeoutMode, nativeExpiry, scopes, addressFamily, ownerVersion, lastError, confirmed)
+		row.CanonicalTarget, row.ObservedMembership, row.ObservedAtUS.Int64, row.ObservedEvidence,
+		row.ObservedBackend, row.PolicyCoverage, row.PolicyDigest, row.TimeoutMode,
+		row.NativeExpiryUS, row.Scopes, row.AddressFamily, row.OwnerVersion,
+		row.LastErrorCode, row.ConfirmedGeneration)
 }
 
 func decodeTargetObservedState(
 	target, membership string,
 	observedAt int64,
-	backend, policyCoverage, policyDigest, timeoutMode string,
+	evidence, backend, policyCoverage, policyDigest, timeoutMode string,
 	nativeExpiry sql.NullInt64,
 	scopes, addressFamily int64,
 	ownerVersion, lastError string,
@@ -505,6 +501,10 @@ func decodeTargetObservedState(
 		return core.TargetObservedState{}, fmt.Errorf("parse canonical target: %w", err)
 	}
 	decodedMembership, err := decodeObservedMembership(membership)
+	if err != nil {
+		return core.TargetObservedState{}, err
+	}
+	decodedEvidence, err := decodeTargetObservationEvidence(evidence)
 	if err != nil {
 		return core.TargetObservedState{}, err
 	}
@@ -523,7 +523,7 @@ func decodeTargetObservedState(
 	observed := core.TargetObservedState{
 		PhysicalTargetObserved: core.PhysicalTargetObserved{
 			CanonicalTarget: prefix, ObservedAt: time.UnixMicro(observedAt).UTC(),
-			Backend: backend, BanMembership: decodedMembership,
+			Evidence: decodedEvidence, Backend: backend, BanMembership: decodedMembership,
 			PolicyCoverage: decodedCoverage, PolicyRelationDigest: policyDigest,
 			TimeoutMode: decodedTimeout, NativeExpiry: decodeOptionalTime(nativeExpiry),
 			Scopes: core.EnforcementScope(scopes), AddressFamily: decodedAddressFamily,
@@ -570,11 +570,30 @@ func equalTargetObserved(left, right core.TargetObservedState) bool {
 	return left.CanonicalTarget == right.CanonicalTarget &&
 		samePersistedTime(left.ObservedAt, right.ObservedAt) && left.Backend == right.Backend &&
 		left.BanMembership == right.BanMembership && left.PolicyCoverage == right.PolicyCoverage &&
+		left.Evidence == right.Evidence &&
 		left.PolicyRelationDigest == right.PolicyRelationDigest && left.TimeoutMode == right.TimeoutMode &&
 		equalOptionalPersistedTime(left.NativeExpiry, right.NativeExpiry) &&
 		left.Scopes == right.Scopes && left.AddressFamily == right.AddressFamily &&
 		left.OwnerVersion == right.OwnerVersion && left.LastErrorCode == right.LastErrorCode &&
 		left.ConfirmedGeneration == right.ConfirmedGeneration
+}
+
+func encodeTargetObservationEvidence(value core.TargetObservationEvidence) string {
+	if value == core.TargetObservationEvidenceManagedSnapshot {
+		return "managed_snapshot"
+	}
+	return "complete"
+}
+
+func decodeTargetObservationEvidence(value string) (core.TargetObservationEvidence, error) {
+	switch value {
+	case "complete":
+		return core.TargetObservationEvidenceComplete, nil
+	case "managed_snapshot":
+		return core.TargetObservationEvidenceManagedSnapshot, nil
+	default:
+		return 0, fmt.Errorf("unsupported persisted target observation evidence %q", value)
+	}
 }
 
 func samePersistedTime(left, right time.Time) bool {

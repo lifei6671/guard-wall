@@ -429,12 +429,103 @@ func TestSQLiteExpiryBatchRebuildsEachTargetOnceAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestSQLiteLifecycleRejectsDifferentNodeWithoutMutation(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	seedNodeAndRule(t, ctx, database)
+	target := netip.MustParsePrefix("198.51.100.11/32")
+	createdAt := time.Unix(3_100, 0).UTC()
+	expiresAt := createdAt.Add(time.Minute)
+	runner := &countingLifecycleRunner{Store: database}
+	sink := &recordingTargetWakeSink{}
+	service, err := decision.NewLifecycleService(
+		core.NodeID("ffffffffffffffffffffffffffffffff"),
+		runner,
+		newTestDesiredStateFinalizer(t),
+		sink,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.BanManual(ctx, decision.ManualRequest{
+		DecisionID: "manual-wrong-node-expiry", NodeID: testNodeID, Target: target,
+		CreatedAt: createdAt, ExpiresAt: &expiresAt,
+	}, false); err == nil || !strings.Contains(err.Error(), "does not match lifecycle node id") {
+		t.Fatalf("BanManual(different node) error = %v", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("RunDecisionTransaction calls = %d, want 0", runner.calls)
+	}
+	if sink.count() != 0 {
+		t.Fatalf("Target wake calls = %d, want 0", sink.count())
+	}
+	var decisions, audits, projections, intents int
+	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM decisions WHERE decision_id = ?`, "manual-wrong-node-expiry").Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM desired_ban_projections WHERE node_id = ?`, string(testNodeID)).Scan(&projections); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM enforcement_states WHERE node_id = ?`, string(testNodeID)).Scan(&intents); err != nil {
+		t.Fatal(err)
+	}
+	if decisions != 0 || audits != 0 || projections != 0 || intents != 0 {
+		t.Fatalf("cross-node BanManual persisted state: decisions=%d audits=%d projections=%d intents=%d", decisions, audits, projections, intents)
+	}
+}
+
+func TestSQLiteLifecycleRejectsStoreNodeMismatchBeforeManualWrite(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	seedNodeAndRule(t, ctx, database)
+	foreignNodeID := core.NodeID("ffffffffffffffffffffffffffffffff")
+	target := netip.MustParsePrefix("198.51.100.12/32")
+	createdAt := time.Unix(3_200, 0).UTC()
+	sink := &recordingTargetWakeSink{}
+	service, err := decision.NewLifecycleService(
+		foreignNodeID,
+		database,
+		newTestDesiredStateFinalizer(t),
+		sink,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.BanManual(ctx, decision.ManualRequest{
+		DecisionID: "manual-store-node-mismatch", NodeID: foreignNodeID, Target: target, CreatedAt: createdAt,
+	}, false); err == nil || !strings.Contains(err.Error(), "persisted node") {
+		t.Fatalf("BanManual(store node mismatch) error = %v", err)
+	}
+	if sink.count() != 0 {
+		t.Fatalf("Target wake calls = %d, want 0", sink.count())
+	}
+	var decisions, audits, projections, intents int
+	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM decisions WHERE decision_id = ?`, "manual-store-node-mismatch").Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM desired_ban_projections WHERE node_id = ?`, string(foreignNodeID)).Scan(&projections); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM enforcement_states WHERE node_id = ?`, string(foreignNodeID)).Scan(&intents); err != nil {
+		t.Fatal(err)
+	}
+	if decisions != 0 || audits != 0 || projections != 0 || intents != 0 {
+		t.Fatalf("store-node mismatch persisted state: decisions=%d audits=%d projections=%d intents=%d", decisions, audits, projections, intents)
+	}
+}
+
 func TestLifecycleServiceWakesOnlyChangedTargetsAfterConfirmedCommit(t *testing.T) {
 	database := openTestStore(t)
 	ctx := context.Background()
 	seedNodeAndRule(t, ctx, database)
 	sink := &recordingTargetWakeSink{}
-	service, err := decision.NewLifecycleService(database, newTestDesiredStateFinalizer(t), sink)
+	service, err := decision.NewLifecycleService(testNodeID, database, newTestDesiredStateFinalizer(t), sink)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,6 +562,7 @@ func TestLifecycleServicePostCommitWakeFailurePreservesCommittedResult(t *testin
 	seedNodeAndRule(t, ctx, database)
 	wakeFailure := errors.New("injected wake failure")
 	service, err := decision.NewLifecycleService(
+		testNodeID,
 		database,
 		newTestDesiredStateFinalizer(t),
 		decision.TargetWakeSinkFunc(func(context.Context, core.NodeID, netip.Prefix) error { return wakeFailure }),
@@ -549,7 +641,7 @@ func TestSQLiteExpiryMultipleTargetsAdvancesSnapshotOnce(t *testing.T) {
 	ctx := context.Background()
 	seedNodeAndRule(t, ctx, database)
 	sink := &recordingTargetWakeSink{}
-	service, err := decision.NewLifecycleService(database, newTestDesiredStateFinalizer(t), sink)
+	service, err := decision.NewLifecycleService(testNodeID, database, newTestDesiredStateFinalizer(t), sink)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +684,7 @@ func TestSQLiteIntentWriteFailureRollsBackDecisionProjectionAndAudit(t *testing.
 		t.Fatal(err)
 	}
 	sink := &recordingTargetWakeSink{}
-	service, err := decision.NewLifecycleService(database, newTestDesiredStateFinalizer(t), sink)
+	service, err := decision.NewLifecycleService(testNodeID, database, newTestDesiredStateFinalizer(t), sink)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -625,7 +717,7 @@ func TestSQLiteSnapshotRevisionExhaustionRollsBackEntireDecisionTransaction(t *t
 	ctx := context.Background()
 	seedNodeAndRule(t, ctx, database)
 	sink := &recordingTargetWakeSink{}
-	service, err := decision.NewLifecycleService(database, newTestDesiredStateFinalizer(t), sink)
+	service, err := decision.NewLifecycleService(testNodeID, database, newTestDesiredStateFinalizer(t), sink)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +770,7 @@ func TestLifecycleServicePreservesExpectedResultOnCommitUnknown(t *testing.T) {
 	seedNodeAndRule(t, ctx, database)
 	runner := commitUnknownAfterSuccessRunner{Store: database}
 	sink := &recordingTargetWakeSink{}
-	service, err := decision.NewLifecycleService(runner, newTestDesiredStateFinalizer(t), sink)
+	service, err := decision.NewLifecycleService(testNodeID, runner, newTestDesiredStateFinalizer(t), sink)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,6 +800,19 @@ func TestLifecycleServicePreservesExpectedResultOnCommitUnknown(t *testing.T) {
 
 type commitUnknownAfterSuccessRunner struct {
 	*Store
+}
+
+type countingLifecycleRunner struct {
+	*Store
+	calls int
+}
+
+func (r *countingLifecycleRunner) RunDecisionTransaction(
+	ctx context.Context,
+	operation func(decision.LifecycleTransaction) error,
+) error {
+	r.calls++
+	return r.Store.RunDecisionTransaction(ctx, operation)
 }
 
 func (r commitUnknownAfterSuccessRunner) RunDecisionTransaction(
@@ -752,7 +857,7 @@ func TestSQLiteExpirationSchedulerStartsWithDueSweepBeforePendingRecovery(t *tes
 		return nil
 	})
 	runner := &observedPendingRunner{Store: database, read: make(chan struct{})}
-	service, err := decision.NewLifecycleService(runner, newTestDesiredStateFinalizer(t), sink)
+	service, err := decision.NewLifecycleService(testNodeID, runner, newTestDesiredStateFinalizer(t), sink)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -797,15 +902,16 @@ type observedPendingRunner struct {
 
 func (r *observedPendingRunner) PendingTargetEnforcementChanges(
 	ctx context.Context,
+	nodeID core.NodeID,
 ) ([]decision.TargetEnforcementChange, error) {
-	changes, err := r.Store.PendingTargetEnforcementChanges(ctx)
+	changes, err := r.Store.PendingTargetEnforcementChanges(ctx, nodeID)
 	r.once.Do(func() { close(r.read) })
 	return changes, err
 }
 
 func newDecisionLifecycleService(t *testing.T, database *Store) *decision.LifecycleService {
 	t.Helper()
-	service, err := decision.NewLifecycleService(database, newTestDesiredStateFinalizer(t), noOpTargetWakeSink())
+	service, err := decision.NewLifecycleService(testNodeID, database, newTestDesiredStateFinalizer(t), noOpTargetWakeSink())
 	if err != nil {
 		t.Fatal(err)
 	}

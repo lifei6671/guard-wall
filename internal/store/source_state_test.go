@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
+	"gorm.io/gorm"
 )
 
 const (
@@ -14,6 +15,46 @@ const (
 	testGeneration                = "00112233445566778899aabbccddeeff"
 	testGeneration2               = "ffeeddccbbaa99887766554433221100"
 )
+
+func TestEnsureSourceUsesGORMCreate(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	nodeID := core.NodeID("00112233445566778899aabbccddeeff")
+	if err := database.EnsureNodeIdentity(ctx, nodeID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	const callbackName = "guard_wall:test_source_gorm_create"
+	var (
+		callbackCalls int
+		capturedTable string
+		capturedModel any
+	)
+	if err := database.orm.Callback().Create().After("gorm:create").Register(
+		callbackName,
+		func(tx *gorm.DB) {
+			callbackCalls++
+			capturedTable = tx.Statement.Table
+			capturedModel = tx.Statement.Model
+		},
+	); err != nil {
+		t.Fatalf("register source create callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = database.orm.Callback().Create().Remove(callbackName)
+	})
+
+	if err := database.EnsureSource(ctx, testSourceID, nodeID, SourceKindFile, now); err != nil {
+		t.Fatalf("EnsureSource(): %v", err)
+	}
+	if callbackCalls != 1 || capturedTable != "sources" {
+		t.Fatalf("GORM Create callback = calls %d table %q, want 1 sources", callbackCalls, capturedTable)
+	}
+	if _, ok := capturedModel.(*sourceRow); !ok {
+		t.Fatalf("GORM Create model = %T, want *sourceRow", capturedModel)
+	}
+}
 
 func TestSourceCheckpointMonotonicCASRejectsRegression(t *testing.T) {
 	database := openTestStore(t)

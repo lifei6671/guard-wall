@@ -5,21 +5,19 @@
 ```text
 Decision: Accepted
 Validation maturity: REVIEW / Implemented
-Date: 2026-09-01
+Date: 2026-09-03
 ```
 
-用户已明确确认 GORM-0b。本 ADR 只接受 GORM core 和项目自有 modernc 适配层；
-不接受业务 SQL 迁移、Schema 变化或第二个 SQLite driver。`REVIEW / Implemented`
-表示依赖、适配器和边界测试已落盘，仍等待用户 Code Review；它不提升 M0 Gate，
-也不代表 GORM-1 业务迁移已获批准。
+用户已明确确认 GORM core、项目自有 modernc 适配层及 Store 业务数据读写迁移。
+本 ADR 不接受 Schema 变化、第二个 SQLite driver 或 GORM migration。`REVIEW /
+Implemented` 表示实现和验证已落盘，仍等待用户 Code Review；它不提升 M0 Gate。
 
 ## Context
 
-Store 已有大量手写 SQL。盘点结果同时存在两类语句：
-
-- 普通、低风险 CRUD，可在后续独立批次评估迁移到 GORM；
-- migration、PRAGMA、CAS/fence、`RETURNING` read-back、commit-unknown、
-  transaction-consistent snapshot 和现有 UnitOfWork 等关键语义，必须保持 raw SQL。
+Store 原有大量手写业务 SQL。现在所有业务数据读写都通过 GORM 的 model、query 和
+clause API 表达，同时继续将每个业务操作绑定到 Store 创建并唯一提交或回滚的
+`*sql.Tx`。CAS/fence、`RETURNING` read-back、commit-unknown、transaction-consistent
+snapshot 和 UnitOfWork 语义必须由等价的 GORM 操作与契约测试保持。
 
 最初 GORM-0 兼容性探针使用官方 `gorm.io/driver/sqlite v1.6.0`，结论为
 `NO-GO / STOPPED`：该包无条件 blank-import `github.com/mattn/go-sqlite3`，会同时
@@ -99,16 +97,23 @@ raw SQL 在临时数据库中创建，并用 raw SQL 交叉验证结果。
 
 ### 5. SQL 与 API 使用范围
 
-GORM handle 只保存在 `Store` 的未导出字段中，不新增公共 Store API。GORM-0b 不迁移任何
-生产业务 SQL；后续 GORM-1 必须作为独立小批次逐项授权、测试和 Review。
+GORM handle 只保存在 `Store` 的未导出字段中，不新增公共 Store API。`internal/store`
+的所有生产业务数据读写必须使用 GORM 的 model、query 或 clause API；业务文件禁止
+`.Raw()`、`ExecContext(SQL)`、`QueryContext(SQL)`、`QueryRowContext(SQL)` 和动态 SQL。
+GORM 会话必须显式 `WithContext(ctx)`，并绑定到同一个 Store-owned `*sql.Tx`；只有
+Store 可以 Commit 或 Rollback。
 
-未来允许评估的范围仅是显式 table/column、无 association/hook/soft-delete/implicit
-timestamp 的普通 CRUD。以下路径保持 raw SQL，除非新的 ADR 和契约测试证明等价：
+每张业务表的运行时列名必须由 package-level 的 `*Columns` struct 统一定义。所有
+`Select`、`Where` map、`Update(s)`、`Order`、`clause.Column` 和
+`AssignmentColumns` 调用都只能引用对应 Columns 字段，禁止在业务查询中直接写列名。
+GORM struct tag 是 Go 编译期模型元数据，不能引用变量，仍保留为 Schema 映射声明。
 
-- checksummed migration 与所有 PRAGMA；
-- CAS、generation/revision fence、幂等/partial-unique 决策；
-- `RETURNING`/read-back、commit-unknown 和 stale completion；
-- transaction-consistent snapshot、现有 UnitOfWork 与 crash/replay 边界。
+以下是唯一允许使用原生 SQL 的基础设施边界，不得承载业务数据读写：
+
+- checksummed migration 和 migration ledger；
+- SQLite driver/DSN、逐连接 PRAGMA 设置及 read-back；
+- GORM ConnPool/Dialector 适配和 Store-owned transaction 建立；
+- 测试中为 Schema、trigger 或结果交叉验证而使用的 raw SQL。
 
 禁止默认使用 `Save`、`FirstOrCreate`、association、hook、soft delete、隐式表名/列名/
 时间字段或全局 update/delete。
@@ -151,10 +156,10 @@ durability 矩阵。
 
 拒绝。当前只需小型稳定适配面；fork/replace 会扩大供应链和升级维护成本。
 
-### 4. 保持永久 raw SQL
+### 4. 保持业务 raw SQL
 
-可安全回滚，但不满足用户希望逐步用 GORM 替代普通硬编码 SQL 的方向。本文用严格边界
-保留关键 raw SQL，同时为后续低风险 CRUD 建立可验证入口。
+拒绝。它不满足已确认的 Store 业务数据读写必须迁移到 GORM 的边界，也会让关键一致性
+路径继续绕过统一的持久化 API。
 
 ## Consequences
 
@@ -162,7 +167,7 @@ durability 矩阵。
 
 - GORM 与现有 Store 复用同一个 modernc pool、migration 和 PRAGMA contract。
 - GORM 初始化失败无法关闭 Store-owned pool，所有 cleanup 仍由 `Open`/`Close` 负责。
-- 后续普通 CRUD 可逐项迁移，不需要同时改 Schema 或关键一致性语义。
+- 所有 Store 业务路径通过同一 GORM 边界表达，不需要同时改 Schema 或关键一致性语义。
 - AutoMigrate、第二 driver、默认 SQL/value 日志和全局写被实现与测试双重阻断。
 
 ### 代价与残余风险
@@ -173,7 +178,7 @@ durability 矩阵。
 - GORM 增加编译体积、启动和运行开销；当前未做生产负载基准。
 - GORM root handle 的默认 context 不是业务授权；任何漏掉 `WithContext(ctx)` 的后续调用
   都是代码审查阻断项。
-- 当前只在临时表上验证适配器语义，未证明任何现有生产 SQL 可安全迁移。
+- 仍须以 Store、reconcile、decision 和全仓 Docker 验证证明业务语义及迁移边界。
 
 ## Validation Plan
 

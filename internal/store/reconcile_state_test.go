@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net/netip"
 	"path/filepath"
@@ -411,6 +412,135 @@ func TestApplyReconcileTransitionRejectsInvalidInput(t *testing.T) {
 	}
 	if _, err := store.LoadReconcileRecovery(ctx, "bad-node"); err == nil {
 		t.Fatal("LoadReconcileRecovery() accepted invalid node")
+	}
+}
+
+func TestApplyReconcileRetryTransitionPersistsLedgerAndAuditAtomically(t *testing.T) {
+	store := openReconcileTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 3, 16, 0, 0, 0, time.UTC)
+	target := netip.MustParsePrefix("192.0.2.61/32")
+	for _, domain := range []core.ReconcileDomain{
+		core.ReconcileDomainInfrastructure,
+		core.ReconcileDomainPolicy,
+		core.ReconcileDomainTarget,
+	} {
+		t.Run(fmt.Sprintf("domain-%d", domain), func(t *testing.T) {
+			transition := retryTransitionForTest(domain, target, now)
+			if err := store.ApplyReconcileRetryTransition(ctx, transition); err != nil {
+				t.Fatalf("ApplyReconcileRetryTransition(): %v", err)
+			}
+			readback, err := store.ReadReconcileRetryTransition(ctx, transition)
+			if err != nil || !readback.Applied {
+				t.Fatalf("ReadReconcileRetryTransition(): readback=%+v err=%v", readback, err)
+			}
+			var details string
+			if err := store.db.QueryRowContext(ctx, "SELECT details_json FROM audit_logs WHERE audit_id = ?", transition.Audit.ID).Scan(&details); err != nil {
+				t.Fatalf("read retry audit: %v", err)
+			}
+			if want := reconcileRetryAuditDetails(transition).Details; details != want {
+				t.Fatalf("retry audit details = %s, want %s", details, want)
+			}
+		})
+	}
+}
+
+func TestApplyReconcileRetryTransitionRollsBackOnAuditFailure(t *testing.T) {
+	store := openReconcileTestStore(t)
+	ctx := context.Background()
+	if _, err := store.db.ExecContext(ctx, `CREATE TRIGGER fail_reconcile_retry_audit
+		BEFORE INSERT ON audit_logs WHEN NEW.action = 'reconcile_retry'
+		BEGIN SELECT RAISE(ABORT, 'injected reconcile retry audit failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	transition := retryTransitionForTest(core.ReconcileDomainTarget, netip.MustParsePrefix("192.0.2.62/32"), time.Date(2026, 9, 3, 16, 1, 0, 0, time.UTC))
+	if err := store.ApplyReconcileRetryTransition(ctx, transition); err == nil {
+		t.Fatal("ApplyReconcileRetryTransition() succeeded despite audit failure")
+	}
+	recovery, err := store.LoadReconcileRecovery(ctx, testNodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovery.States) != 0 || len(recovery.ProbeRequirements) != 0 {
+		t.Fatalf("audit failure committed retry state: %+v", recovery)
+	}
+	var count int
+	if err := store.db.QueryRowContext(ctx, "SELECT count(*) FROM audit_logs WHERE action = 'reconcile_retry'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("audit failure committed %d retry audits", count)
+	}
+}
+
+func TestApplyReconcileRetryTransitionRejectsEpochSkipAndInexactAuditReadback(t *testing.T) {
+	store := openReconcileTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 3, 16, 2, 0, 0, time.UTC)
+	first := retryTransitionForTest(core.ReconcileDomainInfrastructure, netip.Prefix{}, now)
+	if err := store.ApplyReconcileRetryTransition(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	skip := first
+	skip.State.RetryEpoch = 3
+	skip.State.UpdatedAt = now.Add(time.Second)
+	skip.Audit.ID = "audit-retry-skip"
+	skip.Audit.IdempotencyKey = "retry-skip"
+	skip.Audit.PreviousEpoch = 2
+	skip.Audit.OccurredAt = skip.State.UpdatedAt
+	if err := store.ApplyReconcileRetryTransition(ctx, skip); err == nil {
+		t.Fatal("ApplyReconcileRetryTransition() accepted skipped epoch")
+	}
+	recovery, err := store.LoadReconcileRecovery(ctx, testNodeID)
+	if err != nil || len(recovery.States) != 1 || recovery.States[0].RetryEpoch != 1 {
+		t.Fatalf("epoch skip changed durable recovery: %+v err=%v", recovery, err)
+	}
+	if _, err := store.db.ExecContext(ctx, "UPDATE audit_logs SET error_code = 'tampered' WHERE audit_id = ?", first.Audit.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadReconcileRetryTransition(ctx, first); err == nil {
+		t.Fatal("ReadReconcileRetryTransition() accepted audit with non-NULL error code")
+	}
+}
+
+func TestApplyReconcileRetryTransitionCarriesSingletonEpochAcrossRevision(t *testing.T) {
+	store := openReconcileTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 3, 16, 3, 0, 0, time.UTC)
+	first := retryTransitionForTest(core.ReconcileDomainInfrastructure, netip.Prefix{}, now)
+	if err := store.ApplyReconcileRetryTransition(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	next := retryTransitionForTest(core.ReconcileDomainInfrastructure, netip.Prefix{}, now.Add(time.Second))
+	next.State.InfrastructureRevision = first.State.InfrastructureRevision + 1
+	next.State.RetryEpoch = 2
+	next.Audit.ID = "audit-retry-infrastructure-next-revision"
+	next.Audit.IdempotencyKey = "retry-infrastructure-next-revision"
+	next.Audit.PreviousEpoch = 1
+	if err := store.ApplyReconcileRetryTransition(ctx, next); err != nil {
+		t.Fatalf("ApplyReconcileRetryTransition() across revision: %v", err)
+	}
+	recovery, err := store.LoadReconcileRecovery(ctx, testNodeID)
+	if err != nil || len(recovery.States) != 1 || recovery.States[0].InfrastructureRevision != next.State.InfrastructureRevision || recovery.States[0].RetryEpoch != 2 {
+		t.Fatalf("revision-advanced retry recovery = %+v err=%v", recovery, err)
+	}
+}
+
+func retryTransitionForTest(domain core.ReconcileDomain, target netip.Prefix, now time.Time) core.ReconcileRetryTransition {
+	state := persistedRetryState(domain, target, now, now)
+	state.RetryEpoch = 1
+	state.RetryState = core.RetryState{Status: core.ReconcilePending}
+	state.UpdatedAt = now
+	return core.ReconcileRetryTransition{
+		State: state,
+		Audit: core.ReconcileRetryAudit{
+			ID:             fmt.Sprintf("audit-retry-%d", domain),
+			IdempotencyKey: fmt.Sprintf("retry-%d", domain),
+			NodeID:         testNodeID,
+			ActorType:      "administrator",
+			PreviousEpoch:  0,
+			OccurredAt:     now,
+		},
 	}
 }
 

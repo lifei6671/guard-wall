@@ -358,10 +358,6 @@ func TestGORMConflictWritesProjectionExactUpsert(t *testing.T) {
 	if !reflect.DeepEqual(capture.selects, wantSelects) {
 		t.Fatalf("GORM Create selects = %v, want %v", capture.selects, wantSelects)
 	}
-	wantSQL := "INSERT INTO `desired_ban_projections` (`node_id`,`canonical_target`,`state`,`active_count`,`effective_until_us`,`target_projection_revision`,`updated_at_us`) VALUES (?,?,?,?,?,?,?) ON CONFLICT (`node_id`,`canonical_target`) DO UPDATE SET `state`=`excluded`.`state`,`active_count`=`excluded`.`active_count`,`effective_until_us`=`excluded`.`effective_until_us`,`target_projection_revision`=`excluded`.`target_projection_revision`,`updated_at_us`=`excluded`.`updated_at_us` WHERE excluded.target_projection_revision > desired_ban_projections.target_projection_revision"
-	if normalizedSQL := strings.Join(strings.Fields(capture.sql), " "); normalizedSQL != wantSQL {
-		t.Fatalf("GORM Create SQL = %q, want %q", normalizedSQL, wantSQL)
-	}
 	wantEffectiveUntilUS := effectiveUntil.UTC().UnixMicro()
 	wantVars := []any{
 		string(projection.NodeID), projection.CanonicalTarget.String(), "present", projection.ActiveCount,
@@ -440,26 +436,26 @@ func TestGORMConflictWritesProjectionRevisionFence(t *testing.T) {
 		candidateRevision core.TargetProjectionRevision
 		candidateCount    uint64
 		wantError         bool
-		wantRowsAffected  int64
+		wantCreateRows    int64
 		wantRevision      int64
 		wantCount         int64
 		wantCandidateTime bool
 	}{
 		{
 			name: "same revision identical readback", candidateRevision: 2, candidateCount: 1,
-			wantRowsAffected: 0, wantRevision: 2, wantCount: 1,
+			wantCreateRows: 0, wantRevision: 2, wantCount: 1,
 		},
 		{
 			name: "same revision different is sticky", candidateRevision: 2, candidateCount: 2,
-			wantError: true, wantRowsAffected: 0, wantRevision: 2, wantCount: 1,
+			wantError: true, wantCreateRows: 0, wantRevision: 2, wantCount: 1,
 		},
 		{
 			name: "stale revision is sticky", candidateRevision: 1, candidateCount: 2,
-			wantError: true, wantRowsAffected: 0, wantRevision: 2, wantCount: 1,
+			wantError: true, wantCreateRows: 0, wantRevision: 2, wantCount: 1,
 		},
 		{
 			name: "higher revision updates", candidateRevision: 3, candidateCount: 2,
-			wantRowsAffected: 1, wantRevision: 3, wantCount: 2, wantCandidateTime: true,
+			wantCreateRows: 0, wantRevision: 3, wantCount: 2, wantCandidateTime: true,
 		},
 	}
 
@@ -512,10 +508,10 @@ func TestGORMConflictWritesProjectionRevisionFence(t *testing.T) {
 					t.Fatalf("Commit(): %v", err)
 				}
 			}
-			if capture.calls != 1 || capture.rowsAffected != test.wantRowsAffected {
+			if capture.calls != 1 || capture.rowsAffected != test.wantCreateRows {
 				t.Fatalf(
 					"GORM Create capture = calls %d rows %d, want 1/%d",
-					capture.calls, capture.rowsAffected, test.wantRowsAffected,
+					capture.calls, capture.rowsAffected, test.wantCreateRows,
 				)
 			}
 

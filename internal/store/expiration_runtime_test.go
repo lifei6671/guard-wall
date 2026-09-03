@@ -27,7 +27,7 @@ func TestSQLiteExpirationRuntimeRemovesFakeTargetWithin62Seconds(t *testing.T) {
 	// it back to the current instant.
 	expiresAt := start.Add(time.Second)
 	seedService, err := decision.NewLifecycleServiceWithClock(
-		database, newTestDesiredStateFinalizer(t), noOpTargetWakeSink(), clock,
+		testNodeID, database, newTestDesiredStateFinalizer(t), noOpTargetWakeSink(), clock,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +38,10 @@ func TestSQLiteExpirationRuntimeRemovesFakeTargetWithin62Seconds(t *testing.T) {
 	}, false); err != nil {
 		t.Fatal(err)
 	}
+	seedDesiredFirewallPolicyRows(t, database, []desiredFirewallPolicyRow{
+		{table: "protected_targets", target: "127.0.0.0/8", enabled: 1, revision: 1},
+		{table: "protected_targets", target: "::1/128", enabled: 1, revision: 1},
+	})
 
 	backend := newBlockingTargetConfirmationBackend(target)
 	t.Cleanup(backend.ReleaseTargetConfirmation)
@@ -53,11 +57,9 @@ func TestSQLiteExpirationRuntimeRemovesFakeTargetWithin62Seconds(t *testing.T) {
 		database,
 		reconcile.StaticDesiredFirewallState{
 			InfrastructureRevision: 1,
-			PolicyRevision:         1,
 			Infrastructure: core.ManagedInfrastructureIntent{
 				Backend: "fake", OwnerVersion: "v1", Digest: "infra-v1",
 			},
-			Policy: core.ManagedPolicyIntent{RelationDigest: "policy-v1"},
 		},
 	)
 	if err != nil {
@@ -72,7 +74,7 @@ func TestSQLiteExpirationRuntimeRemovesFakeTargetWithin62Seconds(t *testing.T) {
 		t.Fatal(err)
 	}
 	lifecycle, err := decision.NewLifecycleServiceWithClock(
-		database, newTestDesiredStateFinalizer(t), wake, clock,
+		testNodeID, database, newTestDesiredStateFinalizer(t), wake, clock,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +104,7 @@ func TestSQLiteExpirationRuntimeRemovesFakeTargetWithin62Seconds(t *testing.T) {
 		t.Fatalf("Fake target removal lag = %s, want <= 62s", elapsed)
 	}
 	assertDecisionState(t, database, "manual-runtime-expiry", "expired", "expired")
-	assertDesiredTargetState(t, database, target, "absent", 2, 2, "converged", 0, 1)
+	assertDesiredTargetState(t, database, target, "absent", 2, 4, "converged", 0, 1)
 	_, applies := backend.Counts()
 	if applies != 4 {
 		t.Fatalf("Fake Backend applies = %d, want startup infrastructure + policy + target present + absent", applies)

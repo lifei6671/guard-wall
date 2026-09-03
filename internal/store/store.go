@@ -15,6 +15,7 @@ import (
 
 	"github.com/lifei6671/guard-wall/internal/core"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"modernc.org/sqlite"
 )
 
@@ -115,7 +116,7 @@ func openDatabase(ctx context.Context, databasePath string) (*sql.DB, error) {
 
 // Close closes the SQLite connection pool.
 func (s *Store) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil || s.db == nil || s.orm == nil {
 		return nil
 	}
 	if err := s.db.Close(); err != nil {
@@ -143,20 +144,23 @@ func (s *Store) EnsureNodeIdentity(ctx context.Context, nodeID core.NodeID, crea
 		return fmt.Errorf("ensure node identity: created time is required")
 	}
 
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO node_identity(singleton, node_id, created_at_us)
-		VALUES (1, ?, ?)
-		ON CONFLICT(singleton) DO NOTHING`, string(nodeID), createdAt.UTC().UnixMicro()); err != nil {
-		return fmt.Errorf("ensure node identity: insert: %w", err)
+	result := s.orm.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: NodeIdentityColumns.Singleton}},
+		DoNothing: true,
+	}).Create(&nodeIdentityRow{
+		Singleton: 1, NodeID: string(nodeID), CreatedAtUS: createdAt.UTC().UnixMicro(),
+	})
+	if result.Error != nil {
+		return fmt.Errorf("ensure node identity: insert: %w", result.Error)
 	}
 
-	var persisted string
-	if err := s.db.QueryRowContext(ctx,
-		"SELECT node_id FROM node_identity WHERE singleton = 1").Scan(&persisted); err != nil {
-		return fmt.Errorf("ensure node identity: read back: %w", err)
+	var row nodeIdentityRow
+	result = s.orm.WithContext(ctx).Where(&nodeIdentityRow{Singleton: 1}).Take(&row)
+	if result.Error != nil {
+		return fmt.Errorf("ensure node identity: read back: %w", result.Error)
 	}
-	if persisted != string(nodeID) {
-		return fmt.Errorf("ensure node identity: persisted node %q differs from %q", persisted, nodeID)
+	if row.NodeID != string(nodeID) {
+		return fmt.Errorf("ensure node identity: persisted node %q differs from %q", row.NodeID, nodeID)
 	}
 	return nil
 }
@@ -164,26 +168,25 @@ func (s *Store) EnsureNodeIdentity(ctx context.Context, nodeID core.NodeID, crea
 // LoadNodeIdentity returns the singleton persistent NodeID when bootstrap has
 // already created it. A missing row is normal only before first bootstrap.
 func (s *Store) LoadNodeIdentity(ctx context.Context) (core.NodeID, bool, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.db == nil || s.orm == nil {
 		return "", false, fmt.Errorf("load node identity: store is closed")
 	}
 	if ctx == nil {
 		return "", false, fmt.Errorf("load node identity: context is required")
 	}
 
-	var persisted string
-	err := s.db.QueryRowContext(ctx,
-		"SELECT node_id FROM node_identity WHERE singleton = 1").Scan(&persisted)
-	if errors.Is(err, sql.ErrNoRows) {
+	var row nodeIdentityRow
+	result := s.orm.WithContext(ctx).Where(&nodeIdentityRow{Singleton: 1}).Take(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return "", false, nil
 	}
-	if err != nil {
-		return "", false, fmt.Errorf("load node identity: %w", err)
+	if result.Error != nil {
+		return "", false, fmt.Errorf("load node identity: %w", result.Error)
 	}
-	if !isLowerHex128(persisted) {
+	if !isLowerHex128(row.NodeID) {
 		return "", false, fmt.Errorf("load node identity: persisted node id is invalid")
 	}
-	return core.NodeID(persisted), true, nil
+	return core.NodeID(row.NodeID), true, nil
 }
 
 // CreateNodeIdentity atomically claims the singleton persistent NodeID and
@@ -194,7 +197,7 @@ func (s *Store) CreateNodeIdentity(
 	nodeID core.NodeID,
 	createdAt time.Time,
 ) (core.NodeID, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.db == nil || s.orm == nil {
 		return "", fmt.Errorf("create node identity: store is closed")
 	}
 	if ctx == nil {
@@ -210,11 +213,14 @@ func (s *Store) CreateNodeIdentity(
 		return "", fmt.Errorf("create node identity: created time is required")
 	}
 
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO node_identity(singleton, node_id, created_at_us)
-		VALUES (1, ?, ?)
-		ON CONFLICT(singleton) DO NOTHING`, string(nodeID), createdAt.UTC().UnixMicro()); err != nil {
-		return "", fmt.Errorf("create node identity: insert: %w", err)
+	result := s.orm.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: NodeIdentityColumns.Singleton}},
+		DoNothing: true,
+	}).Create(&nodeIdentityRow{
+		Singleton: 1, NodeID: string(nodeID), CreatedAtUS: createdAt.UTC().UnixMicro(),
+	})
+	if result.Error != nil {
+		return "", fmt.Errorf("create node identity: insert: %w", result.Error)
 	}
 
 	persisted, found, err := s.LoadNodeIdentity(ctx)

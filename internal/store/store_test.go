@@ -89,7 +89,7 @@ func TestMigrationEmptyAndIdempotent(t *testing.T) {
 				&migrationCount, &checksum); err != nil {
 				t.Fatalf("read migration ledger: %v", err)
 			}
-			if migrationCount != 5 || len(checksum) != 64 {
+			if migrationCount != 6 || len(checksum) != 64 {
 				t.Fatalf("migration ledger = count %d checksum %q", migrationCount, checksum)
 			}
 
@@ -194,8 +194,8 @@ func TestMigrationV4UpgradesLegacyDesiredStateWithoutRevisionOrRetryRegression(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 5 {
-		t.Fatalf("migration count = %d, want 5", len(migrations))
+	if len(migrations) != 6 {
+		t.Fatalf("migration count = %d, want 6", len(migrations))
 	}
 	db, err := openDatabase(ctx, filepath.Join(t.TempDir(), "guard.db"))
 	if err != nil {

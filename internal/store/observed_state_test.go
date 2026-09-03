@@ -10,7 +10,61 @@ import (
 	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
+	"gorm.io/gorm"
 )
+
+func TestGORMApplyObservedFirewallUpdateUsesORMMutations(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	if err := database.EnsureNodeIdentity(ctx, testNodeID, time.Unix(100, 0).UTC()); err != nil {
+		t.Fatalf("EnsureNodeIdentity(): %v", err)
+	}
+	target := netip.MustParsePrefix("192.0.2.120/32")
+	seedObservedDesiredTargets(t, database, map[netip.Prefix]core.TargetEnforcementGeneration{target: 1})
+
+	var creates, updates int
+	if err := database.orm.Callback().Create().Before("gorm:create").Register(
+		"observed-state-create", func(tx *gorm.DB) {
+			if tx.Statement.Table == (infrastructureObservedRow{}).TableName() {
+				creates++
+			}
+		}); err != nil {
+		t.Fatalf("register observed create callback: %v", err)
+	}
+	if err := database.orm.Callback().Update().Before("gorm:update").Register(
+		"observed-state-update", func(tx *gorm.DB) {
+			if tx.Statement.Table == (targetObservedRow{}).TableName() {
+				updates++
+			}
+		}); err != nil {
+		t.Fatalf("register observed update callback: %v", err)
+	}
+
+	now := time.Unix(10_000, 0).UTC()
+	err := database.ApplyObservedFirewallUpdate(ctx, core.ObservedFirewallUpdate{
+		NodeID: testNodeID,
+		Infrastructure: &core.InfrastructureObservedState{
+			Presence: core.ObservedPresenceAbsent, ObservedAt: now,
+		},
+		Targets: []core.TargetObservedState{{
+			PhysicalTargetObserved: core.PhysicalTargetObserved{
+				CanonicalTarget: target, ObservedAt: now,
+				BanMembership:  core.ObservedMembershipAbsent,
+				PolicyCoverage: core.ObservedPolicyUnknown, TimeoutMode: core.TimeoutNone,
+			},
+			ConfirmedGeneration: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ApplyObservedFirewallUpdate(): %v", err)
+	}
+	if creates != 1 {
+		t.Fatalf("GORM infrastructure Create callbacks = %d, want 1", creates)
+	}
+	if updates != 1 {
+		t.Fatalf("GORM target Update callbacks = %d, want 1", updates)
+	}
+}
 
 func TestSQLiteObservedFirewallSchemaRejectsClaimWithoutObservedTime(t *testing.T) {
 	ctx := context.Background()
@@ -55,6 +109,33 @@ func TestSQLiteObservedFirewallSchemaRejectsClaimWithoutObservedTime(t *testing.
 	}
 }
 
+func TestSQLiteObservedFirewallSchemaRejectsManagedSnapshotInferredFields(t *testing.T) {
+	ctx := context.Background()
+	database, err := Open(ctx, filepath.Join(t.TempDir(), "guard.db"), migrationFileSystem())
+	if err != nil {
+		t.Fatalf("Open(): %v", err)
+	}
+	defer database.Close()
+	if err := database.EnsureNodeIdentity(ctx, testNodeID, time.Unix(100, 0).UTC()); err != nil {
+		t.Fatalf("EnsureNodeIdentity(): %v", err)
+	}
+	target := netip.MustParsePrefix("192.0.2.98/32")
+	seedObservedDesiredTargets(t, database, map[netip.Prefix]core.TargetEnforcementGeneration{target: 1})
+	_, err = database.db.ExecContext(ctx, `
+		UPDATE enforcement_states
+		SET observed_membership = 'present', observed_at_us = ?,
+			observed_evidence = 'managed_snapshot', observed_backend = 'nftables',
+			observed_policy_coverage = 'unknown', observed_policy_relation_digest = '',
+			observed_timeout_mode = 'none', observed_native_expiry_us = NULL,
+			observed_scopes = 1, observed_address_family = 4,
+			observed_owner_version = '', observed_last_error_code = ''
+		WHERE node_id = ? AND canonical_target = ?`,
+		time.Unix(200, 0).UTC().UnixMicro(), string(testNodeID), target.String())
+	if err == nil {
+		t.Fatal("schema accepted managed snapshot evidence with inferred backend")
+	}
+}
+
 func TestSQLiteObservedFirewallRoundTripAcrossReopen(t *testing.T) {
 	ctx := context.Background()
 	databasePath := filepath.Join(t.TempDir(), "guard.db")
@@ -74,10 +155,12 @@ func TestSQLiteObservedFirewallRoundTripAcrossReopen(t *testing.T) {
 	unknownTarget := netip.MustParsePrefix("192.0.2.1/32")
 	absentTarget := netip.MustParsePrefix("198.51.100.1/32")
 	presentTarget := netip.MustParsePrefix("2001:db8::1/128")
+	managedTarget := netip.MustParsePrefix("2001:db8::2/128")
 	seedObservedDesiredTargets(t, database, map[netip.Prefix]core.TargetEnforcementGeneration{
 		unknownTarget: 1,
 		absentTarget:  2,
 		presentTarget: 3,
+		managedTarget: 4,
 	})
 	now := time.Unix(2_000, 123_000).UTC()
 	nativeExpiry := now.Add(30 * time.Minute)
@@ -102,6 +185,7 @@ func TestSQLiteObservedFirewallRoundTripAcrossReopen(t *testing.T) {
 			{
 				PhysicalTargetObserved: core.PhysicalTargetObserved{
 					CanonicalTarget: absentTarget, ObservedAt: now,
+					Evidence:       core.TargetObservationEvidenceManagedSnapshot,
 					BanMembership:  core.ObservedMembershipAbsent,
 					PolicyCoverage: core.ObservedPolicyUnknown,
 					TimeoutMode:    core.TimeoutNone,
@@ -119,12 +203,22 @@ func TestSQLiteObservedFirewallRoundTripAcrossReopen(t *testing.T) {
 				},
 				ConfirmedGeneration: 3,
 			},
+			{
+				PhysicalTargetObserved: core.PhysicalTargetObserved{
+					CanonicalTarget: managedTarget, ObservedAt: now,
+					Evidence:       core.TargetObservationEvidenceManagedSnapshot,
+					BanMembership:  core.ObservedMembershipPresent,
+					PolicyCoverage: core.ObservedPolicyUnknown, TimeoutMode: core.TimeoutNone,
+					Scopes: core.ScopeInput, AddressFamily: core.AddressFamilyIPv6,
+				},
+				ConfirmedGeneration: 4,
+			},
 		},
 	}
 	update := core.ObservedFirewallUpdate{
 		NodeID: testNodeID, Infrastructure: want.Infrastructure, Policy: want.Policy,
 		// Deliberately reverse the input to prove stable load ordering.
-		Targets: []core.TargetObservedState{want.Targets[2], want.Targets[1], want.Targets[0]},
+		Targets: []core.TargetObservedState{want.Targets[3], want.Targets[2], want.Targets[1], want.Targets[0]},
 	}
 	if err := database.ApplyObservedFirewallUpdate(ctx, update); err != nil {
 		t.Fatalf("ApplyObservedFirewallUpdate(): %v", err)

@@ -3,11 +3,15 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/netip"
 	"time"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/lifei6671/guard-wall/internal/core"
 )
@@ -26,10 +30,11 @@ func (s *Store) LoadReconcileRecovery(ctx context.Context, nodeID core.NodeID) (
 	if !isLowerHex128(string(nodeID)) {
 		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: node id must be 128-bit lowercase hex")
 	}
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	transaction, err := s.beginStoreORMTransaction(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: begin read transaction: %w", err)
 	}
+	tx, transactionORM := transaction.tx, transaction.orm
 	committed := false
 	defer func() {
 		if committed {
@@ -41,77 +46,114 @@ func (s *Store) LoadReconcileRecovery(ctx context.Context, nodeID core.NodeID) (
 		}
 	}()
 
-	if err := s.requireNodeIdentity(ctx, tx, nodeID); err != nil {
+	if err := s.requireNodeIdentity(ctx, transactionORM, nodeID); err != nil {
 		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: %w", err)
 	}
 
-	if state, ok, err := loadSingletonReconcileState(ctx, tx, nodeID, core.ReconcileDomainInfrastructure); err != nil {
+	if state, ok, err := loadSingletonReconcileState(ctx, transactionORM, nodeID, core.ReconcileDomainInfrastructure); err != nil {
 		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: infrastructure state: %w", err)
 	} else if ok {
 		snapshot.States = append(snapshot.States, state)
 	}
-	if state, ok, err := loadSingletonReconcileState(ctx, tx, nodeID, core.ReconcileDomainPolicy); err != nil {
+	if state, ok, err := loadSingletonReconcileState(ctx, transactionORM, nodeID, core.ReconcileDomainPolicy); err != nil {
 		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: policy state: %w", err)
 	} else if ok {
 		snapshot.States = append(snapshot.States, state)
 	}
 
-	rows, err := tx.QueryContext(ctx, `
-		SELECT canonical_target, target_enforcement_generation, retry_epoch, status,
-			attempt_count, last_attempt_at_us, next_attempt_at_us, last_error_code, updated_at_us
-		FROM target_reconcile_state
-		WHERE node_id = ?
-		ORDER BY canonical_target`, string(nodeID))
-	if err != nil {
-		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: target states: %w", err)
+	var rows []targetReconcileStateRow
+	result := transactionORM.WithContext(ctx).
+		Where(&targetReconcileStateRow{NodeID: string(nodeID)}).
+		Clauses(orderByColumns(TargetReconcileStateColumns.CanonicalTarget)).
+		Find(&rows)
+	if result.Error != nil {
+		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: target states: %w", result.Error)
 	}
-	for rows.Next() {
-		state, scanErr := scanTargetReconcileState(rows, nodeID)
+	for _, row := range rows {
+		state, scanErr := decodeTargetReconcileState(nodeID, row)
 		if scanErr != nil {
-			_ = rows.Close()
 			return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: target state: %w", scanErr)
 		}
 		snapshot.States = append(snapshot.States, state)
 	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: iterate target states: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: close target states: %w", err)
-	}
 
-	probeRows, err := tx.QueryContext(ctx, `
-		SELECT domain, canonical_target, infrastructure_revision, policy_revision,
-			target_enforcement_generation, snapshot_revision, fence_snapshot_revision,
-			retry_epoch, attempt_count, recorded_at_us
-		FROM reconcile_probe_requirements
-		WHERE node_id = ?
-		ORDER BY domain, canonical_target, infrastructure_revision, policy_revision,
-			target_enforcement_generation, snapshot_revision, fence_snapshot_revision,
-			retry_epoch, attempt_count`, string(nodeID))
-	if err != nil {
-		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: probe requirements: %w", err)
+	var probeRows []reconcileProbeRequirementRow
+	result = transactionORM.WithContext(ctx).
+		Where(&reconcileProbeRequirementRow{NodeID: string(nodeID)}).
+		Clauses(orderByColumns(
+			ReconcileProbeRequirementColumns.Domain, ReconcileProbeRequirementColumns.CanonicalTarget,
+			ReconcileProbeRequirementColumns.InfrastructureRevision, ReconcileProbeRequirementColumns.PolicyRevision,
+			ReconcileProbeRequirementColumns.TargetEnforcementGeneration, ReconcileProbeRequirementColumns.SnapshotRevision,
+			ReconcileProbeRequirementColumns.FenceSnapshotRevision, ReconcileProbeRequirementColumns.RetryEpoch,
+			ReconcileProbeRequirementColumns.AttemptCount,
+		)).
+		Find(&probeRows)
+	if result.Error != nil {
+		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: probe requirements: %w", result.Error)
 	}
-	for probeRows.Next() {
-		probe, scanErr := scanProbeRequirement(probeRows, nodeID)
+	for _, row := range probeRows {
+		probe, scanErr := decodeProbeRequirement(nodeID, row)
 		if scanErr != nil {
-			_ = probeRows.Close()
 			return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: probe requirement: %w", scanErr)
 		}
 		snapshot.ProbeRequirements = append(snapshot.ProbeRequirements, probe)
-	}
-	if err := probeRows.Err(); err != nil {
-		_ = probeRows.Close()
-		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: iterate probe requirements: %w", err)
-	}
-	if err := probeRows.Close(); err != nil {
-		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: close probe requirements: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: commit read transaction: %w", err)
 	}
 	committed = true
+	return snapshot, nil
+}
+
+// loadReconcileRecoveryInTx reads the full retry recovery snapshot through an
+// already-open read transaction so callers can bind it to related evidence.
+func loadReconcileRecoveryInTx(ctx context.Context, orm *gorm.DB, nodeID core.NodeID) (snapshot core.ReconcileRecoverySnapshot, returnErr error) {
+	if err := requireNodeIdentity(ctx, orm, nodeID); err != nil {
+		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: %w", err)
+	}
+	if state, ok, err := loadSingletonReconcileState(ctx, orm, nodeID, core.ReconcileDomainInfrastructure); err != nil {
+		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: infrastructure state: %w", err)
+	} else if ok {
+		snapshot.States = append(snapshot.States, state)
+	}
+	if state, ok, err := loadSingletonReconcileState(ctx, orm, nodeID, core.ReconcileDomainPolicy); err != nil {
+		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: policy state: %w", err)
+	} else if ok {
+		snapshot.States = append(snapshot.States, state)
+	}
+	var rows []targetReconcileStateRow
+	result := orm.WithContext(ctx).Where(&targetReconcileStateRow{NodeID: string(nodeID)}).
+		Clauses(orderByColumns(TargetReconcileStateColumns.CanonicalTarget)).Find(&rows)
+	if result.Error != nil {
+		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: target states: %w", result.Error)
+	}
+	for _, row := range rows {
+		state, scanErr := decodeTargetReconcileState(nodeID, row)
+		if scanErr != nil {
+			return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: target state: %w", scanErr)
+		}
+		snapshot.States = append(snapshot.States, state)
+	}
+	var probeRows []reconcileProbeRequirementRow
+	result = orm.WithContext(ctx).Where(&reconcileProbeRequirementRow{NodeID: string(nodeID)}).
+		Clauses(orderByColumns(
+			ReconcileProbeRequirementColumns.Domain, ReconcileProbeRequirementColumns.CanonicalTarget,
+			ReconcileProbeRequirementColumns.InfrastructureRevision, ReconcileProbeRequirementColumns.PolicyRevision,
+			ReconcileProbeRequirementColumns.TargetEnforcementGeneration, ReconcileProbeRequirementColumns.SnapshotRevision,
+			ReconcileProbeRequirementColumns.FenceSnapshotRevision, ReconcileProbeRequirementColumns.RetryEpoch,
+			ReconcileProbeRequirementColumns.AttemptCount,
+		)).
+		Find(&probeRows)
+	if result.Error != nil {
+		return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: probe requirements: %w", result.Error)
+	}
+	for _, row := range probeRows {
+		probe, scanErr := decodeProbeRequirement(nodeID, row)
+		if scanErr != nil {
+			return core.ReconcileRecoverySnapshot{}, fmt.Errorf("load reconcile recovery: probe requirement: %w", scanErr)
+		}
+		snapshot.ProbeRequirements = append(snapshot.ProbeRequirements, probe)
+	}
 	return snapshot, nil
 }
 
@@ -125,10 +167,11 @@ func (s *Store) ApplyReconcileTransition(ctx context.Context, transition core.Re
 		return fmt.Errorf("apply reconcile transition: %w", err)
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	transaction, err := s.beginStoreORMTransaction(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("apply reconcile transition: begin: %w", err)
 	}
+	tx, transactionORM := transaction.tx, transaction.orm
 	committed := false
 	defer func() {
 		if committed {
@@ -139,36 +182,35 @@ func (s *Store) ApplyReconcileTransition(ctx context.Context, transition core.Re
 			returnErr = joinErrors(returnErr, rollbackErr)
 		}
 	}()
-
 	nodeID := transition.State.NodeID
 	if transition.DeleteOnly {
 		nodeID = transition.DeleteProbe.NodeID
 	}
-	if err := s.requireNodeIdentity(ctx, tx, nodeID); err != nil {
+	if err := s.requireNodeIdentity(ctx, transactionORM, nodeID); err != nil {
 		return fmt.Errorf("apply reconcile transition: %w", err)
 	}
 	if !transition.DeleteOnly {
-		if err := rejectReconcileRegression(ctx, tx, transition.State); err != nil {
+		if err := rejectReconcileRegression(ctx, transactionORM, transition.State); err != nil {
 			return fmt.Errorf("apply reconcile transition: %w", err)
 		}
 	}
 	if transition.DeleteProbe != nil {
-		if err := deleteProbeRequirement(ctx, tx, *transition.DeleteProbe); err != nil {
+		if err := deleteProbeRequirement(ctx, transactionORM, *transition.DeleteProbe); err != nil {
 			return fmt.Errorf("apply reconcile transition: delete probe requirement: %w", err)
 		}
 	}
 	if !transition.DeleteOnly {
-		if err := upsertReconcileState(ctx, tx, transition.State); err != nil {
+		if err := upsertReconcileState(ctx, transactionORM, transition.State); err != nil {
 			return fmt.Errorf("apply reconcile transition: write state: %w", err)
 		}
 	}
 	if transition.UpsertProbe != nil {
-		if err := upsertProbeRequirement(ctx, tx, *transition.UpsertProbe); err != nil {
+		if err := upsertProbeRequirement(ctx, transactionORM, *transition.UpsertProbe); err != nil {
 			return fmt.Errorf("apply reconcile transition: upsert probe requirement: %w", err)
 		}
 	}
 	if transition.Observed != nil {
-		if err := writeObservedFirewallUpdate(ctx, tx, *transition.Observed); err != nil {
+		if err := writeObservedFirewallUpdate(ctx, transactionORM, *transition.Observed); err != nil {
 			return fmt.Errorf("apply reconcile transition: write Observed state: %w", err)
 		}
 	}
@@ -179,63 +221,264 @@ func (s *Store) ApplyReconcileTransition(ctx context.Context, transition core.Re
 	return nil
 }
 
-type reconcileQueryRower interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
+// ApplyReconcileRetryTransition atomically persists an administrator-created
+// Pending retry epoch and its mandatory critical audit record.
+func (s *Store) ApplyReconcileRetryTransition(ctx context.Context, transition core.ReconcileRetryTransition) (returnErr error) {
+	if err := s.ready(ctx); err != nil {
+		return fmt.Errorf("apply reconcile retry transition: %w", err)
+	}
+	if err := validateReconcileRetryTransition(transition); err != nil {
+		return fmt.Errorf("apply reconcile retry transition: %w", err)
+	}
+	transaction, err := s.beginStoreORMTransaction(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("apply reconcile retry transition: begin: %w", err)
+	}
+	tx, transactionORM := transaction.tx, transaction.orm
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		rollbackErr := tx.Rollback()
+		if rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			returnErr = joinErrors(returnErr, rollbackErr)
+		}
+	}()
+	if err := s.requireNodeIdentity(ctx, transactionORM, transition.State.NodeID); err != nil {
+		return fmt.Errorf("apply reconcile retry transition: %w", err)
+	}
+	if err := rejectReconcileRegression(ctx, transactionORM, transition.State); err != nil {
+		return fmt.Errorf("apply reconcile retry transition: %w", err)
+	}
+	previous, err := currentRetryEpoch(ctx, transactionORM, transition.State)
+	if err != nil {
+		return fmt.Errorf("apply reconcile retry transition: %w", err)
+	}
+	if transition.Audit.PreviousEpoch != previous {
+		return fmt.Errorf("apply reconcile retry transition: audit previous epoch %d does not match durable epoch %d", transition.Audit.PreviousEpoch, previous)
+	}
+	if err := upsertReconcileState(ctx, transactionORM, transition.State); err != nil {
+		return fmt.Errorf("apply reconcile retry transition: write state: %w", err)
+	}
+	if err := writeReconcileRetryAudit(ctx, transactionORM, transition); err != nil {
+		return fmt.Errorf("apply reconcile retry transition: write audit: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return core.NewReconcileCommitUnknownError(fmt.Errorf("apply reconcile retry transition: commit: %w", err))
+	}
+	committed = true
+	return nil
 }
 
-func (s *Store) requireNodeIdentity(ctx context.Context, queryer reconcileQueryRower, nodeID core.NodeID) error {
-	var persisted string
-	if err := queryer.QueryRowContext(ctx, "SELECT node_id FROM node_identity WHERE singleton = 1").Scan(&persisted); err != nil {
-		return fmt.Errorf("read node identity: %w", err)
+// ReadReconcileRetryTransition proves an indeterminate retry commit only when
+// its exact retry ledger state and mandatory audit record are both present.
+func (s *Store) ReadReconcileRetryTransition(ctx context.Context, transition core.ReconcileRetryTransition) (core.ReconcileRetryReadback, error) {
+	if err := s.ready(ctx); err != nil {
+		return core.ReconcileRetryReadback{}, fmt.Errorf("read reconcile retry transition: %w", err)
 	}
-	if persisted != string(nodeID) {
-		return fmt.Errorf("persisted node %q differs from %q", persisted, nodeID)
+	transaction, err := s.beginStoreORMTransaction(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return core.ReconcileRetryReadback{}, fmt.Errorf("read reconcile retry transition: begin: %w", err)
+	}
+	tx, transactionORM := transaction.tx, transaction.orm
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	recovery, err := loadReconcileRecoveryInTx(ctx, transactionORM, transition.State.NodeID)
+	if err != nil {
+		return core.ReconcileRetryReadback{}, err
+	}
+	row, err := readReconcileRetryAudit(ctx, transactionORM, transition.Audit.ID)
+	if err != nil {
+		return core.ReconcileRetryReadback{}, err
+	}
+	stateApplied := recoveryContainsState(recovery, transition.State)
+	auditApplied := row == reconcileRetryAuditDetails(transition)
+	if stateApplied != auditApplied || (row.ID != "" && !auditApplied) {
+		return core.ReconcileRetryReadback{}, fmt.Errorf("read reconcile retry transition: ledger and audit do not match atomically")
+	}
+	if err := tx.Commit(); err != nil {
+		return core.ReconcileRetryReadback{}, fmt.Errorf("read reconcile retry transition: commit: %w", err)
+	}
+	committed = true
+	return core.ReconcileRetryReadback{
+		Recovery: recovery,
+		Applied:  stateApplied && auditApplied,
+	}, nil
+}
+
+type reconcileRetryAuditRecord struct {
+	ID, IdempotencyKey, NodeID, Category, Action, Result, Severity, ActorType, Details string
+	Critical                                                                           int64
+	DeliveryID, AlertID, DecisionID, ErrorCode                                         sql.NullString
+	CreatedAtUS                                                                        int64
+}
+
+func reconcileRetryAuditDetails(transition core.ReconcileRetryTransition) reconcileRetryAuditRecord {
+	state := transition.State
+	details := struct {
+		Domain                 string `json:"domain"`
+		InfrastructureRevision uint64 `json:"infrastructure_revision,omitempty"`
+		PolicyRevision         uint64 `json:"policy_revision,omitempty"`
+		CanonicalTarget        string `json:"canonical_target,omitempty"`
+		TargetGeneration       uint64 `json:"target_enforcement_generation,omitempty"`
+		PreviousRetryEpoch     uint64 `json:"previous_retry_epoch"`
+		NewRetryEpoch          uint64 `json:"new_retry_epoch"`
+	}{
+		PreviousRetryEpoch: uint64(transition.Audit.PreviousEpoch), NewRetryEpoch: uint64(state.RetryEpoch),
+	}
+	switch state.Domain {
+	case core.ReconcileDomainInfrastructure:
+		details.Domain, details.InfrastructureRevision = "infrastructure", uint64(state.InfrastructureRevision)
+	case core.ReconcileDomainPolicy:
+		details.Domain, details.PolicyRevision = "policy", uint64(state.PolicyRevision)
+	case core.ReconcileDomainTarget:
+		details.Domain, details.CanonicalTarget, details.TargetGeneration = "target", state.Target.String(), uint64(state.TargetGeneration)
+	}
+	raw, _ := json.Marshal(details)
+	return reconcileRetryAuditRecord{
+		ID: transition.Audit.ID, IdempotencyKey: transition.Audit.IdempotencyKey, NodeID: string(transition.Audit.NodeID),
+		Category: "reconcile", Action: "reconcile_retry", Result: "success", Severity: "info",
+		ActorType: transition.Audit.ActorType, Details: string(raw), Critical: 1,
+		CreatedAtUS: transition.Audit.OccurredAt.UTC().UnixMicro(),
+	}
+}
+
+func writeReconcileRetryAudit(ctx context.Context, orm *gorm.DB, transition core.ReconcileRetryTransition) error {
+	record := reconcileRetryAuditDetails(transition)
+	result := orm.WithContext(ctx).
+		Select(
+			CriticalAuditColumns.AuditID, CriticalAuditColumns.IdempotencyKey, CriticalAuditColumns.NodeID,
+			CriticalAuditColumns.Category, CriticalAuditColumns.Action, CriticalAuditColumns.Result,
+			CriticalAuditColumns.Severity, CriticalAuditColumns.Critical, CriticalAuditColumns.ActorType,
+			CriticalAuditColumns.DeliveryID, CriticalAuditColumns.AlertID, CriticalAuditColumns.DecisionID,
+			CriticalAuditColumns.ErrorCode, CriticalAuditColumns.DetailsJSON, CriticalAuditColumns.CreatedAtUS,
+		).
+		Create(&criticalAuditRow{
+			AuditID: record.ID, IdempotencyKey: record.IdempotencyKey, NodeID: record.NodeID,
+			Category: record.Category, Action: record.Action, Result: record.Result, Severity: record.Severity,
+			Critical: record.Critical, ActorType: record.ActorType, DetailsJSON: record.Details,
+			CreatedAtUS: record.CreatedAtUS,
+		})
+	return result.Error
+}
+
+func readReconcileRetryAudit(ctx context.Context, orm *gorm.DB, auditID string) (reconcileRetryAuditRecord, error) {
+	var row criticalAuditRow
+	result := orm.WithContext(ctx).Where(&criticalAuditRow{AuditID: auditID}).Take(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return reconcileRetryAuditRecord{}, nil
+	}
+	if result.Error != nil {
+		return reconcileRetryAuditRecord{}, fmt.Errorf("read retry audit: %w", result.Error)
+	}
+	return reconcileRetryAuditRecord{
+		ID: row.AuditID, IdempotencyKey: row.IdempotencyKey, NodeID: row.NodeID,
+		Category: row.Category, Action: row.Action, Result: row.Result, Severity: row.Severity,
+		Critical: row.Critical, ActorType: row.ActorType,
+		DeliveryID: sqlNullString(row.DeliveryID), AlertID: sqlNullString(row.AlertID),
+		DecisionID: sqlNullString(row.DecisionID), ErrorCode: sqlNullString(row.ErrorCode),
+		Details: row.DetailsJSON, CreatedAtUS: row.CreatedAtUS,
+	}, nil
+}
+
+func recoveryContainsState(recovery core.ReconcileRecoverySnapshot, expected core.PersistedReconcileState) bool {
+	for _, state := range recovery.States {
+		if state.NodeID == expected.NodeID && state.Domain == expected.Domain &&
+			state.InfrastructureRevision == expected.InfrastructureRevision && state.PolicyRevision == expected.PolicyRevision &&
+			state.Target == expected.Target && state.TargetGeneration == expected.TargetGeneration &&
+			state.RetryEpoch == expected.RetryEpoch && state.RetryState.Status == expected.RetryState.Status &&
+			state.RetryState.AttemptCount == expected.RetryState.AttemptCount && state.UpdatedAt.UTC().UnixMicro() == expected.UpdatedAt.UTC().UnixMicro() {
+			return true
+		}
+	}
+	return false
+}
+
+func validateReconcileRetryTransition(transition core.ReconcileRetryTransition) error {
+	if err := validateReconcileTransition(core.ReconcileStateTransition{State: transition.State}); err != nil {
+		return err
+	}
+	state := transition.State
+	audit := transition.Audit
+	if state.RetryState.Status != core.ReconcilePending || state.RetryState.AttemptCount != 0 ||
+		state.RetryState.LastAttemptAt != nil || state.RetryState.NextAttemptAt != nil || state.RetryState.LastErrorCode != "" {
+		return fmt.Errorf("administrator retry must create a clean Pending state")
+	}
+	if audit.ID == "" || len(audit.ID) > 160 || audit.IdempotencyKey == "" || len(audit.IdempotencyKey) > 256 {
+		return fmt.Errorf("retry audit identity is invalid")
+	}
+	if audit.NodeID == "" || audit.NodeID != state.NodeID || audit.ActorType != "administrator" {
+		return fmt.Errorf("retry audit identity does not match administrator node")
+	}
+	if audit.OccurredAt.IsZero() || audit.OccurredAt.UTC().UnixMicro() <= 0 ||
+		audit.OccurredAt.UTC().UnixMicro() != state.UpdatedAt.UTC().UnixMicro() {
+		return fmt.Errorf("retry audit time does not match transition")
+	}
+	if state.RetryEpoch == 0 || state.RetryEpoch != audit.PreviousEpoch+1 {
+		return fmt.Errorf("retry audit epoch does not advance exactly once")
 	}
 	return nil
 }
 
-func loadSingletonReconcileState(ctx context.Context, queryer reconcileQueryRower, nodeID core.NodeID, domain core.ReconcileDomain) (core.PersistedReconcileState, bool, error) {
-	var query string
+func (s *Store) requireNodeIdentity(ctx context.Context, orm *gorm.DB, nodeID core.NodeID) error {
+	return requireNodeIdentity(ctx, orm, nodeID)
+}
+
+func requireNodeIdentity(ctx context.Context, orm *gorm.DB, nodeID core.NodeID) error {
+	var row nodeIdentityRow
+	result := orm.WithContext(ctx).Where(&nodeIdentityRow{Singleton: 1}).Take(&row)
+	if result.Error != nil {
+		return fmt.Errorf("read node identity: %w", result.Error)
+	}
+	if row.NodeID != string(nodeID) {
+		return fmt.Errorf("persisted node %q differs from %q", row.NodeID, nodeID)
+	}
+	return nil
+}
+
+func loadSingletonReconcileState(ctx context.Context, orm *gorm.DB, nodeID core.NodeID, domain core.ReconcileDomain) (core.PersistedReconcileState, bool, error) {
 	switch domain {
 	case core.ReconcileDomainInfrastructure:
-		query = `SELECT infrastructure_revision, retry_epoch, status, attempt_count,
-			last_attempt_at_us, next_attempt_at_us, last_error_code, updated_at_us
-			FROM infrastructure_reconcile_state WHERE singleton = 1`
+		var row infrastructureReconcileStateRow
+		result := orm.WithContext(ctx).Where(&infrastructureReconcileStateRow{Singleton: 1}).Take(&row)
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return core.PersistedReconcileState{}, false, nil
+		}
+		if result.Error != nil {
+			return core.PersistedReconcileState{}, false, result.Error
+		}
+		state, err := decodeReconcileState(nodeID, domain, row.InfrastructureRevision, "", 0, row.RetryEpoch,
+			row.Status, row.AttemptCount, row.LastAttemptAtUS, row.NextAttemptAtUS, row.LastErrorCode, row.UpdatedAtUS)
+		return state, err == nil, err
 	case core.ReconcileDomainPolicy:
-		query = `SELECT policy_revision, retry_epoch, status, attempt_count,
-			last_attempt_at_us, next_attempt_at_us, last_error_code, updated_at_us
-			FROM policy_reconcile_state WHERE singleton = 1`
+		var row policyReconcileStateRow
+		result := orm.WithContext(ctx).Where(&policyReconcileStateRow{Singleton: 1}).Take(&row)
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return core.PersistedReconcileState{}, false, nil
+		}
+		if result.Error != nil {
+			return core.PersistedReconcileState{}, false, result.Error
+		}
+		state, err := decodeReconcileState(nodeID, domain, row.PolicyRevision, "", 0, row.RetryEpoch,
+			row.Status, row.AttemptCount, row.LastAttemptAtUS, row.NextAttemptAtUS, row.LastErrorCode, row.UpdatedAtUS)
+		return state, err == nil, err
 	default:
 		return core.PersistedReconcileState{}, false, fmt.Errorf("unsupported domain %d", domain)
 	}
-	var key, epoch, attempt, updated int64
-	var status string
-	var lastAttempt, nextAttempt sql.NullInt64
-	var errorCode sql.NullString
-	err := queryer.QueryRowContext(ctx, query).Scan(
-		&key, &epoch, &status, &attempt, &lastAttempt, &nextAttempt, &errorCode, &updated)
-	if errors.Is(err, sql.ErrNoRows) {
-		return core.PersistedReconcileState{}, false, nil
-	}
-	if err != nil {
-		return core.PersistedReconcileState{}, false, err
-	}
-	state, err := decodedReconcileState(nodeID, domain, key, "", 0, epoch, status, attempt, lastAttempt, nextAttempt, errorCode, updated)
-	return state, err == nil, err
 }
 
-func scanTargetReconcileState(scanner interface{ Scan(...any) error }, nodeID core.NodeID) (core.PersistedReconcileState, error) {
-	var target, status string
-	var generation, epoch, attempt, updated int64
-	var lastAttempt, nextAttempt sql.NullInt64
-	var errorCode sql.NullString
-	if err := scanner.Scan(&target, &generation, &epoch, &status, &attempt, &lastAttempt, &nextAttempt, &errorCode, &updated); err != nil {
-		return core.PersistedReconcileState{}, err
-	}
-	return decodedReconcileState(nodeID, core.ReconcileDomainTarget, 0, target, generation, epoch, status, attempt, lastAttempt, nextAttempt, errorCode, updated)
+func decodeTargetReconcileState(nodeID core.NodeID, row targetReconcileStateRow) (core.PersistedReconcileState, error) {
+	return decodeReconcileState(nodeID, core.ReconcileDomainTarget, 0, row.CanonicalTarget,
+		row.TargetEnforcementGeneration, row.RetryEpoch, row.Status, row.AttemptCount,
+		row.LastAttemptAtUS, row.NextAttemptAtUS, row.LastErrorCode, row.UpdatedAtUS)
 }
 
-func decodedReconcileState(nodeID core.NodeID, domain core.ReconcileDomain, key int64, targetText string, generation, epoch int64, statusText string, attempt int64, lastAttempt, nextAttempt sql.NullInt64, errorCode sql.NullString, updated int64) (core.PersistedReconcileState, error) {
+func decodeReconcileState(nodeID core.NodeID, domain core.ReconcileDomain, key int64, targetText string, generation, epoch int64, statusText string, attempt int64, lastAttempt, nextAttempt *int64, errorCode *string, updated int64) (core.PersistedReconcileState, error) {
 	if key < 0 || generation < 0 || epoch < 0 || attempt < 0 || attempt > math.MaxUint32 || updated <= 0 {
 		return core.PersistedReconcileState{}, fmt.Errorf("persisted numeric field is out of range")
 	}
@@ -250,9 +493,9 @@ func decodedReconcileState(nodeID core.NodeID, domain core.ReconcileDomain, key 
 		RetryState: core.RetryState{
 			Status:        status,
 			AttemptCount:  uint32(attempt),
-			LastAttemptAt: decodeOptionalTime(lastAttempt),
-			NextAttemptAt: decodeOptionalTime(nextAttempt),
-			LastErrorCode: errorCode.String,
+			LastAttemptAt: decodeOptionalTimePointer(lastAttempt),
+			NextAttemptAt: decodeOptionalTimePointer(nextAttempt),
+			LastErrorCode: valueOrEmpty(errorCode),
 		},
 		UpdatedAt: time.UnixMicro(updated).UTC(),
 	}
@@ -275,12 +518,10 @@ func decodedReconcileState(nodeID core.NodeID, domain core.ReconcileDomain, key 
 	return state, nil
 }
 
-func scanProbeRequirement(scanner interface{ Scan(...any) error }, nodeID core.NodeID) (core.PersistedProbeRequirement, error) {
-	var domainText, targetText string
-	var infrastructure, policy, generation, snapshot, fence, epoch, attempt, recorded int64
-	if err := scanner.Scan(&domainText, &targetText, &infrastructure, &policy, &generation, &snapshot, &fence, &epoch, &attempt, &recorded); err != nil {
-		return core.PersistedProbeRequirement{}, err
-	}
+func decodeProbeRequirement(nodeID core.NodeID, row reconcileProbeRequirementRow) (core.PersistedProbeRequirement, error) {
+	domainText, targetText := row.Domain, row.CanonicalTarget
+	infrastructure, policy, generation := row.InfrastructureRevision, row.PolicyRevision, row.TargetEnforcementGeneration
+	snapshot, fence, epoch, attempt, recorded := row.SnapshotRevision, row.FenceSnapshotRevision, row.RetryEpoch, row.AttemptCount, row.RecordedAtUS
 	if infrastructure < 0 || policy < 0 || generation < 0 || snapshot < 0 || epoch < 0 ||
 		attempt <= 0 || attempt > math.MaxUint32 || recorded <= 0 || (fence != 0 && fence != 1) {
 		return core.PersistedProbeRequirement{}, fmt.Errorf("persisted probe numeric field is out of range")
@@ -314,32 +555,31 @@ func scanProbeRequirement(scanner interface{ Scan(...any) error }, nodeID core.N
 	return probe, nil
 }
 
-func rejectReconcileRegression(ctx context.Context, tx *sql.Tx, state core.PersistedReconcileState) error {
+func rejectReconcileRegression(ctx context.Context, orm *gorm.DB, state core.PersistedReconcileState) error {
 	var current core.PersistedReconcileState
 	var ok bool
 	var err error
 	if state.Domain == core.ReconcileDomainTarget {
-		var target string
-		var generation, epoch, attempt int64
-		err = tx.QueryRowContext(ctx, `
-			SELECT canonical_target, target_enforcement_generation, retry_epoch, attempt_count
-			FROM target_reconcile_state WHERE node_id = ? AND canonical_target = ?`,
-			string(state.NodeID), state.Target.String()).Scan(&target, &generation, &epoch, &attempt)
+		var row targetReconcileStateRow
+		result := orm.WithContext(ctx).Where(&targetReconcileStateRow{
+			NodeID: string(state.NodeID), CanonicalTarget: state.Target.String(),
+		}).Take(&row)
+		err = result.Error
 		if err == nil {
-			if generation < 0 || epoch < 0 || attempt < 0 || attempt > math.MaxUint32 {
+			if row.TargetEnforcementGeneration < 0 || row.RetryEpoch < 0 || row.AttemptCount < 0 || row.AttemptCount > math.MaxUint32 {
 				return fmt.Errorf("persisted target version is out of range")
 			}
 			ok = true
 			current.Domain = core.ReconcileDomainTarget
 			current.Target = state.Target
-			current.TargetGeneration = core.TargetEnforcementGeneration(generation)
-			current.RetryEpoch = core.RetryEpoch(epoch)
-			current.RetryState.AttemptCount = uint32(attempt)
+			current.TargetGeneration = core.TargetEnforcementGeneration(row.TargetEnforcementGeneration)
+			current.RetryEpoch = core.RetryEpoch(row.RetryEpoch)
+			current.RetryState.AttemptCount = uint32(row.AttemptCount)
 		}
 	} else {
-		current, ok, err = loadSingletonReconcileState(ctx, tx, state.NodeID, state.Domain)
+		current, ok, err = loadSingletonReconcileState(ctx, orm, state.NodeID, state.Domain)
 	}
-	if errors.Is(err, sql.ErrNoRows) || !ok {
+	if errors.Is(err, gorm.ErrRecordNotFound) || !ok {
 		return nil
 	}
 	if err != nil {
@@ -349,6 +589,33 @@ func rejectReconcileRegression(ctx context.Context, tx *sql.Tx, state core.Persi
 		return ErrReconcileStateRegression
 	}
 	return nil
+}
+
+func currentRetryEpoch(ctx context.Context, orm *gorm.DB, state core.PersistedReconcileState) (core.RetryEpoch, error) {
+	if state.Domain == core.ReconcileDomainTarget {
+		var row targetReconcileStateRow
+		result := orm.WithContext(ctx).Select(TargetReconcileStateColumns.RetryEpoch).Where(&targetReconcileStateRow{
+			NodeID: string(state.NodeID), CanonicalTarget: state.Target.String(),
+		}).Take(&row)
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return 0, nil
+		}
+		if result.Error != nil {
+			return 0, fmt.Errorf("read current target retry epoch: %w", result.Error)
+		}
+		if row.RetryEpoch < 0 {
+			return 0, fmt.Errorf("persisted target retry epoch is out of range")
+		}
+		return core.RetryEpoch(row.RetryEpoch), nil
+	}
+	current, ok, err := loadSingletonReconcileState(ctx, orm, state.NodeID, state.Domain)
+	if err != nil {
+		return 0, fmt.Errorf("read current retry epoch: %w", err)
+	}
+	if !ok {
+		return 0, nil
+	}
+	return current.RetryEpoch, nil
 }
 
 func compareReconcileVersion(left, right core.PersistedReconcileState) int {
@@ -387,118 +654,107 @@ func domainKey(state core.PersistedReconcileState) uint64 {
 	}
 }
 
-func upsertReconcileState(ctx context.Context, tx *sql.Tx, state core.PersistedReconcileState) error {
+func upsertReconcileState(ctx context.Context, orm *gorm.DB, state core.PersistedReconcileState) error {
 	status := encodeReconcileStatus(state.RetryState.Status)
-	lastAttempt := encodeOptionalTime(state.RetryState.LastAttemptAt)
-	nextAttempt := encodeOptionalTime(state.RetryState.NextAttemptAt)
-	errorCode := nullableText(state.RetryState.LastErrorCode)
+	lastAttempt := optionalTimePointer(state.RetryState.LastAttemptAt)
+	nextAttempt := optionalTimePointer(state.RetryState.NextAttemptAt)
+	errorCode := optionalTextPointer(state.RetryState.LastErrorCode)
 	if state.Domain == core.ReconcileDomainInfrastructure {
-		_, err := tx.ExecContext(ctx, `
-			INSERT INTO infrastructure_reconcile_state(
-				singleton, infrastructure_revision, retry_epoch, status, attempt_count,
-				last_attempt_at_us, next_attempt_at_us, last_error_code, updated_at_us)
-			VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(singleton) DO UPDATE SET
-				infrastructure_revision = excluded.infrastructure_revision,
-				retry_epoch = excluded.retry_epoch, status = excluded.status,
-				attempt_count = excluded.attempt_count,
-				last_attempt_at_us = excluded.last_attempt_at_us,
-				next_attempt_at_us = excluded.next_attempt_at_us,
-				last_error_code = excluded.last_error_code,
-				updated_at_us = excluded.updated_at_us`,
-			int64(state.InfrastructureRevision), int64(state.RetryEpoch), status,
-			int64(state.RetryState.AttemptCount), lastAttempt, nextAttempt, errorCode,
-			state.UpdatedAt.UTC().UnixMicro())
-		return err
+		return orm.WithContext(ctx).Clauses(reconcileUpsertConflict(
+			[]string{InfrastructureReconcileStateColumns.Singleton},
+			reconcileStateUpdateColumns(
+				InfrastructureReconcileStateColumns.InfrastructureRevision,
+				InfrastructureReconcileStateColumns.RetryEpoch, InfrastructureReconcileStateColumns.Status,
+				InfrastructureReconcileStateColumns.AttemptCount, InfrastructureReconcileStateColumns.LastAttemptAtUS,
+				InfrastructureReconcileStateColumns.NextAttemptAtUS, InfrastructureReconcileStateColumns.LastErrorCode,
+				InfrastructureReconcileStateColumns.UpdatedAtUS,
+			),
+		)).
+			Create(&infrastructureReconcileStateRow{Singleton: 1, InfrastructureRevision: int64(state.InfrastructureRevision),
+				RetryEpoch: int64(state.RetryEpoch), Status: status, AttemptCount: int64(state.RetryState.AttemptCount),
+				LastAttemptAtUS: lastAttempt, NextAttemptAtUS: nextAttempt, LastErrorCode: errorCode,
+				UpdatedAtUS: state.UpdatedAt.UTC().UnixMicro()}).Error
 	}
 	if state.Domain == core.ReconcileDomainPolicy {
-		_, err := tx.ExecContext(ctx, `
-			INSERT INTO policy_reconcile_state(
-				singleton, policy_revision, retry_epoch, status, attempt_count,
-				last_attempt_at_us, next_attempt_at_us, last_error_code, updated_at_us)
-			VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(singleton) DO UPDATE SET
-				policy_revision = excluded.policy_revision,
-				retry_epoch = excluded.retry_epoch, status = excluded.status,
-				attempt_count = excluded.attempt_count,
-				last_attempt_at_us = excluded.last_attempt_at_us,
-				next_attempt_at_us = excluded.next_attempt_at_us,
-				last_error_code = excluded.last_error_code,
-				updated_at_us = excluded.updated_at_us`,
-			int64(state.PolicyRevision), int64(state.RetryEpoch), status,
-			int64(state.RetryState.AttemptCount), lastAttempt, nextAttempt, errorCode,
-			state.UpdatedAt.UTC().UnixMicro())
-		return err
+		return orm.WithContext(ctx).Clauses(reconcileUpsertConflict(
+			[]string{PolicyReconcileStateColumns.Singleton},
+			reconcileStateUpdateColumns(
+				PolicyReconcileStateColumns.PolicyRevision, PolicyReconcileStateColumns.RetryEpoch,
+				PolicyReconcileStateColumns.Status, PolicyReconcileStateColumns.AttemptCount,
+				PolicyReconcileStateColumns.LastAttemptAtUS, PolicyReconcileStateColumns.NextAttemptAtUS,
+				PolicyReconcileStateColumns.LastErrorCode, PolicyReconcileStateColumns.UpdatedAtUS,
+			),
+		)).
+			Create(&policyReconcileStateRow{Singleton: 1, PolicyRevision: int64(state.PolicyRevision),
+				RetryEpoch: int64(state.RetryEpoch), Status: status, AttemptCount: int64(state.RetryState.AttemptCount),
+				LastAttemptAtUS: lastAttempt, NextAttemptAtUS: nextAttempt, LastErrorCode: errorCode,
+				UpdatedAtUS: state.UpdatedAt.UTC().UnixMicro()}).Error
 	}
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO target_reconcile_state(
-			node_id, canonical_target, target_enforcement_generation, retry_epoch,
-			status, attempt_count, last_attempt_at_us, next_attempt_at_us,
-			last_error_code, updated_at_us)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(node_id, canonical_target) DO UPDATE SET
-			target_enforcement_generation = excluded.target_enforcement_generation,
-			retry_epoch = excluded.retry_epoch, status = excluded.status,
-			attempt_count = excluded.attempt_count,
-			last_attempt_at_us = excluded.last_attempt_at_us,
-			next_attempt_at_us = excluded.next_attempt_at_us,
-			last_error_code = excluded.last_error_code,
-			updated_at_us = excluded.updated_at_us`,
-		string(state.NodeID), state.Target.String(), int64(state.TargetGeneration),
-		int64(state.RetryEpoch), status, int64(state.RetryState.AttemptCount),
-		lastAttempt, nextAttempt, errorCode, state.UpdatedAt.UTC().UnixMicro())
-	return err
+	return orm.WithContext(ctx).Clauses(reconcileUpsertConflict(
+		[]string{TargetReconcileStateColumns.NodeID, TargetReconcileStateColumns.CanonicalTarget},
+		reconcileStateUpdateColumns(
+			TargetReconcileStateColumns.TargetEnforcementGeneration, TargetReconcileStateColumns.RetryEpoch,
+			TargetReconcileStateColumns.Status, TargetReconcileStateColumns.AttemptCount,
+			TargetReconcileStateColumns.LastAttemptAtUS, TargetReconcileStateColumns.NextAttemptAtUS,
+			TargetReconcileStateColumns.LastErrorCode, TargetReconcileStateColumns.UpdatedAtUS,
+		),
+	)).
+		Create(&targetReconcileStateRow{NodeID: string(state.NodeID), CanonicalTarget: state.Target.String(),
+			TargetEnforcementGeneration: int64(state.TargetGeneration), RetryEpoch: int64(state.RetryEpoch),
+			Status: status, AttemptCount: int64(state.RetryState.AttemptCount), LastAttemptAtUS: lastAttempt,
+			NextAttemptAtUS: nextAttempt, LastErrorCode: errorCode, UpdatedAtUS: state.UpdatedAt.UTC().UnixMicro()}).Error
 }
 
-func upsertProbeRequirement(ctx context.Context, tx *sql.Tx, probe core.PersistedProbeRequirement) error {
-	values := probeSQLValues(probe)
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO reconcile_probe_requirements(
-			node_id, domain, canonical_target, infrastructure_revision, policy_revision,
-			target_enforcement_generation, snapshot_revision, fence_snapshot_revision,
-			retry_epoch, attempt_count, recorded_at_us)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(
-			node_id, domain, canonical_target, infrastructure_revision, policy_revision,
-			target_enforcement_generation, snapshot_revision, fence_snapshot_revision,
-			retry_epoch, attempt_count
-		) DO UPDATE SET recorded_at_us = excluded.recorded_at_us`, values...)
-	return err
+func upsertProbeRequirement(ctx context.Context, orm *gorm.DB, probe core.PersistedProbeRequirement) error {
+	row := reconcileProbeRequirementFromCore(probe)
+	return orm.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: ReconcileProbeRequirementColumns.NodeID}, {Name: ReconcileProbeRequirementColumns.Domain},
+			{Name: ReconcileProbeRequirementColumns.CanonicalTarget},
+			{Name: ReconcileProbeRequirementColumns.InfrastructureRevision}, {Name: ReconcileProbeRequirementColumns.PolicyRevision},
+			{Name: ReconcileProbeRequirementColumns.TargetEnforcementGeneration}, {Name: ReconcileProbeRequirementColumns.SnapshotRevision},
+			{Name: ReconcileProbeRequirementColumns.FenceSnapshotRevision}, {Name: ReconcileProbeRequirementColumns.RetryEpoch},
+			{Name: ReconcileProbeRequirementColumns.AttemptCount},
+		},
+		DoUpdates: clause.AssignmentColumns([]string{ReconcileProbeRequirementColumns.RecordedAtUS}),
+	}).Create(&row).Error
 }
 
-func deleteProbeRequirement(ctx context.Context, tx *sql.Tx, probe core.PersistedProbeRequirement) error {
-	values := probeSQLValues(probe)
-	result, err := tx.ExecContext(ctx, `
-		DELETE FROM reconcile_probe_requirements
-		WHERE node_id = ? AND domain = ? AND canonical_target = ?
-			AND infrastructure_revision = ? AND policy_revision = ?
-			AND target_enforcement_generation = ? AND snapshot_revision = ?
-			AND fence_snapshot_revision = ? AND retry_epoch = ? AND attempt_count = ?`,
-		values[:10]...)
-	if err != nil {
-		return err
+func deleteProbeRequirement(ctx context.Context, orm *gorm.DB, probe core.PersistedProbeRequirement) error {
+	row := reconcileProbeRequirementFromCore(probe)
+	// map 条件保留零值字段，确保完整 Probe 物理键参与精确删除。
+	result := orm.WithContext(ctx).Where(map[string]any{
+		ReconcileProbeRequirementColumns.NodeID:                      row.NodeID,
+		ReconcileProbeRequirementColumns.Domain:                      row.Domain,
+		ReconcileProbeRequirementColumns.CanonicalTarget:             row.CanonicalTarget,
+		ReconcileProbeRequirementColumns.InfrastructureRevision:      row.InfrastructureRevision,
+		ReconcileProbeRequirementColumns.PolicyRevision:              row.PolicyRevision,
+		ReconcileProbeRequirementColumns.TargetEnforcementGeneration: row.TargetEnforcementGeneration,
+		ReconcileProbeRequirementColumns.SnapshotRevision:            row.SnapshotRevision,
+		ReconcileProbeRequirementColumns.FenceSnapshotRevision:       row.FenceSnapshotRevision,
+		ReconcileProbeRequirementColumns.RetryEpoch:                  row.RetryEpoch,
+		ReconcileProbeRequirementColumns.AttemptCount:                row.AttemptCount,
+	}).Delete(&reconcileProbeRequirementRow{})
+	if result.Error != nil {
+		return result.Error
 	}
-	deleted, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if deleted != 1 {
+	if result.RowsAffected != 1 {
 		return fmt.Errorf("exact probe requirement does not exist")
 	}
 	return nil
 }
 
-func probeSQLValues(probe core.PersistedProbeRequirement) []any {
+func reconcileProbeRequirementFromCore(probe core.PersistedProbeRequirement) reconcileProbeRequirementRow {
 	target := ""
 	if probe.Target.IsValid() {
 		target = probe.Target.String()
 	}
-	return []any{
-		string(probe.NodeID), encodeReconcileDomain(probe.Domain), target,
-		int64(probe.InfrastructureRevision), int64(probe.PolicyRevision),
-		int64(probe.TargetGeneration), int64(probe.SnapshotRevision),
-		boolToInt(probe.FenceSnapshotRevision), int64(probe.RetryEpoch),
-		int64(probe.AttemptCount), probe.RecordedAt.UTC().UnixMicro(),
+	return reconcileProbeRequirementRow{
+		NodeID: string(probe.NodeID), Domain: encodeReconcileDomain(probe.Domain), CanonicalTarget: target,
+		InfrastructureRevision: int64(probe.InfrastructureRevision), PolicyRevision: int64(probe.PolicyRevision),
+		TargetEnforcementGeneration: int64(probe.TargetGeneration), SnapshotRevision: int64(probe.SnapshotRevision),
+		FenceSnapshotRevision: boolToInt(probe.FenceSnapshotRevision), RetryEpoch: int64(probe.RetryEpoch),
+		AttemptCount: int64(probe.AttemptCount), RecordedAtUS: probe.RecordedAt.UTC().UnixMicro(),
 	}
 }
 
@@ -764,6 +1020,14 @@ func encodeOptionalTime(value *time.Time) any {
 	return value.UTC().UnixMicro()
 }
 
+func decodeOptionalTimePointer(value *int64) *time.Time {
+	if value == nil {
+		return nil
+	}
+	decoded := time.UnixMicro(*value).UTC()
+	return &decoded
+}
+
 func decodeOptionalTime(value sql.NullInt64) *time.Time {
 	if !value.Valid {
 		return nil
@@ -784,4 +1048,56 @@ func boolToInt(value bool) int64 {
 		return 1
 	}
 	return 0
+}
+
+func orderByColumns(names ...string) clause.OrderBy {
+	columns := make([]clause.OrderByColumn, 0, len(names))
+	for _, name := range names {
+		columns = append(columns, clause.OrderByColumn{Column: clause.Column{Name: name}})
+	}
+	return clause.OrderBy{Columns: columns}
+}
+
+func reconcileStateUpdateColumns(key, retryEpoch, status, attemptCount, lastAttemptAtUS, nextAttemptAtUS, lastErrorCode, updatedAtUS string) []string {
+	return []string{key, retryEpoch, status, attemptCount, lastAttemptAtUS, nextAttemptAtUS, lastErrorCode, updatedAtUS}
+}
+
+func reconcileUpsertConflict(conflictColumns []string, updateColumns []string) clause.OnConflict {
+	columns := make([]clause.Column, 0, len(conflictColumns))
+	for _, name := range conflictColumns {
+		columns = append(columns, clause.Column{Name: name})
+	}
+	return clause.OnConflict{
+		Columns:   columns,
+		DoUpdates: clause.AssignmentColumns(updateColumns),
+	}
+}
+
+func optionalTimePointer(value *time.Time) *int64 {
+	if value == nil {
+		return nil
+	}
+	encoded := value.UTC().UnixMicro()
+	return &encoded
+}
+
+func optionalTextPointer(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func valueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func sqlNullString(value *string) sql.NullString {
+	if value == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *value, Valid: true}
 }
