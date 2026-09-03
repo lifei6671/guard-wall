@@ -161,6 +161,72 @@ func (s *Store) EnsureNodeIdentity(ctx context.Context, nodeID core.NodeID, crea
 	return nil
 }
 
+// LoadNodeIdentity returns the singleton persistent NodeID when bootstrap has
+// already created it. A missing row is normal only before first bootstrap.
+func (s *Store) LoadNodeIdentity(ctx context.Context) (core.NodeID, bool, error) {
+	if s == nil || s.db == nil {
+		return "", false, fmt.Errorf("load node identity: store is closed")
+	}
+	if ctx == nil {
+		return "", false, fmt.Errorf("load node identity: context is required")
+	}
+
+	var persisted string
+	err := s.db.QueryRowContext(ctx,
+		"SELECT node_id FROM node_identity WHERE singleton = 1").Scan(&persisted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("load node identity: %w", err)
+	}
+	if !isLowerHex128(persisted) {
+		return "", false, fmt.Errorf("load node identity: persisted node id is invalid")
+	}
+	return core.NodeID(persisted), true, nil
+}
+
+// CreateNodeIdentity atomically claims the singleton persistent NodeID and
+// returns the value that owns the database. Concurrent first bootstraps
+// converge on the same stored identity.
+func (s *Store) CreateNodeIdentity(
+	ctx context.Context,
+	nodeID core.NodeID,
+	createdAt time.Time,
+) (core.NodeID, error) {
+	if s == nil || s.db == nil {
+		return "", fmt.Errorf("create node identity: store is closed")
+	}
+	if ctx == nil {
+		return "", fmt.Errorf("create node identity: context is required")
+	}
+	if nodeID == "" {
+		return "", fmt.Errorf("create node identity: node id is required")
+	}
+	if !isLowerHex128(string(nodeID)) {
+		return "", fmt.Errorf("create node identity: node id must be 128-bit lowercase hex")
+	}
+	if createdAt.IsZero() {
+		return "", fmt.Errorf("create node identity: created time is required")
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO node_identity(singleton, node_id, created_at_us)
+		VALUES (1, ?, ?)
+		ON CONFLICT(singleton) DO NOTHING`, string(nodeID), createdAt.UTC().UnixMicro()); err != nil {
+		return "", fmt.Errorf("create node identity: insert: %w", err)
+	}
+
+	persisted, found, err := s.LoadNodeIdentity(ctx)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("create node identity: missing after insert")
+	}
+	return persisted, nil
+}
+
 func joinErrors(primary, secondary error) error {
 	if secondary == nil {
 		return primary
