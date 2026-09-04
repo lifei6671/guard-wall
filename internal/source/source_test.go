@@ -18,7 +18,7 @@ type fakeCheckpointStore struct {
 	positions []core.SourcePosition
 }
 
-func (s *fakeCheckpointStore) saveCheckpoint(_ context.Context, sourceID core.SourceID, _ core.DeliverySequence, position core.SourcePosition) error {
+func (s *fakeCheckpointStore) saveCheckpoint(_ context.Context, sourceID core.SourceID, _ core.DeliverySequence, position core.SourcePosition, _ ...core.FilePosition) error {
 	s.writes++
 	if s.fail {
 		return errCheckpoint

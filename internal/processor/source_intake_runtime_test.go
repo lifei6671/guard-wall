@@ -54,7 +54,7 @@ func TestRunSourceIntakeRuntimeStopsReaderBeforeDrainAndClose(t *testing.T) {
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() {
-		result <- RunSourceIntakeRuntime(runCtx, time.Second, reader, queue, coordinator, checkpoints, closer)
+		result <- RunSourceIntakeRuntime(runCtx, time.Second, reader, queue, coordinator, checkpoints, closer, nil)
 	}()
 
 	waitForSourceRuntimeSignal(t, reader.started, "reader start")
@@ -121,7 +121,7 @@ func TestRunSourceIntakeRuntimeReaderErrorDrainsAcceptedSet(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() {
-		result <- RunSourceIntakeRuntime(context.Background(), time.Second, reader, queue, coordinator, checkpoints, closer)
+		result <- RunSourceIntakeRuntime(context.Background(), time.Second, reader, queue, coordinator, checkpoints, closer, nil)
 	}()
 	waitForSourceRuntimeSignal(t, runner.started, "worker start")
 	if closer.Calls() != 0 {
@@ -139,6 +139,8 @@ func TestRunSourceIntakeRuntimeReaderErrorDrainsAcceptedSet(t *testing.T) {
 
 func TestRunSourceIntakeRuntimePreservesReaderFailureJoinedWithCancellation(t *testing.T) {
 	database, _ := openSourceRuntimeStore(t)
+	seedShutdownSource(t, database)
+	checkpoints := newSourceRuntimeCheckpoints(t, database)
 	queue, err := source.NewDeliveryQueue(1)
 	if err != nil {
 		t.Fatal(err)
@@ -160,8 +162,9 @@ func TestRunSourceIntakeRuntimePreservesReaderFailureJoinedWithCancellation(t *t
 			reader,
 			queue,
 			NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), &sourceRuntimeErrorRunner{}),
-			newSourceRuntimeCheckpoints(t, database),
+			checkpoints,
 			closer,
+			nil,
 		)
 	}()
 
@@ -178,6 +181,7 @@ func TestRunSourceIntakeRuntimePreservesReaderFailureJoinedWithCancellation(t *t
 
 func TestRunSourceIntakeRuntimeRejectsInvalidDeliveryAtSink(t *testing.T) {
 	database, _ := openSourceRuntimeStore(t)
+	seedShutdownSource(t, database)
 	queue, err := source.NewDeliveryQueue(1)
 	if err != nil {
 		t.Fatal(err)
@@ -195,6 +199,7 @@ func TestRunSourceIntakeRuntimeRejectsInvalidDeliveryAtSink(t *testing.T) {
 		NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), &sourceRuntimeErrorRunner{}),
 		newSourceRuntimeCheckpoints(t, database),
 		closer,
+		nil,
 	)
 	if err == nil || !containsErrorText(err, "delivery id is not canonical") {
 		t.Fatalf("RunSourceIntakeRuntime() error = %v, want invalid delivery", err)
@@ -209,6 +214,8 @@ func TestRunSourceIntakeRuntimeRejectsInvalidDeliveryAtSink(t *testing.T) {
 
 func TestRunSourceIntakeRuntimeTimeoutDoesNotCloseWhileReaderIsActive(t *testing.T) {
 	database, _ := openSourceRuntimeStore(t)
+	seedShutdownSource(t, database)
+	checkpoints := newSourceRuntimeCheckpoints(t, database)
 	queue, err := source.NewDeliveryQueue(1)
 	if err != nil {
 		t.Fatal(err)
@@ -228,8 +235,9 @@ func TestRunSourceIntakeRuntimeTimeoutDoesNotCloseWhileReaderIsActive(t *testing
 			reader,
 			queue,
 			NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), &sourceRuntimeErrorRunner{}),
-			newSourceRuntimeCheckpoints(t, database),
+			checkpoints,
 			closer,
+			nil,
 		)
 	}()
 
@@ -278,6 +286,7 @@ func TestRunSourceIntakeRuntimePreservesWorkerFailureWhenReaderStopTimesOut(t *t
 			NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), &sourceRuntimeErrorRunner{err: workerErr}),
 			newSourceRuntimeCheckpoints(t, database),
 			closer,
+			nil,
 		)
 	}()
 
@@ -296,7 +305,7 @@ func TestRunSourceIntakeRuntimePreservesWorkerFailureWhenReaderStopTimesOut(t *t
 func TestRunSourceIntakeRuntimeTimeoutDoesNotCloseDuringCommitUnknownReadback(t *testing.T) {
 	database, _ := openSourceRuntimeStore(t)
 	seedShutdownSource(t, database)
-	delivery := testDelivery(t, 1)
+	delivery := sqliteDeliveryAt(t, 0, 10, time.Unix(1_700_000_000, 0).UTC())
 	queue, err := source.NewDeliveryQueue(1)
 	if err != nil {
 		t.Fatal(err)
@@ -324,6 +333,7 @@ func TestRunSourceIntakeRuntimeTimeoutDoesNotCloseDuringCommitUnknownReadback(t 
 			NewCoordinator(readbackStore, &zeroOutcomeRunner{}),
 			checkpoints,
 			closer,
+			nil,
 		)
 	}()
 
@@ -345,6 +355,7 @@ func TestRunSourceIntakeRuntimeRejectsNilReaderBeforeStartingRuntime(t *testing.
 		context.Background(),
 		time.Second,
 		reader,
+		nil,
 		nil,
 		nil,
 		nil,

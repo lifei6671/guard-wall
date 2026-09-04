@@ -100,6 +100,8 @@ type sourceRestartSnapshot struct {
 	NewEventID           string                     `json:"new_event_id"`
 	Generations          []sourceGenerationSnapshot `json:"generations"`
 	CheckpointSequence   uint64                     `json:"checkpoint_sequence"`
+	CheckpointSession    store.SourceSessionID      `json:"checkpoint_session"`
+	CheckpointPersisted  time.Time                  `json:"checkpoint_persisted"`
 	CheckpointGeneration string                     `json:"checkpoint_generation"`
 	CheckpointEndOffset  uint64                     `json:"checkpoint_end_offset"`
 	OldReceiptFound      bool                       `json:"old_receipt_found"`
@@ -125,7 +127,7 @@ func seedSourceRestartState(t *testing.T, ctx context.Context, database *store.S
 		t.Fatalf("EnsureSource(): %v", err)
 	}
 
-	state := NewSQLiteStateStore(database)
+	state := NewSQLiteStateStore(database, beginSQLiteSourceSession(t, database, sourceRestartSourceID))
 	state.clock = func() time.Time { return base.Add(2 * time.Second) }
 	if err := state.RegisterFileGeneration(ctx, store.FileGeneration{
 		SourceID: sourceRestartSourceID, Generation: sourceRestartOldGeneration,
@@ -136,6 +138,9 @@ func seedSourceRestartState(t *testing.T, ctx context.Context, database *store.S
 	}
 
 	oldPosition := sourceRestartPosition(t, sourceRestartOldGeneration, 11, 101)
+	if err := state.InitializeFileGenerationCoverage(ctx, sourceRestartOldGeneration); err != nil {
+		t.Fatal(err)
+	}
 	oldDeliveryID := sourceRestartDeliveryID(t, oldPosition)
 	putSourceRestartReceipt(t, ctx, database, oldDeliveryID, oldPosition, base.Add(time.Second))
 
@@ -147,6 +152,9 @@ func seedSourceRestartState(t *testing.T, ctx context.Context, database *store.S
 	}
 
 	newPosition := sourceRestartPosition(t, sourceRestartNewGeneration, 12, 202)
+	if err := state.InitializeFileGenerationCoverage(ctx, sourceRestartNewGeneration); err != nil {
+		t.Fatal(err)
+	}
 	newDeliveryID := sourceRestartDeliveryID(t, newPosition)
 	putSourceRestartReceipt(t, ctx, database, newDeliveryID, newPosition, base.Add(3*time.Second))
 
@@ -173,8 +181,7 @@ func seedSourceRestartState(t *testing.T, ctx context.Context, database *store.S
 
 func readSourceRestartSnapshot(t *testing.T, ctx context.Context, database *store.Store) sourceRestartSnapshot {
 	t.Helper()
-	state := NewSQLiteStateStore(database)
-	generations, err := state.RecoverFileGenerations(ctx, sourceRestartSourceID)
+	generations, err := database.LoadRecoverableFileGenerations(ctx, sourceRestartSourceID)
 	if err != nil {
 		t.Fatalf("RecoverFileGenerations(): %v", err)
 	}
@@ -204,7 +211,7 @@ func readSourceRestartSnapshot(t *testing.T, ctx context.Context, database *stor
 		t.Fatalf("new receipt = %+v, found=%v", newReceipt, newFound)
 	}
 
-	checkpoint, found, err := state.LoadCheckpoint(ctx, sourceRestartSourceID)
+	checkpoint, found, err := database.LoadSourceCheckpoint(ctx, sourceRestartSourceID)
 	if err != nil || !found {
 		t.Fatalf("LoadCheckpoint() = %+v, found=%v err=%v", checkpoint, found, err)
 	}
@@ -217,6 +224,8 @@ func readSourceRestartSnapshot(t *testing.T, ctx context.Context, database *stor
 		OldDeliveryID: string(oldDeliveryID), NewDeliveryID: string(newDeliveryID),
 		OldEventID: string(oldEventID), NewEventID: string(newEventID),
 		CheckpointSequence:   uint64(checkpoint.DeliverySequence),
+		CheckpointSession:    checkpoint.SessionID,
+		CheckpointPersisted:  checkpoint.PersistedAt,
 		CheckpointGeneration: checkpointFile.Generation,
 		CheckpointEndOffset:  checkpointFile.EndOffset,
 		OldReceiptFound:      oldFound, NewReceiptFound: newFound,

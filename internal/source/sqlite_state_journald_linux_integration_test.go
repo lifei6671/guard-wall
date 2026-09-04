@@ -109,12 +109,14 @@ type journaldRestartInput struct {
 }
 
 type journaldRestartSnapshot struct {
-	Cursors            []string `json:"cursors"`
-	DeliveryIDs        []string `json:"delivery_ids"`
-	EventIDs           []string `json:"event_ids"`
-	ReceiptsFound      []bool   `json:"receipts_found"`
-	CheckpointSequence uint64   `json:"checkpoint_sequence"`
-	CheckpointCursor   string   `json:"checkpoint_cursor"`
+	Cursors             []string              `json:"cursors"`
+	DeliveryIDs         []string              `json:"delivery_ids"`
+	EventIDs            []string              `json:"event_ids"`
+	ReceiptsFound       []bool                `json:"receipts_found"`
+	CheckpointSequence  uint64                `json:"checkpoint_sequence"`
+	CheckpointSession   store.SourceSessionID `json:"checkpoint_session"`
+	CheckpointPersisted time.Time             `json:"checkpoint_persisted"`
+	CheckpointCursor    string                `json:"checkpoint_cursor"`
 }
 
 func loadLiveJournaldCursors(t *testing.T) []string {
@@ -197,7 +199,7 @@ func seedJournaldRestartState(t *testing.T, ctx context.Context, database *store
 		t.Fatalf("EnsureSource(): %v", err)
 	}
 
-	state := NewSQLiteStateStore(database)
+	state := NewSQLiteStateStore(database, beginSQLiteSourceSession(t, database, journaldRestartSourceID))
 	state.clock = func() time.Time { return base.Add(3 * time.Second) }
 	tracker, err := NewCompletionTracker(journaldRestartSourceID, 1)
 	if err != nil {
@@ -244,8 +246,7 @@ func readJournaldRestartSnapshot(
 		snapshot.ReceiptsFound = append(snapshot.ReceiptsFound, found)
 	}
 
-	state := NewSQLiteStateStore(database)
-	checkpoint, found, err := state.LoadCheckpoint(ctx, journaldRestartSourceID)
+	checkpoint, found, err := database.LoadSourceCheckpoint(ctx, journaldRestartSourceID)
 	if err != nil || !found {
 		t.Fatalf("LoadCheckpoint() = %+v, found=%v err=%v", checkpoint, found, err)
 	}
@@ -257,6 +258,8 @@ func readJournaldRestartSnapshot(
 		t.Fatalf("checkpoint = %+v", checkpoint)
 	}
 	snapshot.CheckpointSequence = uint64(checkpoint.DeliverySequence)
+	snapshot.CheckpointSession = checkpoint.SessionID
+	snapshot.CheckpointPersisted = checkpoint.PersistedAt
 	snapshot.CheckpointCursor = journal.Cursor
 	return snapshot
 }

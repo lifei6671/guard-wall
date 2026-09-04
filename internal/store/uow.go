@@ -161,7 +161,7 @@ type criticalAuditRow struct {
 	Result string `gorm:"column:result"`
 	// Severity 保存 info、warning 或 critical 审计严重度枚举。
 	Severity string `gorm:"column:severity"`
-	// Critical 固定为 1，标记该记录必须与所解释的业务状态原子提交。
+	// Critical 为 0 或 1；AppendCriticalAudit 固定写 1，与所解释的业务状态原子提交。
 	Critical int64 `gorm:"column:critical"`
 	// ActorType 保存 system、administrator 或 source 审计主体枚举。
 	ActorType string `gorm:"column:actor_type"`

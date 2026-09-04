@@ -17,9 +17,10 @@ import (
 func TestShutdownPrimitives_DrainFixedAcceptedSetBeforeCheckpointAndClose(t *testing.T) {
 	database, path := openSQLiteProcessingStore(t)
 	seedSQLiteProcessingCatalog(t, path)
+	state := newProcessorCoverageState(t, database)
 	deliveries := []core.Delivery{
-		shutdownDelivery(t, 1, 10, 20),
-		shutdownDelivery(t, 2, 20, 30),
+		shutdownDelivery(t, 1, 0, 10),
+		shutdownDelivery(t, 2, 10, 20),
 	}
 	queue, err := source.NewDeliveryQueue(len(deliveries))
 	if err != nil {
@@ -68,7 +69,6 @@ func TestShutdownPrimitives_DrainFixedAcceptedSetBeforeCheckpointAndClose(t *tes
 	if checkpoint, found, err := database.LoadSourceCheckpoint(context.Background(), "source-1"); err != nil || found {
 		t.Fatalf("checkpoint before drain flush = %+v,%v,%v", checkpoint, found, err)
 	}
-	state := source.NewSQLiteStateStore(database)
 	tracker, err := source.NewCompletionTracker("source-1", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestShutdownPrimitives_CancellationLeavesAttemptForReplay(t *testing.T) {
 	database := openShutdownStore(t, path)
 	seedShutdownSource(t, database)
 	delivery := shutdownDelivery(t, 1, 0, 10)
-	state := source.NewSQLiteStateStore(database)
+	state := newProcessorCoverageState(t, database)
 	tracker, err := source.NewCompletionTracker("source-1", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +186,7 @@ func TestShutdownPrimitives_CancellationLeavesAttemptForReplay(t *testing.T) {
 	}
 
 	reopened := openShutdownStore(t, path)
-	replayState := source.NewSQLiteStateStore(reopened)
+	replayState := newProcessorCoverageState(t, reopened)
 	replayTracker, err := source.NewCompletionTracker("source-1", 1)
 	if err != nil {
 		t.Fatal(err)

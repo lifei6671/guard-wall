@@ -31,6 +31,7 @@ const (
 
 // SourceCheckpoint is the highest durable contiguous position for one Source.
 type SourceCheckpoint struct {
+	SessionID        SourceSessionID
 	SourceID         core.SourceID
 	DeliverySequence core.DeliverySequence
 	Position         core.SourcePosition
@@ -49,6 +50,8 @@ const (
 
 // FileGeneration is the durable identity and lifecycle of one observed file.
 type FileGeneration struct {
+	DurableEndOffset    *uint64
+	CoverageSessionID   *SourceSessionID
 	SourceID            core.SourceID
 	Generation          string
 	DeviceID            uint64
@@ -168,13 +171,19 @@ func (s *Store) LoadSourceCheckpoint(ctx context.Context, sourceID core.SourceID
 	return loadSourceCheckpoint(ctx, s.orm.WithContext(ctx), sourceID)
 }
 
-// AdvanceSourceCheckpoint performs a monotonic sequence CAS. Equal sequence and
-// position is idempotent; lower or conflicting sequence values are rejected.
-func (s *Store) AdvanceSourceCheckpoint(ctx context.Context, sourceID core.SourceID, sequence core.DeliverySequence, position core.SourcePosition, persistedAt time.Time) error {
+// AdvanceSourceCheckpoint compares sequence only within the active session.
+// A new session retains the old position until its first contiguous completion.
+// Equal sequence and position is idempotent and preserves the persistence time.
+func (s *Store) AdvanceSourceCheckpoint(ctx context.Context, session SourceSession, sequence core.DeliverySequence, position core.SourcePosition, persistedAt time.Time) error {
+	return s.advanceSourceCheckpoint(ctx, session, sequence, position, nil, false, persistedAt)
+}
+
+func (s *Store) advanceSourceCheckpoint(ctx context.Context, session SourceSession, sequence core.DeliverySequence, position core.SourcePosition, ranges []core.FilePosition, coverage bool, persistedAt time.Time) error {
 	if err := s.ready(ctx); err != nil {
 		return fmt.Errorf("advance source checkpoint: %w", err)
 	}
-	if sourceID == "" || sequence == 0 || uint64(sequence) > math.MaxInt64 {
+	sourceID := session.SourceID()
+	if sourceID == "" || !isLowerHex128(string(session.ID())) || sequence == 0 || uint64(sequence) > math.MaxInt64 {
 		return fmt.Errorf("advance source checkpoint: source and positive SQLite-range sequence are required")
 	}
 	if persistedAt.IsZero() {
@@ -196,11 +205,31 @@ func (s *Store) AdvanceSourceCheckpoint(ctx context.Context, sourceID core.Sourc
 		}
 	}()
 	orm := transaction.orm.WithContext(ctx)
+	// 条件写先取得事务写锁，保证身份校验和 checkpoint CAS 不被 Begin 分割。
+	active := orm.Model(&sourceRow{}).Where(map[string]any{
+		SourceColumns.SourceID: string(sourceID), SourceColumns.ActiveSessionID: string(session.ID()),
+	}).UpdateColumn(SourceColumns.ActiveSessionID, string(session.ID()))
+	if active.Error != nil {
+		return fmt.Errorf("advance source checkpoint: session CAS: %w", active.Error)
+	}
+	if active.RowsAffected != 1 {
+		return fmt.Errorf("%w: source %q", ErrStaleSourceSession, sourceID)
+	}
 	if err := validateCheckpointPosition(ctx, orm, sourceID, position); err != nil {
 		return fmt.Errorf("advance source checkpoint %q: %w", sourceID, err)
 	}
+	if !coverage {
+		var known int64
+		if err := orm.Model(&sourceFileGenerationRow{}).Where(map[string]any{SourceFileGenerationColumns.SourceID: string(sourceID)}).Where(clause.Neq{Column: clause.Column{Name: SourceFileGenerationColumns.DurableEndOffset}, Value: nil}).Count(&known).Error; err != nil {
+			return err
+		}
+		if known != 0 {
+			return fmt.Errorf("%w: coverage checkpoint is required", ErrFileGenerationNotDurable)
+		}
+	}
 	row := sourceCheckpointRow{
-		SourceID: string(sourceID), DeliverySequence: int64(sequence), PositionKind: encoded.kind,
+		CheckpointSessionID: optionalString(string(session.ID())),
+		SourceID:            string(sourceID), DeliverySequence: int64(sequence), PositionKind: encoded.kind,
 		Generation: optionalString(encoded.generation), DeviceID: optionalInt64(encoded.deviceID),
 		Inode: optionalInt64(encoded.inode), StartOffset: optionalInt64(encoded.startOffset),
 		EndOffset: optionalInt64(encoded.endOffset), JournaldCursor: optionalString(encoded.cursor),
@@ -209,18 +238,21 @@ func (s *Store) AdvanceSourceCheckpoint(ctx context.Context, sourceID core.Sourc
 	result := orm.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: SourceCheckpointColumns.SourceID}},
 		DoUpdates: clause.AssignmentColumns([]string{
+			SourceCheckpointColumns.CheckpointSessionID,
 			SourceCheckpointColumns.DeliverySequence, SourceCheckpointColumns.PositionKind,
 			SourceCheckpointColumns.Generation, SourceCheckpointColumns.DeviceID,
 			SourceCheckpointColumns.Inode, SourceCheckpointColumns.StartOffset,
 			SourceCheckpointColumns.EndOffset, SourceCheckpointColumns.JournaldCursor,
 			SourceCheckpointColumns.PersistedAtUS,
 		}),
-		Where: clause.Where{Exprs: []clause.Expression{
+		Where: clause.Where{Exprs: []clause.Expression{clause.Or(
+			clause.Eq{Column: clause.Column{Table: "source_checkpoints", Name: SourceCheckpointColumns.CheckpointSessionID}, Value: nil},
+			clause.Neq{Column: clause.Column{Table: "source_checkpoints", Name: SourceCheckpointColumns.CheckpointSessionID}, Value: string(session.ID())},
 			clause.Gt{
 				Column: clause.Column{Table: "excluded", Name: SourceCheckpointColumns.DeliverySequence},
 				Value:  clause.Column{Table: "source_checkpoints", Name: SourceCheckpointColumns.DeliverySequence},
 			},
-		}},
+		)}},
 	}).Create(&row)
 	if result.Error != nil {
 		return fmt.Errorf("advance source checkpoint %q: write: %w", sourceID, result.Error)
@@ -230,12 +262,17 @@ func (s *Store) AdvanceSourceCheckpoint(ctx context.Context, sourceID core.Sourc
 		if loadErr != nil {
 			return fmt.Errorf("advance source checkpoint %q: verify CAS: %w", sourceID, loadErr)
 		}
-		if !found || current.DeliverySequence != sequence || current.Position != position {
+		if !found || current.SessionID != session.ID() || current.DeliverySequence != sequence || current.Position != position {
 			return fmt.Errorf("%w: source %q current sequence %d, attempted %d", ErrCheckpointRegression, sourceID, current.DeliverySequence, sequence)
 		}
 	}
+	if coverage {
+		if err := advanceFileCoverage(ctx, orm, session, position, ranges, result.RowsAffected != 0); err != nil {
+			return err
+		}
+	}
 	if err := transaction.tx.Commit(); err != nil {
-		return fmt.Errorf("advance source checkpoint %q: commit: %w", sourceID, err)
+		return fmt.Errorf("%w: source %q: %w", ErrSourceCheckpointCommitUncertain, sourceID, err)
 	}
 	committed = true
 	return nil
@@ -287,8 +324,12 @@ func (s *Store) LoadRecoverableFileGenerations(ctx context.Context, sourceID cor
 	if sourceID == "" {
 		return nil, fmt.Errorf("load file generations: source id is required")
 	}
+	return loadRecoverableFileGenerations(ctx, s.orm, sourceID)
+}
+
+func loadRecoverableFileGenerations(ctx context.Context, orm *gorm.DB, sourceID core.SourceID) ([]FileGeneration, error) {
 	var rows []sourceFileGenerationRow
-	result := s.orm.WithContext(ctx).
+	result := orm.WithContext(ctx).
 		Where(map[string]any{SourceFileGenerationColumns.SourceID: string(sourceID)}).
 		Where(clause.Neq{Column: clause.Column{Name: SourceFileGenerationColumns.State}, Value: string(FileGenerationRetired)}).
 		Find(&rows)
@@ -337,8 +378,8 @@ func (s *Store) AdvanceFileGeneration(ctx context.Context, sourceID core.SourceI
 	return nil
 }
 
-// SealFileGeneration freezes the final EOF and highest DeliverySequence that
-// must be covered by a durable checkpoint before retirement.
+// SealFileGeneration freezes final EOF and the session-local delivery high-water.
+// This historical metadata does not establish session-bound retirement eligibility.
 func (s *Store) SealFileGeneration(ctx context.Context, sourceID core.SourceID, generation string, from FileGenerationState, finalEOF uint64, maxSequence core.DeliverySequence, sealedAt time.Time) error {
 	if err := s.ready(ctx); err != nil {
 		return fmt.Errorf("seal file generation: %w", err)
@@ -350,13 +391,20 @@ func (s *Store) SealFileGeneration(ctx context.Context, sourceID core.SourceID, 
 	if from != FileGenerationOpen && from != FileGenerationDraining {
 		return fmt.Errorf("%w: %s -> %s", ErrFileGenerationTransition, from, FileGenerationSealed)
 	}
-	query := s.orm.WithContext(ctx).
+	return sealFileGeneration(ctx, s.orm, sourceID, generation, from, finalEOF, maxSequence, sealedAt, false)
+}
+
+func sealFileGeneration(ctx context.Context, orm *gorm.DB, sourceID core.SourceID, generation string, from FileGenerationState, finalEOF uint64, maxSequence core.DeliverySequence, sealedAt time.Time, sessionBound bool) error {
+	query := orm.WithContext(ctx).
 		Model(&sourceFileGenerationRow{}).
 		Where(map[string]any{
 			SourceFileGenerationColumns.SourceID:   string(sourceID),
 			SourceFileGenerationColumns.Generation: generation,
 			SourceFileGenerationColumns.State:      string(from),
 		})
+	if !sessionBound {
+		query = query.Where(map[string]any{SourceFileGenerationColumns.DurableEndOffset: nil})
+	}
 	if from == FileGenerationDraining {
 		query = query.Where(clause.Lte{
 			Column: clause.Column{Name: SourceFileGenerationColumns.DrainingAtUS}, Value: sealedAt.UTC().UnixMicro(),
@@ -433,8 +481,8 @@ func (s *Store) RotateFileGeneration(ctx context.Context, sourceID core.SourceID
 	return nil
 }
 
-// RetireFileGeneration changes Sealed to Retired only after the checkpoint has
-// safely passed the generation and no terminal receipt still references it.
+// RetireFileGeneration retires a fully covered sealed generation only when no
+// receipt or current checkpoint references it. It preserves the registry row.
 func (s *Store) RetireFileGeneration(ctx context.Context, sourceID core.SourceID, generation string, retiredAt time.Time) error {
 	if err := s.ready(ctx); err != nil {
 		return fmt.Errorf("retire file generation: %w", err)
@@ -461,6 +509,9 @@ func (s *Store) RetireFileGeneration(ctx context.Context, sourceID core.SourceID
 	if !found || record.State != FileGenerationSealed {
 		return fmt.Errorf("%w: generation %q is not sealed", ErrFileGenerationTransition, generation)
 	}
+	if record.SealedAt == nil || retiredAt.Before(*record.SealedAt) {
+		return fmt.Errorf("%w: generation %q retirement predates sealing", ErrFileGenerationTransition, generation)
+	}
 	var receiptReferences int64
 	result := orm.Model(&processingReceiptRow{}).
 		Where(map[string]any{SourceFileGenerationColumns.SourceID: string(sourceID), SourceFileGenerationColumns.Generation: generation}).
@@ -471,29 +522,28 @@ func (s *Store) RetireFileGeneration(ctx context.Context, sourceID core.SourceID
 	if receiptReferences != 0 {
 		return fmt.Errorf("%w: generation %q has %d receipt references", ErrFileGenerationReferenced, generation, receiptReferences)
 	}
-	checkpoint, checkpointFound, err := loadSourceCheckpoint(ctx, orm, sourceID)
-	if err != nil {
-		return fmt.Errorf("retire file generation %q: load checkpoint: %w", generation, err)
+	if !record.CoverageComplete() {
+		return fmt.Errorf("%w: generation %q has no complete durable prefix", ErrFileGenerationNotDurable, generation)
 	}
-	if !checkpointFound {
-		return fmt.Errorf("%w: generation %q", ErrFileGenerationNotDurable, generation)
+	// 即使 checkpoint 位于 EOF，恢复仍保留其稳定 Position；不能移除其代际。
+	var checkpointReferences int64
+	result = orm.Model(&sourceCheckpointRow{}).
+		Where(map[string]any{SourceCheckpointColumns.SourceID: string(sourceID), SourceCheckpointColumns.Generation: generation}).
+		Count(&checkpointReferences)
+	if result.Error != nil {
+		return fmt.Errorf("retire file generation %q: count checkpoint references: %w", generation, result.Error)
 	}
-	if record.MaxDeliverySequence == nil || checkpoint.DeliverySequence < *record.MaxDeliverySequence {
-		return fmt.Errorf("%w: generation %q", ErrFileGenerationNotDurable, generation)
+	if checkpointReferences != 0 {
+		return fmt.Errorf("%w: generation %q is the recovery checkpoint", ErrFileGenerationReferenced, generation)
 	}
 	result = orm.Model(&sourceFileGenerationRow{}).
-		Where(map[string]any{
-			SourceFileGenerationColumns.SourceID:   string(sourceID),
-			SourceFileGenerationColumns.Generation: generation,
-			SourceFileGenerationColumns.State:      string(FileGenerationSealed),
-		}).
-		Where(clause.Lte{Column: clause.Column{Name: SourceFileGenerationColumns.SealedAtUS}, Value: retiredAt.UTC().UnixMicro()}).
-		Updates(map[string]any{SourceFileGenerationColumns.State: string(FileGenerationRetired), SourceFileGenerationColumns.RetiredAtUS: retiredAt.UTC().UnixMicro()})
+		Where(map[string]any{SourceFileGenerationColumns.SourceID: string(sourceID), SourceFileGenerationColumns.Generation: generation, SourceFileGenerationColumns.State: string(FileGenerationSealed)}).
+		Updates(map[string]any{SourceFileGenerationColumns.State: string(FileGenerationRetired), SourceFileGenerationColumns.RetiredAtUS: retiredAt.UnixMicro()})
 	if result.Error != nil {
 		return fmt.Errorf("retire file generation %q: update: %w", generation, result.Error)
 	}
 	if result.RowsAffected != 1 {
-		return fmt.Errorf("%w: generation %q changed concurrently", ErrFileGenerationTransition, generation)
+		return fmt.Errorf("%w: generation %q is not sealed", ErrFileGenerationTransition, generation)
 	}
 	if err := transaction.tx.Commit(); err != nil {
 		return fmt.Errorf("retire file generation %q: commit: %w", generation, err)
@@ -530,8 +580,13 @@ func loadSourceCheckpoint(ctx context.Context, orm *gorm.DB, sourceID core.Sourc
 	if err != nil {
 		return SourceCheckpoint{}, false, err
 	}
+	var sessionID SourceSessionID
+	if row.CheckpointSessionID != nil {
+		sessionID = SourceSessionID(*row.CheckpointSessionID)
+	}
 	return SourceCheckpoint{
-		SourceID: sourceID, DeliverySequence: core.DeliverySequence(row.DeliverySequence),
+		SessionID: sessionID,
+		SourceID:  sourceID, DeliverySequence: core.DeliverySequence(row.DeliverySequence),
 		Position: position, PersistedAt: time.UnixMicro(row.PersistedAtUS).UTC(),
 	}, true, nil
 }
@@ -551,7 +606,13 @@ func loadFileGeneration(ctx context.Context, orm *gorm.DB, sourceID core.SourceI
 }
 
 func fileGenerationFromRow(row sourceFileGenerationRow) FileGeneration {
+	var coverageSession *SourceSessionID
+	if row.CoverageSessionID != nil {
+		value := SourceSessionID(*row.CoverageSessionID)
+		coverageSession = &value
+	}
 	return FileGeneration{
+		DurableEndOffset: nullableUint64(row.DurableEndOffset), CoverageSessionID: coverageSession,
 		SourceID: core.SourceID(row.SourceID), Generation: row.Generation, DeviceID: uint64(row.DeviceID),
 		Inode: uint64(row.Inode), Path: row.Path, State: FileGenerationState(row.State),
 		ObservedSize: uint64(row.ObservedSize), OpenedAt: time.UnixMicro(row.OpenedAtUS).UTC(),
@@ -653,6 +714,7 @@ func validateNewFileGeneration(generation FileGeneration) error {
 		return fmt.Errorf("new generation must be open")
 	}
 	if generation.FinalEOF != nil || generation.MaxDeliverySequence != nil ||
+		generation.DurableEndOffset != nil || generation.CoverageSessionID != nil ||
 		generation.DrainingAt != nil || generation.SealedAt != nil || generation.RetiredAt != nil {
 		return fmt.Errorf("new generation cannot contain lifecycle high-water or terminal times")
 	}

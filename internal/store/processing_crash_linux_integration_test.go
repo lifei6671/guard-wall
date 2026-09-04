@@ -172,7 +172,7 @@ func recoverProcessingCrash(
 	}
 	if err := database.AdvanceSourceCheckpoint(
 		ctx,
-		processingSourceID,
+		beginTestSourceSession(t, database, processingSourceID),
 		core.DeliverySequence(1),
 		fixture.position,
 		fixture.now.Add(2*time.Second),

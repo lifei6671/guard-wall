@@ -1350,3 +1350,138 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
      独立 post-cleanup readback 均 PASS；两路 fresh Evidence-only/semantic review 均 P0-P3 无。该项不证明流量阻断、non-clean Firewall、运行中 scheduler expiry、
      默认 packaged systemd topology、reboot/crash、power-loss/fsync durability、production release 或
      C2/G18/M0 aggregate；未暂存、未提交、未推送。
+
+167. 按用户“继续”推进C1 §17.1条款映射：19条均列出对应测试、实际断言与缺口；当前Docker非缓存
+     source/processor/detection Race、4项Store generation Race、1项Audit回滚Race及3项SIGKILL恢复通过，
+     共88顶层测试无FAIL/SKIP，98项相关输入hash稳定。原语运行通过不代替真实SIGTERM、跨generation
+     乱序、crash后当前版本重评、Source checkpoint联合断言或replay/reprocess引用约束。
+     第15条copytruncate/DataLossSuspected尚无所需可执行覆盖，第16条退休引用门槛仅部分覆盖。
+     证据见`artifacts/evidence/M0/worktree/m0-c/source-contract-mapping/README.md`；C1仍IN_PROGRESS / Implemented，
+     G18 FAIL、M0 NO-GO。下一最小任务第10条真实SQLite跨generation乱序回归；本轮未改实现或提交。
+
+168. 按用户“继续下一步任务”补充C1 §17.1第10条真实SQLite跨generation乱序回归：
+     seq1建立old位置基线，轮转后先提交new seq3，Complete与Flush均保持基线；old seq2补洞后
+     推进到new seq3完整位置，正常Close/reopen读回一致。各次Complete前均提交并读回真实receipt。
+     新增一个测试文件，目标Race30次与Source包14个顶层测试PASS，无FAIL/SKIP；全仓verify退出0，
+     101项定向输入hash稳定，格式及diff检查通过。证据见m0-c/source-generation-order/README.md。
+     第10条原语覆盖已补齐，本批待用户Code Review；C1仍IN_PROGRESS / Implemented，G18 FAIL、M0 NO-GO。
+     下一候选第13/18条crash后当前版本重评联合场景；未暂存、未提交、未推送。
+169. 按用户“继续下一步任务”补充C1 §17.1第13/18条真实SQLite版本重放联合回归：真实Pipeline/
+     Coordinator在业务和receipt写入后、Commit前遭SIGKILL；父进程持久切换Active Parser/Rule到v2，
+     新进程读当前指针重建M0 catalog fixture并重放同Delivery，恢复前业务8表为0、无checkpoint；
+     重放后5类实际副作用各1，Decision/Projection/Audit保持0，v2版本/EventID及receipt/checkpoint位置一致。
+     再次投递两次不重复解析/检测或持久化。目标Race10次、Processor60项（含snapshot稳定性）与全仓verify
+     通过，无FAIL/SKIP，102项输入hash稳定。证据见m0-c/source-version-replay/README.md，独立审查见review.md。
+     第13/18条在M0处理原语范围补齐；本批与前批第10条待用户验收，C1仍IN_PROGRESS / Implemented，
+     G18 FAIL、M0 NO-GO。下一候选第14条Audit失败与checkpoint联合断言；未暂存、未提交、未推送。
+170. 按用户“继续下一步任务”补充C1 §17.1第14条真实SQLite Audit失败与checkpoint联合回归：
+     seq1 Parser poison记录提交建立基线，seq2 Audit NodeID引用不存在的外键触发真实SQLite错误；
+     无completion/receipt，8表完整行快照保持基线，Flush后完整checkpoint不变。修正测试输入后同Delivery
+     retry成功，Parser outcome/Audit/receipt各增1，checkpoint推进seq2；重复投递不再执行或修改持久化行。
+     目标Race30次、Processor61项与全仓verify通过，无FAIL/SKIP，103项定向输入hash稳定。
+     证据见m0-c/source-audit-checkpoint/README.md，独立审查见review.md；第14条覆盖限于M0 Parser poison原语。
+     本批及第10/13/18条用户验收待完成；C1仍IN_PROGRESS / Implemented，G18 FAIL、M0 NO-GO。
+     下一候选第7条Poison后正常记录推进及非终态错误保持checkpoint的联合回归；未暂存、未提交、未推送。
+171. 按用户“继续下一步任务”补充C1 §17.1第7条Poison与非终态错误checkpoint联合回归：
+     四项均以真实SQLite poison seq1建立outcome/Audit/receipt/checkpoint；正常seq2成功并推进。
+     Transient、PlanBlocked、Cancelled分支先失败，无completion/receipt/outcome增量、8表计数保持，
+     Flush后完整checkpoint不变；Cancelled在Parser执行中取消真实attempt context。修正fixture后
+     同Delivery重试并推进，重复两次投递不重复执行或增加持久化计数。
+     目标Race30次（子项120次）、Processor62项及全仓verify通过，无FAIL/SKIP，104项输入hash稳定。
+     证据见m0-c/source-poison-checkpoint/README.md；独立审查见review.md。覆盖限M0 Parser处理原语。
+     本批及第10/13/14/18条用户验收待完成，C1仍IN_PROGRESS / Implemented，G18 FAIL、M0 NO-GO。
+     下一候选第2条receipt提交后checkpoint前崩溃与Coordinator幂等重放闭环；未暂存、未提交、未推送。
+172. 用户明确“验收通过，继续”，第171项Poison与非终态错误checkpoint回归验收通过，DONE / Implemented。
+     既有验证与独立审查沿用对应快照，验收记录见m0-c/source-receipt-crash/previous-acceptance.md。
+     第10/13/14/18条单独验收及C1/G18/M0整体状态保持原记录。继续第2条提交后checkpoint前崩溃重放闭环。
+173. 按用户“验收通过，继续”推进C1 §17.1第2条：writer真实提交outcome/receipt后确认checkpoint不存在，
+     原子发布完整8表快照并遭SIGKILL；fresh reader读回快照不变，真实Coordinator依据receipt短路处理，
+     Parser/Match/Evaluate调用均0，CheckpointManager推进完整位置；重复投递行快照不变，父进程再Open确认checkpoint。
+     目标integration Race10次、Processor普通包62项与全仓verify通过，无FAIL/SKIP，105项输入hash稳定。
+     证据见m0-c/source-receipt-crash/README.md，独立审查见review.md；本批待用户验收，前批第7条已验收。
+     第10/13/14/18条仍待单独验收，C1保持IN_PROGRESS / Implemented，G18 FAIL、M0 NO-GO。
+     下一候选更新19条映射并复核剩余最小实现范围；未暂存、未提交、未推送。
+174. 更新C1 §17.1当前映射，保留初始冻结报告：纳入第2/7/10/13/14/18条联合回归，并确认版本重放
+     同时证明第1条初始checkpoint为空时提交前SIGKILL后无receipt/checkpoint。当前14条COVERED均限
+     指定M0原语，4条PARTIAL（5/8/9/16）、1条GAP（15），不代表C1整体验收。
+     六批98/101/102/103/104/105项定向输入分别与当前文件hash匹配；集合重叠，非全仓依赖闭包。
+     证据见m0-c/source-contract-mapping/current.md。本轮纯文档，Go/Race/integration/verify为NOT_RUN。
+     第7条已验收，其余第2/10/13/14/18条待用户验收；C1/G18/M0状态保持。
+     下一最小候选为第5条多Parser混合错误与真实SQLite receipt/checkpoint联合回归，仅测试与证据；
+     reader、引用生命周期或公共契约变更须另行确认。未暂存、未提交、未推送。
+175. 按用户“可以。继续吧”补充C1 §17.1第5条多Parser与真实SQLite receipt/checkpoint联合回归：
+     永久失败后兄弟Parser继续并推进；已有Parser事件后三类系统错误零completion、无receipt，8表完整行
+     与完整checkpoint保持基线，Window不变；修正fixture后同Delivery重试成功，重复两次不重复执行或写入。
+     目标Race30次（四子项120次）、Processor包63项Race与全仓verify通过，无FAIL/SKIP，106项定向输入
+     hash稳定，格式/diff检查通过。证据见m0-c/source-multiparser-checkpoint/README.md，独立审查见review.md。
+     第5条覆盖限M0 fixture与真实SQLite，系统错误在prepare阶段中止；本批REVIEW / Implemented待用户验收。
+     当前映射15条COVERED、3条PARTIAL（8/9/16）、1条GAP（15）；第7条已验收，其余第2/10/13/14/18
+     仍待单独验收，C1/G18/M0保持。下一候选第8条真实Source进程SIGTERM排空边界预检。
+     仅新增测试与交付记录，未改生产代码、依赖或公共契约；未暂存、未提交、未推送。
+176. 按用户“继续下一个任务”推进C1 §17.1第8条：只读确认guard-agent当前仅接Reconcile，随后新增
+     测试专用SourceRuntime子进程；首条Parser屏障处接收父进程发出的真实SIGTERM，排空已接受的
+     Poison和正常两条delivery，Close前及父fresh Open后检查receipt/outcome/Audit/contribution及checkpoint。
+     worker context信号后仍有效，子进程正常退出0、Close恰一次、queue已seal。目标integration Race10次、
+     Processor普通包63项Race、仓库test/verify均通过，无FAIL/SKIP；107项定向输入hash稳定，格式/diff通过。
+     证据见m0-c/source-sigterm-drain/README.md，独立审查见review.md。本批REVIEW / Implemented待用户验收。
+     第8条限M0测试专用进程，不证明guard-agent Source生产接线、真实reader、Host E2E或timeout重启。
+     当前映射16条COVERED、2条PARTIAL（9/16）、1条GAP（15）；第2/5/10/13/14/18仍待单独验收，
+     第7条已验收，C1/G18/M0保持。下一候选第9条timeout后重启闭环边界预检。
+     未改生产代码、依赖、Schema或公共API；未暂存、未提交、未推送。
+177. 按用户“继续下一步”补充C1 §17.1第9条timeout后重启回归：seq1已提交、seq2处理中收到真实
+     SIGTERM，100ms测试deadline到期，确认worker取消、Store Close零次后退出。独立新进程读回
+     九表完整基线，按相同Delivery身份仅执行seq2；再重复两轮九表不增量，父进程最终Open核对持久化。
+     目标integration Race10次、Processor普通包63项Race、仓库test/verify均通过，FAIL/SKIP为0；
+     108项定向输入hash一致，格式/diff通过。证据见m0-c/source-timeout-replay/README.md及review.md。
+     本批REVIEW / Implemented待用户验收；覆盖测试专用进程，不证明队列积压、产品30秒计时、
+     真实reader、guard-agent Source接线或Host E2E。当前映射17条COVERED、1条PARTIAL（16）、1条GAP（15）。
+     第2/5/8/9/10/13/14/18待用户验收，第7条已验收；C1 IN_PROGRESS / Implemented、G18 FAIL、M0 NO-GO。
+     下一候选第15/16条观测与引用生命周期边界只读预检。仅新增测试与交付记录，未暂存、未提交、未推送。
+178. 用户在session/checkpoint详细方案后回复“继续下一步”，授权D-011最小实施包。新增0007两session字段、
+     不可变SourceSession、Begin/Confirm同快照恢复与绑定handle的checkpoint CAS；新session从1开始，
+     Begin保持旧Position与完整checkpoint，旧session延迟写拒绝。同session幂等不改提交时间，冲突明确失败。
+     新Sealed退休因资格未建立保守拒绝；历史Retired记录保持。Source/Processor fixture同步，
+     补A100→B乱序2/1、旧Flush拒绝、Begin后真实SIGKILL再新session从1推进；v6→v7旧业务全行保持与字段约束验证。
+     三包普通Race238项、integration Race247项、session专项10轮80项及全仓verify通过，FAIL为0；
+     integration有4个父测试调用的helper SKIP，原生Journald缺journalctl而显式排除，记UNAVAILABLE。
+     442项输入hash一致，gofmt/diff通过；确认丢失以丢弃成功Begin返回值模拟，不是driver Commit错误注入。
+     证据见m0-c/source-session-checkpoint/README.md与review.md。本批REVIEW / Implemented待用户验收。
+     既有第2/5/8/9/10/13/14/18仍待验收，第7条历史验收不自动授予本批适配验收；C1/G18/M0保持。
+     生产Source/单实例锁、恢复范围资格证明、引用任务及retention另批；旧二进制须停机升级，本批未执行生产升级。
+     下一候选generation恢复范围与完成证明契约。未暂存、未提交、未推送。
+179. 用户确认D-012 generation连续范围最小包：0008增加成对nullable coverage字段，历史NULL保持未知；
+     当前session显式初始化读取责任，checkpoint与全部代际字节前缀原子提交，支持累计范围幂等重试。
+     Tracker保留跨代际连续范围及失败pending；session绑定seal保留历史coverage来源，恢复从各代际持久end开始。
+     新完成事实不解禁退休；旧session及单checkpoint绕过已知coverage均拒绝。起点0完整记录fixture同步，
+     覆盖事务中/提交后SIGKILL全行读回、receipt提交后重放幂等、v7→v8历史列保留及字段约束。
+     Docker三包Race与integration回归及全仓verify通过；Store首次60秒包级Race超时，180秒重跑通过。
+     原生Journald缺journalctl记UNAVAILABLE；类型化cursor测试不是原生证据。确认丢失以成功提交后的快照核对模拟，
+     不声称driver Commit错误注入。证据及独立审查见m0-c/source-generation-coverage/README.md和review.md。
+     用户已明确验收本批，当前DONE / Implemented；第178项及既有待验收批次保持，第16条PARTIAL、C1 IN_PROGRESS、G18 FAIL、M0 NO-GO。
+     原生reader/framing、非零起点、copytruncate、retention与退休成功路径另批；后续退休范围以D-013为准。未提交、未推送。
+180. 用户明确D-013 Phase 1退休恢复边界：仅依据当前checkpoint、receipt与crash-replay恢复需求；
+     显式历史reprocess及其task/lease/reference系统不在Phase 1范围，未来pin/reference经Contract Change Review引入。
+     主契约、source-delivery及当前交接同步；下一入口source-generation-retirement-scope.md。
+     本项为范围确认，不是退休实现验收；Go/Race/integration NOT_RUN，第16条PARTIAL及各Gate保持。
+181. D-013退休最小实现：现有Store事务内检查Sealed完整coverage、无receipt引用及无当前checkpoint引用，
+     CAS更新state/retired_at并保留registry row；当前checkpoint即使位于EOF仍阻止退休，已知空代际可无checkpoint退休。
+     覆盖跨session序号下降、未知/未完成coverage、receipt/checkpoint保护、取消、UPDATE后回滚与late写拒绝；
+     事务提交前后SIGKILL由新进程验证完整持久行及恢复集合。Docker定向integration Race、全仓Race、verify与mod verify通过。
+     本批REVIEW / Implemented，独立交付审查见m0-c/source-generation-retirement/review.md，用户验收待完成。
+     无新增API/schema或清理服务；生产reader与物理清理不在本批。第16条PARTIAL、C1 IN_PROGRESS、G18 FAIL、M0 NO-GO保持。
+182. 更新Source覆盖映射第16条至D-013与第181项退休事实；8个退休冻结路径hash无漂移，保持PARTIAL与待用户验收。
+     下一最小单元定位第15条copytruncate观测及DataLossSuspected报告契约，见source-copytruncate-preflight.md。
+     本轮仅预检，Go/Race/integration NOT_RUN；未修改代码、公共API/schema、依赖或生产接线，各Gate保持。
+183. 用户确认D-014截断报告契约，新增串行FileTruncationObserver与Store.RecordSourceDataLoss：同身份size下降或
+     小于读取offset产生DataLossSuspected；保持Degraded/StopReading，报告失败/取消传播，显式重试保留首次证据。
+     Operational Audit复用audit_logs并写critical=0；Source/generation身份核对、首次证据幂等，其他业务与恢复状态保持。
+     真实Linux fd验证append/truncate/rename/create及fast-regrow盲区；SQLite拒绝、retry/reopen与非空保护行保持有直接测试。
+     证据和独立审查见m0-c/source-copytruncate/README.md与review.md；本批REVIEW / Implemented待用户验收。
+     生产File reader、轮转恢复与跨重启Health不在本批；第16条PARTIAL、C1 IN_PROGRESS、G18 FAIL、M0 NO-GO保持。
+     未新增schema、migration或依赖，未暂存、未提交、未推送。
+184. 用户确认D-016维护接入点：RunSourceIntakeRuntime尾部maintenance回调在Reader结束、worker正常排空、
+     checkpoint Flush成功后同步执行，共享剩余shutdown deadline；nil调用者保持原行为。
+     前置错误跳过，维护错误与Close错误可识别合并；维护超期返回时保留错误及DeadlineExceeded且不Close。
+     证据及独立审查见m0-c/source-maintenance/；本批验收单独记录，不接删除或生产清理。
+     回调须协作取消并结束自身数据库使用；同库跨运行排他、File重启发现及第16条物理清理仍未证明。
+     D-015及C1/G18/M0保持；未新增schema、配置或依赖，未暂存、未提交、未推送。

@@ -378,6 +378,13 @@ Phase 1 的 `DeliverySequence` 是 session-local，每个 Source processing sess
 开始分配。crash 后从已持久化 checkpoint 重读并重新分配，跨重启幂等依靠稳定
 Delivery ID 和 `processing_receipt`，不依靠 Sequence 值相等。
 
+Source 的当前写入身份由 `sources.active_session_id` 持久记录；checkpoint 的提交归属由
+`source_checkpoints.checkpoint_session_id` 记录。两者采用128-bit CSPRNG小写hex身份，不参与
+Delivery ID/Event ID计算。新session开始时保留旧checkpoint完整Position、Sequence和归属，
+第一次连续完成后才由当前session提交新的checkpoint；不能比较不同session的Sequence大小。
+迁移前历史归属允许为空，不推断历史session。生产Source启动前必须满足单实例ownership；
+session身份不授予自动接管许可，同进程切换前旧Reader/worker/flush必须结束。
+
 ### 6.2 File Position
 
 File Source 的位置身份至少包含：
@@ -398,7 +405,8 @@ record_end_offset
 - 同一路径 rename/create 后，新旧文件必须属于不同 generation。
 - 记录字节范围统一为半开区间
   `[record_start_offset, record_end_offset)`；`record_end_offset` 是下一条未读记录的
-  起点，checkpoint 恢复时从该位置开始。
+  起点。已有coverage时从各代际的durable_end_offset恢复；历史单checkpoint只描述其指向代际的位置，
+  不为其他代际推导已完成范围。
 - generation 切换必须有明确屏障：旧 generation 已读取记录与新 generation 记录都
   分配同一 Source 下连续的 DeliverySequence；checkpoint 只能提交最高连续 Sequence
   对应的 generation/offset。
@@ -427,8 +435,8 @@ Open → Draining → Sealed → Retired
 - `Open`：当前可继续读取的 generation。
 - `Draining`：rename/create 后旧文件仍通过已打开 fd 读到 EOF。
 - `Sealed`：不再产生新 RawRecord，但仍可能被 checkpoint、receipt 或 replay 引用。
-- `Retired`：checkpoint 已安全越过本 generation 的最大 DeliverySequence，且无
-  receipt/replay/reprocess 引用；达到 retention 后才允许删除。
+- `Retired`：本 generation 已有持久连续范围完成证明，且无
+  receipt 引用，且不再承担 checkpoint 或 crash-replay 恢复需求；达到 retention 后才允许删除。
 
 generation row 必须在首条记录的 outcome/receipt 事务之前或同一事务提交。
 rename/create 时旧 generation 进入 `Draining`，新 `(device_id, inode)` 创建 `Open`
@@ -439,8 +447,22 @@ generation；copytruncate 即使 inode 未变，也必须 seal 旧 generation �
 新 generation 的 Delivery ID 必须保持不变。
 
 Generation registry row 只有在该 generation 已被持久化 checkpoint 安全越过、没有
-receipt/replay/reprocess 引用、且确认不存在需要重放的记录后才能进入 `Retired`。清理
+receipt 引用、且确认不存在 checkpoint 或 crash-replay 仍需恢复的记录后才能进入 `Retired`。清理
 前必须保留 Delivery ID 重建所需字段。
+
+安全越过不能通过新session的Sequence与旧generation的最大Sequence直接比较来推定。
+起点为0且完整读取的generation，以已持久连续区间[0,durable_end_offset)作为恢复范围依据。
+coverage必须由当前session显式初始化，历史NULL不等于0；不能用旧checkpoint、receipt数量或当前文件大小回填。
+初始化仅声明读取责任，不能证明字节处理完成。已知水位跨session保留且不清零；恢复该代际从该水位读取。
+Sealed且已知durable_end_offset等于final_eof时具备处理完成事实；seal必须受当前session保护，
+且不重写历史coverage来源。非零初始起点、原生framing与copytruncate丢失处理不由此原语决定。
+Phase 1 不支持显式历史日志 reprocess，不为未来 reprocess 建设 task/lease/reference 系统。
+退休资格仅按当前 checkpoint、receipt 和 crash-replay 恢复需求判断；未来新增历史 reprocess，
+须通过 Contract Change Review 引入 generation pin/reference 语义。
+当前Store在同一事务中要求Sealed完整coverage、无receipt引用且无当前checkpoint引用，才允许Retired。
+即使checkpoint位于该代际EOF，仍保留该代际直到checkpoint移走；未知或未完成coverage继续拒绝。
+已知空代际可在没有checkpoint时退休。Retired仅更新状态与退休时间，保留registry row，物理清理另受retention约束。
+该原语不代表生产reader或物理清理已完成，第17.1第16条仍为PARTIAL。
 
 重启时必须恢复全部非 `Retired` generation。找不到旧 inode 时，已提交 receipt 的
 结果保持完成；尚未建立稳定 Position/receipt 的字节不得声称可恢复，必须写
@@ -638,7 +660,7 @@ Parser produces SecurityEvent
 - crash 前未提交 receipt 的记录允许在重启后使用当前 Active Parser/Rule
   重新求值；这是明确的 re-evaluation，不声称为严格同版本 replay。
 - 已有 terminal processing record 的 Delivery 禁止因 Parser/Rule 升级再次自动处理；
-  历史重处理必须是显式运维动作，并使用新的 reprocess identity。
+  Phase 1 不支持显式历史日志 reprocess；未来新增时须经 Contract Change Review 定义重处理身份及 generation pin/reference 语义。
 - Detection 结果的幂等键必须包含稳定 Event ID 与 Rule ID/Version。
 
 ---
@@ -707,6 +729,20 @@ checkpoint。
 DeliverySequence 只负责本 processing session 的连续性排序；跨重启幂等仍由稳定
 Delivery ID / SourcePosition 负责。
 
+checkpoint写入必须绑定Source session handle，并在同一事务内校验当前session身份与写入。
+旧session写入返回StaleSession；同session以Sequence单调CAS推进，同Sequence同Position幂等且
+保持原提交时间，同Sequence不同Position或回退拒绝。当前session的首个连续候选可以替换历史
+session的高Sequence，但连续性必须由当前session的Checkpoint Manager保证。
+Begin以expected active session作CAS，并在同一事务读回恢复checkpoint；不无条件接管。
+提交结果不确定时，用同一读快照核对预期session与checkpoint；读回失败保留未知并停止推进，
+不能把提交报错一概解释为回滚。迁移升级要求旧二进制停机，禁止旧写入口绕过session校验。
+
+File coverage候选必须包含本次连续Sequence前缀穿过的所有generation字节范围，不能只保留最后Position。
+每代际只能连续延伸，允许已覆盖前缀加连续后缀的幂等重试；空洞、身份不匹配、未知起点或超过final_eof时整体拒绝。
+checkpoint和所有涉及代际的coverage须在同一事务原子提交。Flush失败保留全部范围，新完成合并旧pending；
+并发Flush不得清除其快照之后的新范围。提交未知须同快照读回session、checkpoint和全部涉及代际。
+历史单checkpoint入口仅供尚无coverage的Source使用，不能绕过已知coverage更新。
+
 ### 8.4 重放幂等
 
 Phase 1 使用同步 outcome transaction + terminal `processing_receipt` + 唯一
@@ -722,7 +758,7 @@ receipt pipeline 中，即使一条记录没有产生 Alert 或 Decision，也�
 processing record；该记录、必要业务结果和对应幂等键必须在同一个事务中提交。
 
 用于去重的 `processing_receipt` 在对应 Source checkpoint 已持久化安全越过
-该 Position，且 retention / explicit reprocess 语义不再需要它前，禁止删除。
+该 Position，且 retention 与 crash-replay 恢复需求均不再需要它前，禁止删除。
 
 Alert、Decision 等下游持久化副作用仍必须拥有独立唯一键，不能只依赖 terminal record。
 
@@ -1937,7 +1973,7 @@ Health 影响
 14. Critical Audit 提交失败时业务 outcome/receipt 事务回滚，checkpoint 不推进。
 15. copytruncate fast-regrow 能检测时产生 DataLossSuspected；不能检测时标记
     known limitation，不伪造 at-least-once 保证。
-16. Generation registry 在 checkpoint 尚未安全越过，或仍有 receipt/replay/reprocess 引用时
+16. Generation registry 在 checkpoint 尚未安全越过，或仍有 receipt 引用或 crash-replay 恢复需求时
     不得进入 Retired；满足全部清理条件后重启不再依赖该 row。
 17. 同一 `EventID + RuleID/Version` 已进入 Window 后 SQLite outcome transaction 失败，
     同进程 retry 不得再次增加 count/distinct_count。

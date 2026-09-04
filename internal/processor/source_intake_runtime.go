@@ -15,6 +15,9 @@ import (
 // RunSourceIntakeRuntime composes one Source reader with the processing
 // runtime. Shutdown always stops the reader before sealing the accepted queue,
 // then drains the worker, flushes checkpoints, and closes the database.
+// maintenance 在成功排空并保存 checkpoint 后、关闭数据库前同步执行；nil 跳过。
+// 它共享剩余 shutdown deadline，须配合取消并在返回前结束自身数据库使用。
+// 超时返回时不关闭数据库，进程所有者必须退出且不得复用；本回调不证明跨运行排他。
 func RunSourceIntakeRuntime(
 	ctx context.Context,
 	shutdownTimeout time.Duration,
@@ -23,6 +26,7 @@ func RunSourceIntakeRuntime(
 	coordinator *Coordinator,
 	checkpoints *source.CheckpointManager,
 	database io.Closer,
+	maintenance func(context.Context) error,
 ) error {
 	if ctx == nil {
 		return fmt.Errorf("run source intake runtime: context is required")
@@ -62,6 +66,7 @@ func RunSourceIntakeRuntime(
 			database,
 			workerResult,
 			readerErr,
+			maintenance,
 		)
 	case workerErr := <-workerResult:
 		return stopReaderAndFinishSourceIntakeRuntime(
@@ -74,6 +79,7 @@ func RunSourceIntakeRuntime(
 			database,
 			nil,
 			workerErr,
+			maintenance,
 		)
 	case <-ctx.Done():
 		return stopReaderAndFinishSourceIntakeRuntime(
@@ -86,6 +92,7 @@ func RunSourceIntakeRuntime(
 			database,
 			workerResult,
 			nil,
+			maintenance,
 		)
 	}
 }
@@ -100,6 +107,7 @@ func stopReaderAndFinishSourceIntakeRuntime(
 	database io.Closer,
 	workerResult <-chan error,
 	workerErr error,
+	maintenance func(context.Context) error,
 ) error {
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 	defer cancelShutdown()
@@ -117,6 +125,7 @@ func stopReaderAndFinishSourceIntakeRuntime(
 			database,
 			workerResult,
 			errors.Join(workerErr, readerErr),
+			maintenance,
 		)
 	case <-shutdownCtx.Done():
 		return sourceIntakeShutdownTimeout(workerErr)
@@ -130,6 +139,7 @@ func drainSourceIntakeRuntime(
 	database io.Closer,
 	workerResult <-chan error,
 	initialErr error,
+	maintenance func(context.Context) error,
 ) error {
 	queue.Seal()
 	if workerResult != nil {
@@ -140,7 +150,7 @@ func drainSourceIntakeRuntime(
 			return sourceIntakeShutdownTimeout(initialErr)
 		}
 	}
-	return finishSourceIntakeRuntime(ctx, checkpoints, database, initialErr)
+	return finishSourceIntakeRuntime(ctx, checkpoints, database, initialErr, maintenance)
 }
 
 func finishSourceIntakeRuntime(
@@ -148,6 +158,7 @@ func finishSourceIntakeRuntime(
 	checkpoints *source.CheckpointManager,
 	database io.Closer,
 	initialErr error,
+	maintenance func(context.Context) error,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return sourceIntakeShutdownTimeout(initialErr)
@@ -156,10 +167,18 @@ func finishSourceIntakeRuntime(
 	if ctx.Err() != nil {
 		return sourceIntakeShutdownTimeout(errors.Join(initialErr, wrapSourceRuntimeError("flush checkpoint", flushErr)))
 	}
+	var maintenanceErr error
+	if initialErr == nil && flushErr == nil && maintenance != nil {
+		maintenanceErr = maintenance(ctx)
+		if ctx.Err() != nil {
+			return sourceIntakeShutdownTimeout(wrapSourceRuntimeError("maintenance", maintenanceErr))
+		}
+	}
 	closeErr := database.Close()
 	return errors.Join(
 		initialErr,
 		wrapSourceRuntimeError("flush checkpoint", flushErr),
+		wrapSourceRuntimeError("maintenance", maintenanceErr),
 		wrapSourceRuntimeError("close database", closeErr),
 	)
 }

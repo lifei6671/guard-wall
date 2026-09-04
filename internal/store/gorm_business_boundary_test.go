@@ -128,9 +128,25 @@ func hardcodedRuntimeColumnLiterals(t *testing.T, path string, contents []byte, 
 		t.Fatalf("parse %s: %v", path, err)
 	}
 	literals := make([]runtimeColumnLiteral, 0)
+	// 仅区分明确审计行上的直接业务值，不豁免同词列名或间接表达式。
+	auditValues := make(map[*ast.BasicLit]struct{})
 	ast.Inspect(file, func(node ast.Node) bool {
+		if composite, ok := node.(*ast.CompositeLit); ok && isNamedIdentifier(composite.Type, "criticalAuditRow") {
+			for _, element := range composite.Elts {
+				field, ok := element.(*ast.KeyValueExpr)
+				if !ok || (keyValueKey(field) != "Category" && keyValueKey(field) != "ActorType") {
+					continue
+				}
+				if value, ok := field.Value.(*ast.BasicLit); ok && value.Kind == token.STRING {
+					auditValues[value] = struct{}{}
+				}
+			}
+		}
 		literal, ok := node.(*ast.BasicLit)
 		if !ok || literal.Kind != token.STRING {
+			return true
+		}
+		if _, businessValue := auditValues[literal]; businessValue {
 			return true
 		}
 		value, err := strconv.Unquote(literal.Value)
@@ -515,6 +531,44 @@ func bypass(db any, value string) {
 	literals := hardcodedRuntimeColumnLiterals(t, "bypass.go", source, map[string]struct{}{"node_id": {}})
 	if len(literals) != 3 {
 		t.Fatalf("hardcoded column literals = %#v, want three", literals)
+	}
+}
+
+func TestRuntimeColumnLiteralGuardDistinguishesAuditValues(t *testing.T) {
+	columns := map[string]struct{}{"source": {}}
+	legal := []byte(`package store
+func report() {
+	_ = criticalAuditRow{Category: "source", ActorType: "source"}
+}`)
+	if literals := hardcodedRuntimeColumnLiterals(t, "audit.go", legal, columns); len(literals) != 0 {
+		t.Fatalf("audit business values treated as columns: %#v", literals)
+	}
+	mixed := []byte(`package store
+func report(db any, value string) {
+	_ = criticalAuditRow{Category: "source", ActorType: "source"}
+	column := "source"
+	filter := map[string]any{"source": value}
+	_ = clause.Column{Name: "source"}
+	_ = otherRow{Category: "source"}
+	_ = criticalAuditRow{Action: "source"}
+	_ = criticalAuditRow{Category: string("source")}
+	db.Select(column)
+	db.Where(filter)
+}`)
+	literals := hardcodedRuntimeColumnLiterals(t, "mixed.go", mixed, columns)
+	want := []runtimeColumnLiteral{
+		{line: 4, value: "source"}, {line: 5, value: "source"}, {line: 6, value: "source"},
+		{line: 7, value: "source"}, {line: 8, value: "source"}, {line: 9, value: "source"},
+	}
+	if !reflect.DeepEqual(literals, want) {
+		t.Fatalf("mixed column literals = %#v, want %#v", literals, want)
+	}
+	violations, err := runtimeColumnReferenceViolations("mixed.go", mixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 3 || violations[0].surface != "clause.Column.Name" || violations[1].surface != "Select" || violations[2].surface != "Where" {
+		t.Fatalf("column-reference guards changed: %#v", violations)
 	}
 }
 

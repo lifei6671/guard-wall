@@ -773,13 +773,17 @@ window reset
 
 # 24. File Source Delivery Semantics
 
-Phase 1 File Source：
+Phase 1 File Source 在建立稳定 SourcePosition 后，内部投递采用：
 
 ```text
 at-least-once
 ```
 
 允许 Agent crash 后少量日志重复读取。
+
+日志生产端 destructive truncate、删除及超过 Guard lag 的轮转可能造成外部日志丢失。
+检测与审计要求、copytruncate fast-regrow 盲区见
+[Phase 1 技术规格 §8](contracts/guard-phase-1-m0-contract-freeze-v0.3.md)。
 
 不保证：
 
@@ -3334,7 +3338,9 @@ Detection Window 使用 Guard ObservedAt。
 
 ## ADR-011
 
-File/Journald Source 采用 at-least-once 语义。
+File/Journald Source 在建立稳定 SourcePosition 后，内部投递采用 at-least-once 语义。
+外部日志截断、删除及轮转的丢失边界见
+[Phase 1 技术规格 §8](contracts/guard-phase-1-m0-contract-freeze-v0.3.md)。
 
 ## ADR-012
 

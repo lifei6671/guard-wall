@@ -141,7 +141,7 @@ File Source 必须遵守上位 Contract 第 6.2 节的单向 lifecycle：
 - 128-bit CSPRNG generation 原值在首条 RawRecord 发出前 durable persist；
 - rename/create 为新旧文件分配不同 generation；copytruncate 即使 inode 不变也 seal 旧 generation；
 - 新旧 generation 的 RawRecord 仍在同一 Source session 中分配连续 DeliverySequence；
-- checkpoint 未安全越过、仍有 receipt/replay/reprocess 引用或仍需重放时，禁止 `Retired`；
+- checkpoint 未安全越过、仍有 receipt 引用或 crash-replay 恢复需求时，禁止 `Retired`；
 - 清理前保留重建稳定 DeliveryID 所需字段；重启恢复全部非 `Retired` generation；
 - 找不到旧 inode 时不得伪造恢复成功，按 Contract 写 `DataLossSuspected` Audit/Health。
 
@@ -167,22 +167,24 @@ receipt 的语义内容至少能证明唯一 Delivery 已进入成功或永久�
 具体列名由 migration 冻结。Alert、Decision、Detection outcome 和 Critical Audit 仍必须拥有各自的
 数据库唯一约束；receipt 不能替代它们。
 
-receipt 只有在对应 Source checkpoint 已持久化越过其 Position，且 retention、replay 和
-explicit reprocess 均不再引用时才可删除。显式历史重处理必须使用新的 reprocess identity，
-不得删除 receipt 后伪装成首次投递。
+receipt 只有在对应 Source checkpoint 已持久化越过其 Position，且 retention 与 crash-replay
+恢复需求均不再需要它时才可删除；不得删除 receipt 后伪装成首次投递。
+Phase 1 不支持显式历史日志 reprocess，不为未来 reprocess 建设 task/lease/reference 系统。
+未来新增历史 reprocess 时，须通过 Contract Change Review 引入重处理身份及 generation pin/reference 语义。
 
 ## 8. 连续 checkpoint
 
 Completion Tracker 按每个 Source session 的 `DeliverySequence` 维护完成洞：
 
 ```text
-next_expected = 已持久化 checkpoint 后本 session 的首个 sequence
+next_expected = 新 session 的首个 sequence（1）
 收到 completion(seq):
   记录 seq 已 SourceDurable
   while next_expected 已完成:
     candidate_position = position(next_expected)
+    合并该位置的 generation 连续字节范围（File）
     next_expected++
-  按 interval 或 record threshold 尝试持久化 candidate_position
+  按 interval 或 record threshold 原子持久化 candidate_position 与全部代际范围
 ```
 
 约束：
@@ -193,6 +195,14 @@ next_expected = 已持久化 checkpoint 后本 session 的首个 sequence
 - checkpoint 写失败不得撤销已经提交的 receipt，也不得在内存中声称持久化成功；继续重试或重启恢复。
 - Journald checkpoint 保存最高连续 sequence 对应 cursor；File checkpoint 保存对应 generation/offset。
 - SQLite WAL checkpoint 与 Source checkpoint 是不同概念，禁止在接口、日志或指标中混称。
+
+File coverage最小原语仅覆盖显式从0完整读取的generation。首次投递前由当前session初始化已知零前缀；
+历史NULL不自动回填。重启从各代际持久durable_end恢复，仍共用新session的连续Sequence；
+同一事务校验session、checkpoint和所有范围。范围空洞或任一代际失败须整体拒绝，失败候选必须完整保留。
+Sealed且持久前缀达到final_eof可判定处理完成，晚seal与空代际无需制造Delivery。
+该事实不替代当前checkpoint、receipt与crash-replay恢复需求检查；物理清理另受retention约束。
+Store在同一事务内检查完整coverage及receipt/checkpoint引用后才允许退休；当前checkpoint即使位于EOF仍阻止退休。
+已知空代际可无checkpoint退休；仅写状态和退休时间，不删除row。资格不以未来reprocess的task/lease/reference系统为前提。
 
 ## 9. Poison、Critical Audit 与敏感数据
 
@@ -214,7 +224,17 @@ Source 还必须暴露 lag 与 inode/cursor gap。rotation、vacuum、destructiv
 copytruncate fast-regrow 超出可恢复边界时，必须报告 Data Loss Audit/Health，不得扩大
 at-least-once 声明。
 
-### 10.2 Shutdown
+### 10.2 截断观测
+
+截断观测由单个Source读取所有者串行提供文件身份、size、offset与时间；同身份size下降或小于读取offset
+产生DataLossSuspected，身份变化交由轮转处理。检测后保持本代际Degraded/StopReading标记。
+Store专用入口同步记录Operational Audit（critical=0），按Source/generation保留首次疑似证据；
+报告失败或取消传播错误并保持停止标记，显式重试成功也不自动恢复读取。
+报告不改变checkpoint、receipt、coverage或generation状态；Health为组件内状态，非跨重启持久Health。
+两次观测间截断再快速增长可能没有可见证据；未检测到不等于证明没有数据损失。
+实现及验证范围见`docs/development/phase-1/source-copytruncate-reporting-design.md`和STATUS第183项；生产读取及轮转接线另行交付。
+
+### 10.3 Shutdown
 
 SIGTERM 顺序固定为：停止管理面新写入 → Source 停止读取 → drain 已入 pipeline 的记录 →
 flush 连续 checkpoint → flush 必须持久化的 Audit → 关闭 DB → 退出。

@@ -60,15 +60,16 @@ func TestSourceCheckpointMonotonicCASRejectsRegression(t *testing.T) {
 	database := openTestStore(t)
 	ctx := context.Background()
 	base := prepareFileSource(t, database, testSourceID, testGeneration, 100)
+	session := beginTestSourceSession(t, database, testSourceID)
 
 	position100 := filePosition(t, testGeneration, 90, 100)
-	if err := database.AdvanceSourceCheckpoint(ctx, testSourceID, 100, position100, base.Add(time.Second)); err != nil {
+	if err := database.AdvanceSourceCheckpoint(ctx, session, 100, position100, base.Add(time.Second)); err != nil {
 		t.Fatalf("AdvanceSourceCheckpoint(100): %v", err)
 	}
-	if err := database.AdvanceSourceCheckpoint(ctx, testSourceID, 90, filePosition(t, testGeneration, 80, 90), base.Add(2*time.Second)); !errors.Is(err, ErrCheckpointRegression) {
+	if err := database.AdvanceSourceCheckpoint(ctx, session, 90, filePosition(t, testGeneration, 80, 90), base.Add(2*time.Second)); !errors.Is(err, ErrCheckpointRegression) {
 		t.Fatalf("AdvanceSourceCheckpoint(90) error = %v, want regression", err)
 	}
-	if err := database.AdvanceSourceCheckpoint(ctx, testSourceID, 100, position100, base.Add(3*time.Second)); err != nil {
+	if err := database.AdvanceSourceCheckpoint(ctx, session, 100, position100, base.Add(3*time.Second)); err != nil {
 		t.Fatalf("idempotent checkpoint: %v", err)
 	}
 	checkpoint, found, err := database.LoadSourceCheckpoint(ctx, testSourceID)
@@ -114,14 +115,15 @@ func TestFileGenerationLifecycleRejectsRollbackAndRestoresNonRetired(t *testing.
 	}
 }
 
-func TestRetireFileGenerationRequiresSafeCheckpointAndNoReceiptReference(t *testing.T) {
+func TestRetireFileGenerationRequiresQualificationAndNoReceiptReference(t *testing.T) {
 	database := openTestStore(t)
 	ctx := context.Background()
 	base := prepareFileSource(t, database, testSourceID, testGeneration, 100)
+	session := beginTestSourceSession(t, database, testSourceID)
 	if err := database.SealFileGeneration(ctx, testSourceID, testGeneration, FileGenerationOpen, 100, 100, base.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.AdvanceSourceCheckpoint(ctx, testSourceID, 99, filePosition(t, testGeneration, 0, 100), base.Add(2*time.Second)); err != nil {
+	if err := database.AdvanceSourceCheckpoint(ctx, session, 99, filePosition(t, testGeneration, 0, 100), base.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.RetireFileGeneration(ctx, testSourceID, testGeneration, base.Add(3*time.Second)); !errors.Is(err, ErrFileGenerationNotDurable) {
@@ -129,7 +131,7 @@ func TestRetireFileGenerationRequiresSafeCheckpointAndNoReceiptReference(t *test
 	}
 
 	position := filePosition(t, testGeneration, 90, 100)
-	if err := database.AdvanceSourceCheckpoint(ctx, testSourceID, 100, position, base.Add(3*time.Second)); err != nil {
+	if err := database.AdvanceSourceCheckpoint(ctx, session, 100, position, base.Add(3*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.RetireFileGeneration(ctx, testSourceID, testGeneration, base); !errors.Is(err, ErrFileGenerationTransition) {
@@ -158,9 +160,11 @@ func TestRetireFileGenerationRequiresSafeCheckpointAndNoReceiptReference(t *test
 	if _, err := database.db.ExecContext(ctx, "DELETE FROM processing_receipts WHERE delivery_id = ?", string(deliveryID)); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.RetireFileGeneration(ctx, testSourceID, testGeneration, base.Add(5*time.Second)); err != nil {
-		t.Fatalf("safe retire: %v", err)
+	if err := database.RetireFileGeneration(ctx, testSourceID, testGeneration, base.Add(5*time.Second)); !errors.Is(err, ErrFileGenerationNotDurable) {
+		t.Fatalf("retirement without session-bound qualification: %v", err)
 	}
+	// 历史 Retired fixture 保留恢复过滤覆盖；当前 API 不再授予退休资格。
+	seedHistoricalRetiredGeneration(t, database, base.Add(5*time.Second))
 	recovered, err := database.LoadRecoverableFileGenerations(ctx, testSourceID)
 	if err != nil {
 		t.Fatal(err)
@@ -174,6 +178,7 @@ func TestAdvanceSourceCheckpointValidatesDurableIdentity(t *testing.T) {
 	database := openTestStore(t)
 	ctx := context.Background()
 	base := prepareFileSource(t, database, testSourceID, testGeneration, 100)
+	session := beginTestSourceSession(t, database, testSourceID)
 
 	wrongDevice, err := core.NewFilePosition(core.FilePosition{
 		Generation: testGeneration, DeviceID: 9, Inode: 2, StartOffset: 0, EndOffset: 10,
@@ -181,14 +186,14 @@ func TestAdvanceSourceCheckpointValidatesDurableIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.AdvanceSourceCheckpoint(ctx, testSourceID, 1, wrongDevice, base.Add(time.Second)); !errors.Is(err, ErrSourcePositionMismatch) {
+	if err := database.AdvanceSourceCheckpoint(ctx, session, 1, wrongDevice, base.Add(time.Second)); !errors.Is(err, ErrSourcePositionMismatch) {
 		t.Fatalf("wrong device error = %v", err)
 	}
 	journald, err := core.NewJournaldPosition("cursor-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.AdvanceSourceCheckpoint(ctx, testSourceID, 1, journald, base.Add(time.Second)); !errors.Is(err, ErrSourcePositionMismatch) {
+	if err := database.AdvanceSourceCheckpoint(ctx, session, 1, journald, base.Add(time.Second)); !errors.Is(err, ErrSourcePositionMismatch) {
 		t.Fatalf("wrong source kind error = %v", err)
 	}
 }
@@ -245,16 +250,16 @@ func TestRetiredGenerationRejectsLateReceiptAndCheckpoint(t *testing.T) {
 	database := openTestStore(t)
 	ctx := context.Background()
 	base := prepareFileSource(t, database, testSourceID, testGeneration, 100)
+	session := beginTestSourceSession(t, database, testSourceID)
 	position := filePosition(t, testGeneration, 90, 100)
 	if err := database.SealFileGeneration(ctx, testSourceID, testGeneration, FileGenerationOpen, 100, 1, base.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.AdvanceSourceCheckpoint(ctx, testSourceID, 1, position, base.Add(2*time.Second)); err != nil {
+	if err := database.AdvanceSourceCheckpoint(ctx, session, 1, position, base.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.RetireFileGeneration(ctx, testSourceID, testGeneration, base.Add(3*time.Second)); err != nil {
-		t.Fatal(err)
-	}
+	// 模拟升级保留的历史 Retired 行，不以当前 API 伪造资格。
+	seedHistoricalRetiredGeneration(t, database, base.Add(3*time.Second))
 
 	deliveryID, err := core.FileDeliveryID(testSourceID, core.FilePosition{Generation: testGeneration, StartOffset: 90, EndOffset: 100})
 	if err != nil {
@@ -277,7 +282,7 @@ func TestRetiredGenerationRejectsLateReceiptAndCheckpoint(t *testing.T) {
 	if _, found, err := database.FindProcessingReceipt(ctx, deliveryID); err != nil || found {
 		t.Fatalf("late receipt readback found=%v err=%v", found, err)
 	}
-	if err := database.AdvanceSourceCheckpoint(ctx, testSourceID, 2, position, base.Add(4*time.Second)); !errors.Is(err, ErrSourcePositionMismatch) {
+	if err := database.AdvanceSourceCheckpoint(ctx, session, 2, position, base.Add(4*time.Second)); !errors.Is(err, ErrSourcePositionMismatch) {
 		t.Fatalf("late checkpoint error = %v", err)
 	}
 	if _, err := database.db.ExecContext(ctx, `
@@ -285,6 +290,13 @@ func TestRetiredGenerationRejectsLateReceiptAndCheckpoint(t *testing.T) {
 		SET delivery_sequence = 2, persisted_at_us = ?
 		WHERE source_id = ?`, base.Add(4*time.Second).UnixMicro(), string(testSourceID)); err == nil {
 		t.Fatal("SQLite checkpoint trigger accepted retired generation")
+	}
+}
+
+func seedHistoricalRetiredGeneration(t *testing.T, database *Store, at time.Time) {
+	t.Helper()
+	if _, err := database.db.ExecContext(context.Background(), `UPDATE source_file_generations SET state='retired', retired_at_us=? WHERE source_id=? AND generation=?`, at.UnixMicro(), testSourceID, testGeneration); err != nil {
+		t.Fatal(err)
 	}
 }
 

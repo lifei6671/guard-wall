@@ -172,7 +172,7 @@ func TestRunSourceRuntimeTimeoutDoesNotCloseStoreUnderActiveWorker(t *testing.T)
 func TestRunSourceRuntimeTimeoutDoesNotCloseDuringCommitUnknownReadback(t *testing.T) {
 	database, _ := openSourceRuntimeStore(t)
 	seedShutdownSource(t, database)
-	delivery := testDelivery(t, 1)
+	delivery := sqliteDeliveryAt(t, 0, 10, time.Unix(1_700_000_000, 0).UTC())
 	queue, err := source.NewDeliveryQueue(1)
 	if err != nil {
 		t.Fatal(err)
@@ -347,7 +347,36 @@ func newSourceRuntimeCheckpoints(t *testing.T, database *store.Store) *source.Ch
 	if err != nil {
 		t.Fatal(err)
 	}
-	return source.NewCheckpointManager(tracker, source.NewSQLiteStateStore(database))
+	return source.NewCheckpointManager(tracker, newProcessorCoverageState(t, database))
+}
+
+// 这些完整记录 fixture 明确从 0 负责读取；重启调用保留已经持久的前缀。
+func newProcessorCoverageState(t *testing.T, database *store.Store) *source.SQLiteStateStore {
+	t.Helper()
+	state := source.NewSQLiteStateStore(database, beginProcessorSourceSession(t, database, "source-1"))
+	if err := state.InitializeFileGenerationCoverage(context.Background(), "00112233445566778899aabbccddeeff"); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+// 测试调用者拥有重启边界，旧 worker 已退出后才可创建新的 session。
+func beginProcessorSourceSession(t *testing.T, database *store.Store, sourceID core.SourceID) store.SourceSession {
+	t.Helper()
+	ctx := context.Background()
+	expected, _, _, err := database.LoadSourceSessionState(ctx, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := store.NewSourceSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _, _, err := database.BeginSourceSession(ctx, sourceID, expected, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return session
 }
 
 func waitForSourceRuntimeSignal(t *testing.T, signal <-chan struct{}, name string) {

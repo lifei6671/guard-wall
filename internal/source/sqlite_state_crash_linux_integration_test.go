@@ -184,7 +184,7 @@ func seedSourceCrashWindow(t *testing.T, ctx context.Context, database *store.St
 		t.Fatalf("EnsureSource(): %v", err)
 	}
 
-	state := NewSQLiteStateStore(database)
+	state := NewSQLiteStateStore(database, beginSQLiteSourceSession(t, database, sourceCrashSourceID))
 	state.clock = func() time.Time { return base.Add(2 * time.Second) }
 	if err := state.RegisterFileGeneration(ctx, store.FileGeneration{
 		SourceID: sourceCrashSourceID, Generation: sourceCrashOldGeneration,
@@ -194,6 +194,9 @@ func seedSourceCrashWindow(t *testing.T, ctx context.Context, database *store.St
 		t.Fatalf("RegisterFileGeneration(): %v", err)
 	}
 	oldPosition := sourceCrashPosition(t, sourceCrashOldGeneration, 21, 201)
+	if err := state.InitializeFileGenerationCoverage(ctx, sourceCrashOldGeneration); err != nil {
+		t.Fatal(err)
+	}
 	oldDeliveryID := sourceCrashDeliveryID(t, oldPosition)
 	putSourceCrashReceipt(t, ctx, database, oldDeliveryID, oldPosition, base.Add(time.Second))
 
@@ -205,6 +208,9 @@ func seedSourceCrashWindow(t *testing.T, ctx context.Context, database *store.St
 	}
 
 	newPosition := sourceCrashPosition(t, sourceCrashNewGeneration, 22, 202)
+	if err := state.InitializeFileGenerationCoverage(ctx, sourceCrashNewGeneration); err != nil {
+		t.Fatal(err)
+	}
 	newDeliveryID := sourceCrashDeliveryID(t, newPosition)
 	switch window {
 	case sourceCrashBeforeReceipt:
@@ -228,7 +234,7 @@ func recoverSourceCrashWindow(
 	window string,
 ) sourceCrashSnapshot {
 	t.Helper()
-	state := NewSQLiteStateStore(database)
+	state := NewSQLiteStateStore(database, beginSQLiteSourceSession(t, database, sourceCrashSourceID))
 	generations, err := state.RecoverFileGenerations(ctx, sourceCrashSourceID)
 	if err != nil {
 		t.Fatalf("RecoverFileGenerations(): %v", err)
