@@ -90,6 +90,7 @@ type ReconcileRuntime struct {
 	policyWake    *DispatcherPolicyWakeSink
 	finalizer     *decision.DesiredStateFinalizer
 	policyService *NodeBoundPolicyService
+	healthSource  *BackendHealthSource
 	store         RuntimeStore
 
 	runMu   sync.Mutex
@@ -189,6 +190,13 @@ func NewReconcileRuntime(ctx context.Context, dependencies RuntimeDependencies) 
 		nodeID:  dependencies.NodeID,
 		service: decisionPolicyService,
 	}
+	var healthSource *BackendHealthSource
+	if prober, ok := dependencies.Backend.(BackendHealthProber); ok {
+		healthSource, err = newBackendHealthSource(prober, dispatcher, backendHealthSourcePollInterval)
+		if err != nil {
+			return nil, fmt.Errorf("construct Backend health source: %w", err)
+		}
+	}
 	return &ReconcileRuntime{
 		controller:    controller,
 		plans:         plans,
@@ -199,6 +207,7 @@ func NewReconcileRuntime(ctx context.Context, dependencies RuntimeDependencies) 
 		policyWake:    policyWake,
 		finalizer:     finalizer,
 		policyService: policyService,
+		healthSource:  healthSource,
 		store:         dependencies.Store,
 	}, nil
 }
@@ -293,11 +302,62 @@ func (r *ReconcileRuntime) Run(ctx context.Context) error {
 	r.running = true
 	r.runMu.Unlock()
 
-	runErr := r.expiration.Run(ctx)
+	runErr := r.runComponents(ctx)
 	closeErr := r.store.Close()
 	r.runMu.Lock()
 	r.running = false
 	r.stopped = true
 	r.runMu.Unlock()
 	return errors.Join(runErr, closeErr)
+}
+
+func (r *ReconcileRuntime) runComponents(ctx context.Context) error {
+	if r.healthSource == nil {
+		return r.expiration.Run(ctx)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan runtimeComponentResult, 2)
+	go func() {
+		results <- runtimeComponentResult{component: "expiration runtime", err: r.expiration.Run(runCtx)}
+	}()
+	go func() {
+		results <- runtimeComponentResult{component: "Backend health source", err: r.healthSource.Run(runCtx)}
+	}()
+
+	first := <-results
+	cancel()
+	second := <-results
+	if ctx.Err() != nil {
+		return reconcileRuntimeShutdownError(first, second)
+	}
+	return reconcileRuntimeFailure(first, second)
+}
+
+type runtimeComponentResult struct {
+	component string
+	err       error
+}
+
+func reconcileRuntimeShutdownError(results ...runtimeComponentResult) error {
+	errs := make([]error, 0, len(results))
+	for _, result := range results {
+		if result.err != nil && !errors.Is(result.err, context.Canceled) {
+			errs = append(errs, fmt.Errorf("%s failed during shutdown: %w", result.component, result.err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func reconcileRuntimeFailure(first, second runtimeComponentResult) error {
+	errs := make([]error, 0, 2)
+	if first.err == nil {
+		errs = append(errs, fmt.Errorf("%s stopped before runtime cancellation", first.component))
+	} else {
+		errs = append(errs, fmt.Errorf("%s failed: %w", first.component, first.err))
+	}
+	if second.err != nil && !errors.Is(second.err, context.Canceled) {
+		errs = append(errs, fmt.Errorf("%s also failed: %w", second.component, second.err))
+	}
+	return errors.Join(errs...)
 }

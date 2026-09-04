@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -159,6 +161,201 @@ func TestReconcileRuntimeCancellationStopsDispatcherBeforeClosingStore(t *testin
 	}
 }
 
+func TestReconcileRuntimeWiresIPCHealthRecoveryWithoutMutation(t *testing.T) {
+	dependencies, store := newRuntimeDependencies()
+	backend := &runtimeHealthBackend{Backend: fake.NewBackend()}
+	backend.unreachable.Store(true)
+	dependencies.Backend = backend
+	runtime, err := NewReconcileRuntime(context.Background(), dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.healthSource == nil {
+		t.Fatal("runtime did not compose its Backend health source")
+	}
+	runtime.healthSource.interval = time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	waitForCounter(t, &backend.healthProbes, 1)
+	select {
+	case <-runtime.dispatcher.startupReady:
+	case <-time.After(time.Second):
+		t.Fatal("Dispatcher did not finish startup")
+	}
+	probesBefore, appliesBefore := backend.Counts()
+	healthProbesBefore := backend.healthProbes.Load()
+	backend.unreachable.Store(false)
+	waitForCounter(t, &backend.healthProbes, healthProbesBefore+3)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		probes, _ := backend.Counts()
+		if probes > probesBefore {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	probes, applies := backend.Counts()
+	if probes != probesBefore+1 || applies != appliesBefore {
+		t.Fatalf("recovery crossed Backend boundary as probes=%d/%d applies=%d/%d, want one authoritative Probe and no extra mutation", probes, probesBefore, applies, appliesBefore)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() after cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not stop after cancellation")
+	}
+	if store.closeCalls != 1 {
+		t.Fatalf("Store Close calls = %d, want 1", store.closeCalls)
+	}
+}
+
+func TestReconcileRuntimeStopsHealthSourceBeforeClosingStore(t *testing.T) {
+	dependencies, store := newRuntimeDependencies()
+	backend := &blockingRuntimeHealthBackend{
+		Backend: fake.NewBackend(), entered: make(chan struct{}), exited: make(chan struct{}),
+	}
+	dependencies.Backend = backend
+	runtime, err := NewReconcileRuntime(context.Background(), dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.close = func() error {
+		select {
+		case <-backend.exited:
+			return nil
+		default:
+			t.Fatal("Store closed before Backend health source stopped")
+			return nil
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	select {
+	case <-backend.entered:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not start Backend health source")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() after cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not stop after cancellation")
+	}
+	if store.closeCalls != 1 {
+		t.Fatalf("Store Close calls = %d, want 1", store.closeCalls)
+	}
+}
+
+func TestReconcileRuntimeFailsOnHealthRecoveryObservedPersistenceError(t *testing.T) {
+	ctx := context.Background()
+	database := openRestartStore(t, ctx, filepath.Join(t.TempDir(), "runtime-health-recovery.db"), time.Now().UTC())
+	closed := false
+	defer func() {
+		if !closed {
+			_ = database.Close()
+		}
+	}()
+	dependencies, _ := newRuntimeDependencies()
+	releaseRecovery := make(chan struct{})
+	backend := &scriptedRuntimeHealthBackend{
+		Backend:         fake.NewBackend(),
+		releaseRecovery: releaseRecovery,
+	}
+	dependencies.Backend = backend
+	persistErr := errors.New("persist recovered Observed state")
+	store := &failingRuntimeObservedStore{RuntimeStore: database, failOnObservedWrite: 2, err: persistErr}
+	dependencies.Store = store
+	runtime, err := NewReconcileRuntime(ctx, dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.BootstrapInitialManagedPolicy(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []ReconcileKey{
+		{Domain: DomainInfrastructure},
+		{Domain: DomainPolicy},
+	} {
+		plan, ok, err := runtime.plans.CurrentPlan(ctx, key)
+		if err != nil || !ok {
+			t.Fatalf("load startup plan %s: ok=%t err=%v", reconcileKeyName(key), ok, err)
+		}
+		if _, err := backend.Backend.Apply(ctx, plan); err != nil {
+			t.Fatalf("pre-align startup physical state for %s: %v", reconcileKeyName(key), err)
+		}
+	}
+	runtime.healthSource.interval = time.Millisecond
+	store.close = func() error {
+		if err := runtime.TargetWakeSink().WakeTarget(context.Background(), dependencies.NodeID, netip.MustParsePrefix("192.0.2.9/32")); !errors.Is(err, ErrDispatcherStopped) {
+			t.Fatalf("Target wake during Store close = %v, want stopped", err)
+		}
+		closed = true
+		return database.Close()
+	}
+	probesBefore, appliesBefore := backend.Counts()
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	waitForCounter(t, &backend.healthProbes, 1)
+	select {
+	case <-runtime.dispatcher.startupReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Dispatcher did not finish startup")
+	}
+	waitForCounter(t, &store.observedWrites, 1)
+	probesBefore, appliesBefore = backend.Counts()
+	close(releaseRecovery)
+	select {
+	case err := <-done:
+		if !errors.Is(err, persistErr) {
+			t.Fatalf("Run() = %v, want recovered Observed persistence failure", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime swallowed recovered Observed persistence failure")
+	}
+	if healthProbes := backend.healthProbes.Load(); healthProbes != 2 {
+		t.Fatalf("health Probe calls = %d, want initial unavailable and one recovery observation", healthProbes)
+	}
+	probes, applies := backend.Counts()
+	if probes != probesBefore+1 || applies != appliesBefore {
+		t.Fatalf("recovery failure Backend calls = probes %d/%d applies %d/%d, want one authoritative Probe and no mutation", probes, probesBefore, applies, appliesBefore)
+	}
+	if store.closeCalls != 1 {
+		t.Fatalf("Store Close calls = %d, want 1", store.closeCalls)
+	}
+}
+
+type failingRuntimeObservedStore struct {
+	RuntimeStore
+	observedWrites      atomic.Uint64
+	failOnObservedWrite uint64
+	err                 error
+	close               func() error
+	closeCalls          uint64
+}
+
+func (s *failingRuntimeObservedStore) ApplyObservedFirewallUpdate(ctx context.Context, update core.ObservedFirewallUpdate) error {
+	if s.observedWrites.Add(1) == s.failOnObservedWrite {
+		return s.err
+	}
+	return s.RuntimeStore.ApplyObservedFirewallUpdate(ctx, update)
+}
+
+func (s *failingRuntimeObservedStore) Close() error {
+	s.closeCalls++
+	if s.close == nil {
+		return s.RuntimeStore.Close()
+	}
+	return s.close()
+}
+
 func TestReconcileRuntimeJoinsRunAndCloseFailures(t *testing.T) {
 	dependencies, store := newRuntimeDependencies()
 	runFailure := errors.New("startup failure")
@@ -232,6 +429,59 @@ type runtimeStoreStub struct {
 	policyTransactions    int
 	closeCalls            int
 	close                 func() error
+}
+
+type runtimeHealthBackend struct {
+	*fake.Backend
+	unreachable  atomic.Bool
+	healthProbes atomic.Uint64
+}
+
+type scriptedRuntimeHealthBackend struct {
+	*fake.Backend
+	releaseRecovery <-chan struct{}
+	healthProbes    atomic.Uint64
+}
+
+func (b *scriptedRuntimeHealthBackend) ProbeHealth(ctx context.Context) error {
+	switch b.healthProbes.Add(1) {
+	case 1:
+		return errBackendUnavailable
+	case 2:
+		select {
+		case <-b.releaseRecovery:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	default:
+		return errors.New("unexpected Backend health probe")
+	}
+}
+
+func (b *runtimeHealthBackend) ProbeHealth(context.Context) error {
+	b.healthProbes.Add(1)
+	if b.unreachable.Load() {
+		return errBackendUnavailable
+	}
+	return nil
+}
+
+type blockingRuntimeHealthBackend struct {
+	*fake.Backend
+	entered, exited chan struct{}
+	exitOnce        sync.Once
+}
+
+func (b *blockingRuntimeHealthBackend) ProbeHealth(ctx context.Context) error {
+	select {
+	case <-b.entered:
+	default:
+		close(b.entered)
+	}
+	<-ctx.Done()
+	b.exitOnce.Do(func() { close(b.exited) })
+	return ctx.Err()
 }
 
 func (s *runtimeStoreStub) LoadReconcileRecovery(ctx context.Context, nodeID core.NodeID) (core.ReconcileRecoverySnapshot, error) {

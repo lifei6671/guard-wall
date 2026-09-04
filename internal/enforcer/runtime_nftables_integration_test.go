@@ -192,6 +192,8 @@ func TestEnforcerRuntimeNftablesIntegration(t *testing.T) {
 		t.Fatalf("remove library fixture socket directory: %v", err)
 	}
 	t.Run("M0-RECOVERY-004", b4RunBinaryRecovery)
+	t.Run("C2-IPC-HEALTH-001", b4RunIPCHealthSourceRecovery)
+	t.Run("C2-TARGET-NATIVE-TIMEOUT-001", b4RunTargetNativeTimeout)
 }
 
 func b4RuntimeProbe(t *testing.T, ctx context.Context) firewall.FirewallCapabilities {

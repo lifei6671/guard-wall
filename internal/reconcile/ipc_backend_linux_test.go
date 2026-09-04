@@ -8,8 +8,10 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
+	"github.com/lifei6671/guard-wall/internal/enforcement"
 	"github.com/lifei6671/guard-wall/internal/firewall"
 	"github.com/lifei6671/guard-wall/internal/ipc"
 )
@@ -105,6 +107,52 @@ func TestIPCBackendAppliesCompletePolicyAgainstFreshAuthority(t *testing.T) {
 	}
 	if transport.request == nil || transport.request.Operation() != ipc.OperationApplyManagedPlan {
 		t.Fatalf("mutation request = %#v", transport.request)
+	}
+}
+
+func TestIPCBackendAppliesNativeTargetWithSafetyGrace(t *testing.T) {
+	snapshot := managedSnapshotForIPCBackend(t, strings.Repeat("b", 64), strings.Repeat("c", 64))
+	response, err := ipc.NewApplyManagedPlanConfirmedResponse(ipc.DomainTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &ipcTransportStub{capabilities: managedCapabilitiesForIPCBackend(t), snapshot: snapshot, response: response}
+	effectiveUntil := time.Unix(1_900_000_000, 123_456_000).UTC()
+	target := netip.MustParsePrefix("203.0.113.77/32")
+	plan := OperationPlan{
+		Domain: DomainTarget, Target: target, ExpectedTargetGeneration: 1, BasisSnapshotDigest: snapshot.Digest(),
+		DesiredTarget: core.NormalizedTargetEnforcementIntent{
+			NodeID: "00112233445566778899aabbccddeeff", CanonicalTarget: target,
+			BanMembership: core.BanPresent, EffectiveUntil: &effectiveUntil, TimeoutMode: core.TimeoutNative,
+			Scopes: core.ScopeInput | core.ScopeForward, AddressFamily: core.AddressFamilyIPv4,
+			PolicyCoverage: core.PolicyCoverageNone, BackendAttributesDigest: strings.Repeat("d", 64), Generation: 1,
+		},
+	}
+	plan.Digest = PlanDigest(plan)
+	if _, err := newIPCBackend(transport).Apply(context.Background(), plan); err != nil {
+		t.Fatalf("Apply(): %v", err)
+	}
+	request, ok := transport.request.(ipc.ApplyManagedPlanRequest)
+	if !ok {
+		t.Fatalf("request = %T, want ApplyManagedPlanRequest", transport.request)
+	}
+	targetPlan, ok := request.Plan().(ipc.TargetPlan)
+	if !ok {
+		t.Fatalf("request plan = %T, want TargetPlan", request.Plan())
+	}
+	want := enforcement.NativeExpiryForIntent(plan.DesiredTarget)
+	if expiry, found := targetPlan.EffectiveUntilUnixMicro(); !found || want == nil || expiry != want.UnixMicro() {
+		t.Fatalf("physical native expiry = (%d, %v), want %v", expiry, found, want)
+	}
+}
+
+func TestIPCBackendProbeHealthUsesOnlyAuthenticatedCapabilityProbe(t *testing.T) {
+	transport := &ipcTransportStub{capabilities: managedCapabilitiesForIPCBackend(t)}
+	if err := newIPCBackend(transport).ProbeHealth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if transport.capabilityCalls != 1 || transport.snapshotCalls != 0 || transport.mutationCalls != 0 {
+		t.Fatalf("ProbeHealth() calls=%d/%d/%d, want capability probe only", transport.capabilityCalls, transport.snapshotCalls, transport.mutationCalls)
 	}
 }
 

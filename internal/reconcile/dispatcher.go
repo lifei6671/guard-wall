@@ -44,6 +44,25 @@ type BackendHealthStatus struct {
 	TotalFailures       uint64
 }
 
+// backendHealthUnavailableError reports an authoritative recovery Probe that
+// reached the Backend but could not complete. Dispatcher has already recorded
+// its bounded retry deadline, so callers may continue observing availability.
+type backendHealthUnavailableError struct{ cause error }
+
+func (e *backendHealthUnavailableError) Error() string {
+	if e == nil || e.cause == nil {
+		return "Backend health recovery is unavailable"
+	}
+	return e.cause.Error()
+}
+
+func (e *backendHealthUnavailableError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
 type backendHealthPolicy struct {
 	probeTimeout time.Duration
 	backoff      []time.Duration
@@ -283,7 +302,7 @@ func (d *Dispatcher) BackendHealthy(ctx context.Context) (int, error) {
 	if outcome.backendErr != nil {
 		d.recordBackendUnavailable(true)
 		d.healthOperationMu.Unlock()
-		return outcome.resolved, outcome.backendErr
+		return outcome.resolved, &backendHealthUnavailableError{cause: outcome.backendErr}
 	}
 	d.recordBackendHealthy(true)
 	d.healthOperationMu.Unlock()

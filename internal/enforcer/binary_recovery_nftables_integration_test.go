@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/user"
@@ -21,12 +22,34 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lifei6671/guard-wall/internal/core"
+	"github.com/lifei6671/guard-wall/internal/decision"
+	"github.com/lifei6671/guard-wall/internal/enforcement"
+	"github.com/lifei6671/guard-wall/internal/firewall"
+	"github.com/lifei6671/guard-wall/internal/firewall/nftables"
 	"github.com/lifei6671/guard-wall/internal/ipc"
 	"github.com/lifei6671/guard-wall/internal/store"
 	"github.com/lifei6671/guard-wall/migrations"
 )
 
 const b4BinaryRecoveryTimeout = 15 * time.Second
+
+const b4IntegrationOperationLogEnv = "GUARD_INTEGRATION_OPERATION_LOG"
+
+const (
+	b4TargetLifecycleEnv       = "GUARD_B4_TARGET_LIFECYCLE"
+	b4TargetSnapshotStateEnv   = "GUARD_B4_TARGET_SNAPSHOT_STATE"
+	b4TargetStoreStateEnv      = "GUARD_B4_TARGET_STORE_STATE"
+	b4TargetLogicalExpiryEnv   = "GUARD_B4_TARGET_LOGICAL_EXPIRY"
+	b4TargetLifecycleBan       = "ban"
+	b4TargetLifecycleExpire    = "expire"
+	b4TargetStoreStatePresent  = "present"
+	b4TargetStoreStateAbsent   = "absent"
+	b4NativeTimeoutTarget      = "203.0.113.77/32"
+	b4NativeExpiryTolerance    = 3 * time.Second
+	b4NativeTimeoutDecisionID  = "b4-native-timeout-target"
+	b4NativeTimeoutDecisionTTL = 90 * time.Second
+)
 
 type b4GuardIdentity struct {
 	uid uint32
@@ -103,12 +126,116 @@ func b4RunBinaryRecovery(t *testing.T) {
 	t.Logf("M0_FINAL_STATE_DIGEST=%x", digest)
 }
 
+// b4RunIPCHealthSourceRecovery proves that a live Agent observes an Enforcer
+// outage and uses the production health source to recover through IPC without
+// issuing a mutation. It runs only in the disposable nftables namespace.
+func b4RunIPCHealthSourceRecovery(t *testing.T) {
+	t.Helper()
+	if err := b4NftablesCommand(context.Background(), nil, "--json", "list", "table", "inet", "guard"); err == nil {
+		t.Fatal("IPC health fixture already contains inet guard")
+	}
+
+	identity := b4LookupGuardIdentity(t)
+	fixture := b4NewRecoveryFixture(t, identity)
+	processes := make([]*b4ManagedProcess, 0, 3)
+	t.Cleanup(func() {
+		for index := len(processes) - 1; index >= 0; index-- {
+			b4StopProcess(t, processes[index])
+		}
+		if err := b4NftablesCommand(context.Background(), []byte("delete table inet guard\n"), "--file", "-"); err != nil {
+			t.Errorf("remove IPC health Guard table: %v", err)
+		}
+		if err := os.Remove("/run/guard"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("remove IPC health socket directory: %v", err)
+		}
+	})
+
+	operationLogEnv := []string{b4IntegrationOperationLogEnv + "=" + fixture.operationLogPath}
+	enforcer := b4StartProcessWithEnvironment(t, "guard-enforcer", fixture.enforcerPath, nil, b4GuardIdentity{}, operationLogEnv)
+	processes = append(processes, enforcer)
+	b4WaitForSocket(t, identity, 0)
+	agent := b4StartProcess(t, "guard-agent", fixture.agentPath, []string{"--config", fixture.configPath}, identity)
+	processes = append(processes, agent)
+	b4WaitForLiveRuntime(t, fixture.databasePath, identity, agent, enforcer)
+	b4WaitForHealthSourceReady(t, fixture.operationLogPath, enforcer.command.Process.Pid, agent, enforcer)
+
+	baselineSignature := b4StoreSignature(t, fixture.readbackPath, fixture.databasePath, identity)
+	guardTable := b4GuardTableJSON(t)
+	socketInode := b4SocketInode(t)
+	b4KillAndAssertSIGKILL(t, enforcer)
+	b4AssertStaleSocket(t, identity, socketInode)
+	b4AssertGuardTable(t)
+	b4AssertProcessAlive(t, agent)
+	b4WaitForHealthSourceUnavailability(t, agent)
+
+	enforcer = b4StartProcessWithEnvironment(t, "guard-enforcer replacement", fixture.enforcerPath, nil, b4GuardIdentity{}, operationLogEnv)
+	processes = append(processes, enforcer)
+	b4WaitForSocket(t, identity, socketInode)
+	b4WaitForHealthSourceRecovery(t, fixture, identity, agent, enforcer, baselineSignature)
+	if got := b4GuardTableJSON(t); !bytes.Equal(got, guardTable) {
+		t.Fatal("Guard table changed during observation-only IPC health recovery")
+	}
+	b4AssertSQLiteReopen(t, fixture.readbackPath, fixture.databasePath, identity)
+}
+
+// b4RunTargetNativeTimeout proves a test-only Manual Target Intent reaches the
+// live Agent, authenticated IPC, and native nftables backend. It verifies the
+// physical timeout includes the contract SafetyGrace, then expires the Manual
+// Decision through the production lifecycle before a replacement Agent removes
+// the Target.
+func b4RunTargetNativeTimeout(t *testing.T) {
+	t.Helper()
+	if err := b4NftablesCommand(context.Background(), nil, "--json", "list", "table", "inet", "guard"); err == nil {
+		t.Fatal("Target native timeout fixture already contains inet guard")
+	}
+
+	identity := b4LookupGuardIdentity(t)
+	fixture := b4NewRecoveryFixture(t, identity)
+	processes := make([]*b4ManagedProcess, 0, 4)
+	t.Cleanup(func() {
+		for index := len(processes) - 1; index >= 0; index-- {
+			b4StopProcess(t, processes[index])
+		}
+		if err := b4NftablesCommand(context.Background(), []byte("delete table inet guard\n"), "--file", "-"); err != nil {
+			t.Errorf("remove Target native timeout Guard table: %v", err)
+		}
+		if err := os.Remove("/run/guard"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("remove Target native timeout socket directory: %v", err)
+		}
+	})
+
+	operationLogEnv := []string{b4IntegrationOperationLogEnv + "=" + fixture.operationLogPath}
+	enforcer := b4StartProcessWithEnvironment(t, "guard-enforcer", fixture.enforcerPath, nil, b4GuardIdentity{}, operationLogEnv)
+	processes = append(processes, enforcer)
+	b4WaitForSocket(t, identity, 0)
+	agent := b4StartProcess(t, "guard-agent bootstrap", fixture.agentPath, []string{"--config", fixture.configPath}, identity)
+	processes = append(processes, agent)
+	b4WaitForLiveRuntime(t, fixture.databasePath, identity, agent, enforcer)
+	b4StopProcess(t, agent)
+
+	logicalExpiry := b4RunTargetLifecycleHelper(t, fixture, identity, b4TargetLifecycleBan)
+	b4ClearCompletedOperationLog(t, fixture.operationLogPath)
+	agent = b4StartProcess(t, "guard-agent target apply", fixture.agentPath, []string{"--config", fixture.configPath}, identity)
+	processes = append(processes, agent)
+	b4WaitForTargetPresent(t, fixture, identity, agent, enforcer, logicalExpiry)
+	b4WaitForTargetStoreReadback(t, fixture, identity, agent, enforcer, b4TargetStoreStatePresent, logicalExpiry)
+
+	b4StopProcess(t, agent)
+	b4RunTargetLifecycleHelper(t, fixture, identity, b4TargetLifecycleExpire)
+	b4ClearCompletedOperationLog(t, fixture.operationLogPath)
+	agent = b4StartProcess(t, "guard-agent target removal", fixture.agentPath, []string{"--config", fixture.configPath}, identity)
+	processes = append(processes, agent)
+	b4WaitForTargetAbsent(t, fixture, identity, agent, enforcer)
+	b4WaitForTargetStoreReadback(t, fixture, identity, agent, enforcer, b4TargetStoreStateAbsent, logicalExpiry)
+}
+
 type b4RecoveryFixture struct {
-	agentPath    string
-	enforcerPath string
-	configPath   string
-	databasePath string
-	readbackPath string
+	agentPath        string
+	enforcerPath     string
+	configPath       string
+	databasePath     string
+	readbackPath     string
+	operationLogPath string
 }
 
 func b4NewRecoveryFixture(t *testing.T, identity b4GuardIdentity) b4RecoveryFixture {
@@ -145,10 +272,13 @@ func b4NewRecoveryFixture(t *testing.T, identity b4GuardIdentity) b4RecoveryFixt
 	enforcerPath := filepath.Join(binDirectory, "guard-enforcer")
 	agentPath := filepath.Join(binDirectory, "guard-agent")
 	readbackPath := filepath.Join(binDirectory, "guard-store-readback")
-	b4BuildBinary(t, root, enforcerPath, "./cmd/guard-enforcer")
-	b4BuildBinary(t, root, agentPath, "./cmd/guard-agent")
+	b4BuildBinary(t, root, enforcerPath, "./cmd/guard-enforcer", "integration,nftables")
+	b4BuildBinary(t, root, agentPath, "./cmd/guard-agent", "")
 	b4CopyReadbackHelper(t, os.Args[0], readbackPath, identity)
-	return b4RecoveryFixture{agentPath: agentPath, enforcerPath: enforcerPath, configPath: configPath, databasePath: databasePath, readbackPath: readbackPath}
+	return b4RecoveryFixture{
+		agentPath: agentPath, enforcerPath: enforcerPath, configPath: configPath, databasePath: databasePath,
+		readbackPath: readbackPath, operationLogPath: filepath.Join(fixtureRoot, "completed-operations.log"),
+	}
 }
 
 func b4CopyReadbackHelper(t *testing.T, source, destination string, identity b4GuardIdentity) {
@@ -193,11 +323,16 @@ func b4ProjectRoot(t *testing.T) string {
 	return filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
 }
 
-func b4BuildBinary(t *testing.T, root, output, packagePath string) {
+func b4BuildBinary(t *testing.T, root, output, packagePath, buildTags string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), b4BinaryRecoveryTimeout)
 	defer cancel()
-	command := exec.CommandContext(ctx, "go", "build", "-o", output, packagePath)
+	arguments := []string{"build", "-o", output}
+	if buildTags != "" {
+		arguments = append(arguments, "-tags", buildTags)
+	}
+	arguments = append(arguments, packagePath)
+	command := exec.CommandContext(ctx, "go", arguments...)
 	command.Dir = root
 	if result, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("build %s: %v; output: %s", packagePath, err, bytes.TrimSpace(result))
@@ -222,11 +357,18 @@ func b4LookupGuardIdentity(t *testing.T) b4GuardIdentity {
 }
 
 func b4StartProcess(t *testing.T, name, binary string, arguments []string, identity b4GuardIdentity) *b4ManagedProcess {
+	return b4StartProcessWithEnvironment(t, name, binary, arguments, identity, nil)
+}
+
+func b4StartProcessWithEnvironment(t *testing.T, name, binary string, arguments []string, identity b4GuardIdentity, environment []string) *b4ManagedProcess {
 	t.Helper()
 	process := &b4ManagedProcess{name: name, done: make(chan error, 1)}
 	process.command = exec.Command(binary, arguments...)
 	process.command.Stdout = &process.output
 	process.command.Stderr = &process.output
+	if len(environment) != 0 {
+		process.command.Env = append(os.Environ(), environment...)
+	}
 	if identity.uid != 0 || identity.gid != 0 {
 		process.credential = &identity
 		process.command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: identity.uid, Gid: identity.gid}}
@@ -342,6 +484,309 @@ func b4WaitForReplacementAgentReconcile(t *testing.T, helperPath, databasePath s
 	t.Fatalf("%s did not persist a fresh reconcile state", agent.name)
 }
 
+type b4CompletedOperation struct {
+	pid       int
+	operation string
+	domain    string
+}
+
+func b4WaitForHealthSourceReady(t *testing.T, logPath string, enforcerPID int, agent, enforcer *b4ManagedProcess) {
+	t.Helper()
+	deadline := time.Now().Add(b4BinaryRecoveryTimeout)
+	for time.Now().Before(deadline) {
+		operations := b4CompletedOperations(t, logPath, enforcerPID)
+		lastSnapshot := -1
+		for index, operation := range operations {
+			if operation.operation == "SnapshotManaged" {
+				lastSnapshot = index
+			}
+		}
+		if lastSnapshot >= 0 && lastSnapshot+1 < len(operations) && operations[lastSnapshot+1].operation == "ProbeCapabilities" {
+			b4AssertProcessAlive(t, agent)
+			b4AssertProcessAlive(t, enforcer)
+			return
+		}
+		b4AssertProcessAlive(t, agent)
+		b4AssertProcessAlive(t, enforcer)
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("Agent did not complete a standalone IPC health observation")
+}
+
+func b4WaitForHealthSourceUnavailability(t *testing.T, agent *b4ManagedProcess) {
+	t.Helper()
+	// The production source polls every second. Two complete intervals prevent
+	// a replacement socket from racing the first unavailable observation.
+	deadline := time.Now().Add(2*time.Second + 200*time.Millisecond)
+	for time.Now().Before(deadline) {
+		b4AssertProcessAlive(t, agent)
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func b4WaitForHealthSourceRecovery(
+	t *testing.T,
+	fixture b4RecoveryFixture,
+	identity b4GuardIdentity,
+	agent, enforcer *b4ManagedProcess,
+	previousSignature string,
+) {
+	t.Helper()
+	want := []string{"ProbeCapabilities", "ProbeCapabilities", "SnapshotManaged"}
+	deadline := time.Now().Add(b4BinaryRecoveryTimeout)
+	for time.Now().Before(deadline) {
+		operations := b4CompletedOperations(t, fixture.operationLogPath, enforcer.command.Process.Pid)
+		if len(operations) >= len(want) {
+			for index, expected := range want {
+				if operations[index].operation != expected {
+					t.Fatalf("recovery operation %d = %q, want %q", index, operations[index].operation, expected)
+				}
+			}
+			for _, operation := range operations {
+				if operation.operation == "ApplyManagedPlan" || operation.operation == "RemoveManagedInfrastructure" {
+					t.Fatalf("observation-only recovery performed %s", operation.operation)
+				}
+			}
+			if signature := b4StoreSignature(t, fixture.readbackPath, fixture.databasePath, identity); signature != previousSignature {
+				b4AssertProcessAlive(t, agent)
+				b4AssertProcessAlive(t, enforcer)
+				return
+			}
+		}
+		b4AssertProcessAlive(t, agent)
+		b4AssertProcessAlive(t, enforcer)
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("IPC health recovery did not persist one authoritative observation")
+}
+
+func b4RunTargetLifecycleHelper(t *testing.T, fixture b4RecoveryFixture, identity b4GuardIdentity, action string) time.Time {
+	t.Helper()
+	command := exec.Command(fixture.readbackPath, "-test.run", "^TestB4TargetLifecycleHelper$")
+	command.Env = append(os.Environ(),
+		"GUARD_B4_STORE_DATABASE="+fixture.databasePath,
+		b4TargetLifecycleEnv+"="+action,
+	)
+	command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: identity.uid, Gid: identity.gid}}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run Target lifecycle helper %q: %v; output: %s", action, err, bytes.TrimSpace(output))
+	}
+	if action != b4TargetLifecycleBan {
+		return time.Time{}
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if value, found := strings.CutPrefix(line, "B4_TARGET_LOGICAL_EXPIRY="); found {
+			microseconds, parseErr := strconv.ParseInt(value, 10, 64)
+			if parseErr != nil || microseconds <= 0 {
+				t.Fatalf("Target lifecycle logical expiry = %q", value)
+			}
+			return time.UnixMicro(microseconds).UTC()
+		}
+	}
+	t.Fatalf("Target lifecycle helper did not emit logical expiry: %s", bytes.TrimSpace(output))
+	return time.Time{}
+}
+
+func b4ClearCompletedOperationLog(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("clear completed IPC operation log: %v", err)
+	}
+}
+
+func b4AssertTargetSnapshot(t *testing.T, fixture b4RecoveryFixture, identity b4GuardIdentity, state string, logicalExpiry time.Time) {
+	t.Helper()
+	command := exec.Command(fixture.readbackPath, "-test.run", "^TestB4TargetSnapshotHelper$")
+	command.Env = append(os.Environ(),
+		b4TargetSnapshotStateEnv+"="+state,
+		b4TargetLogicalExpiryEnv+"="+strconv.FormatInt(logicalExpiry.UnixMicro(), 10),
+	)
+	command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: identity.uid, Gid: identity.gid}}
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("Target IPC snapshot %q: %v; output: %s", state, err, bytes.TrimSpace(output))
+	}
+}
+
+func b4WaitForTargetPresent(
+	t *testing.T,
+	fixture b4RecoveryFixture,
+	identity b4GuardIdentity,
+	agent, enforcer *b4ManagedProcess,
+	logicalExpiry time.Time,
+) {
+	t.Helper()
+	target := netip.MustParsePrefix(b4NativeTimeoutTarget)
+	deadline := time.Now().Add(b4BinaryRecoveryTimeout)
+	for time.Now().Before(deadline) {
+		operations := b4CompletedOperations(t, fixture.operationLogPath, enforcer.command.Process.Pid)
+		if b4HasTargetApply(operations) {
+			b4AssertTargetSnapshot(t, fixture, identity, b4TargetStoreStatePresent, logicalExpiry)
+			b4AssertNftTargetPresent(t, target)
+			b4AssertProcessAlive(t, agent)
+			b4AssertProcessAlive(t, enforcer)
+			return
+		}
+		b4AssertProcessAlive(t, agent)
+		b4AssertProcessAlive(t, enforcer)
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("guard-agent did not issue a Target ApplyManagedPlan")
+}
+
+func b4WaitForTargetAbsent(t *testing.T, fixture b4RecoveryFixture, identity b4GuardIdentity, agent, enforcer *b4ManagedProcess) {
+	t.Helper()
+	target := netip.MustParsePrefix(b4NativeTimeoutTarget)
+	deadline := time.Now().Add(b4BinaryRecoveryTimeout)
+	for time.Now().Before(deadline) {
+		operations := b4CompletedOperations(t, fixture.operationLogPath, enforcer.command.Process.Pid)
+		if b4HasTargetApply(operations) {
+			b4AssertTargetSnapshot(t, fixture, identity, b4TargetStoreStateAbsent, time.Time{})
+			b4AssertNftTargetAbsent(t, target)
+			b4AssertProcessAlive(t, agent)
+			b4AssertProcessAlive(t, enforcer)
+			return
+		}
+		b4AssertProcessAlive(t, agent)
+		b4AssertProcessAlive(t, enforcer)
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("guard-agent did not issue a Target removal ApplyManagedPlan")
+}
+
+func b4HasTargetApply(operations []b4CompletedOperation) bool {
+	for _, operation := range operations {
+		if operation.operation == "ApplyManagedPlan" && operation.domain == string(ipc.DomainTarget) {
+			return true
+		}
+	}
+	return false
+}
+
+func b4AssertRuntimeTargetNativeTimeout(t *testing.T, targets []firewall.TargetObservation, target netip.Prefix, logicalExpiry time.Time) {
+	t.Helper()
+	want := logicalExpiry.Add(enforcement.M0SafetyGrace)
+	for _, observed := range targets {
+		if observed.Target() != target {
+			continue
+		}
+		if observed.TimeoutMode() != firewall.ManagedTimeoutNative || len(observed.Scopes()) != 2 {
+			t.Fatalf("native target observation = %#v", observed)
+		}
+		expiry, found := observed.EffectiveUntilUnixMicro()
+		if !found {
+			t.Fatal("native target observation has no physical expiry")
+		}
+		got := time.UnixMicro(expiry).UTC()
+		if delta := got.Sub(want); delta < -b4NativeExpiryTolerance || delta > b4NativeExpiryTolerance {
+			t.Fatalf("native target expiry = %s, want %s within %s", got, want, b4NativeExpiryTolerance)
+		}
+		return
+	}
+	t.Fatalf("native target %s was not observed", target)
+}
+
+func b4AssertRuntimeTargetAbsent(t *testing.T, targets []firewall.TargetObservation, target netip.Prefix) {
+	t.Helper()
+	for _, observed := range targets {
+		if observed.Target() == target {
+			t.Fatalf("removed target survived IPC snapshot: %#v", observed)
+		}
+	}
+}
+
+func b4AssertNftTargetPresent(t *testing.T, target netip.Prefix) {
+	t.Helper()
+	if count := bytes.Count(b4GuardTableJSON(t), []byte(target.Addr().String())); count != 2 {
+		t.Fatalf("native target %s occurrence count = %d, want 2 INPUT/FORWARD elements", target, count)
+	}
+}
+
+func b4AssertNftTargetAbsent(t *testing.T, target netip.Prefix) {
+	t.Helper()
+	if count := bytes.Count(b4GuardTableJSON(t), []byte(target.Addr().String())); count != 0 {
+		t.Fatalf("removed target %s occurrence count = %d, want 0", target, count)
+	}
+}
+
+func b4WaitForTargetStoreReadback(
+	t *testing.T,
+	fixture b4RecoveryFixture,
+	identity b4GuardIdentity,
+	agent, enforcer *b4ManagedProcess,
+	state string,
+	logicalExpiry time.Time,
+) {
+	t.Helper()
+	deadline := time.Now().Add(b4BinaryRecoveryTimeout)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if err := b4TargetStoreReadback(ctx, fixture, identity, state, logicalExpiry); err == nil {
+			return
+		} else {
+			lastErr = err
+		}
+		b4AssertProcessAlive(t, agent)
+		b4AssertProcessAlive(t, enforcer)
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("Target Store readback %q did not converge: %v", state, lastErr)
+}
+
+func b4TargetStoreReadback(ctx context.Context, fixture b4RecoveryFixture, identity b4GuardIdentity, state string, logicalExpiry time.Time) error {
+	command := exec.CommandContext(ctx, fixture.readbackPath, "-test.run", "^TestB4StoreReadbackHelper$")
+	command.Env = append(os.Environ(),
+		"GUARD_B4_STORE_READBACK=1",
+		"GUARD_B4_STORE_DATABASE="+fixture.databasePath,
+		b4TargetStoreStateEnv+"="+state,
+		b4TargetLogicalExpiryEnv+"="+strconv.FormatInt(logicalExpiry.UnixMicro(), 10),
+	)
+	command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: identity.uid, Gid: identity.gid}}
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("%w; output: %s", err, bytes.TrimSpace(output))
+	}
+	return nil
+}
+
+func b4CompletedOperations(t *testing.T, logPath string, wantPID int) []b4CompletedOperation {
+	t.Helper()
+	content, err := os.ReadFile(logPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read completed IPC operation log: %v", err)
+	}
+	lines := strings.Split(string(content), "\n")
+	result := make([]b4CompletedOperation, 0, len(lines))
+	for index, line := range lines {
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 && len(fields) != 3 {
+			if index == len(lines)-1 {
+				continue
+			}
+			t.Fatalf("completed IPC operation log line = %q", line)
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid <= 0 {
+			t.Fatalf("completed IPC operation PID = %q", fields[0])
+		}
+		if pid == wantPID {
+			entry := b4CompletedOperation{pid: pid, operation: fields[1]}
+			if len(fields) == 3 {
+				entry.domain = fields[2]
+			}
+			result = append(result, entry)
+		}
+	}
+	return result
+}
+
 func b4WaitForSocket(t *testing.T, identity b4GuardIdentity, previousInode uint64) {
 	t.Helper()
 	deadline := time.Now().Add(b4BinaryRecoveryTimeout)
@@ -402,9 +847,7 @@ func b4AssertStaleSocket(t *testing.T, identity b4GuardIdentity, inode uint64) {
 
 func b4AssertGuardTable(t *testing.T) {
 	t.Helper()
-	if err := b4NftablesCommand(context.Background(), nil, "--json", "list", "table", "inet", "guard"); err != nil {
-		t.Fatalf("read Guard table: %v", err)
-	}
+	_ = b4GuardTableJSON(t)
 	command := exec.Command("nft", "list", "tables")
 	output, err := command.Output()
 	if err != nil {
@@ -413,6 +856,18 @@ func b4AssertGuardTable(t *testing.T) {
 	if bytes.Count(output, []byte("table inet guard\n")) != 1 {
 		t.Fatalf("Guard table identity count = %d; tables: %s", bytes.Count(output, []byte("table inet guard\n")), bytes.TrimSpace(output))
 	}
+}
+
+func b4GuardTableJSON(t *testing.T) []byte {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "nft", "--json", "list", "table", "inet", "guard")
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("read Guard table: %v", err)
+	}
+	return output
 }
 
 func b4AssertSQLiteReopen(t *testing.T, helperPath, databasePath string, identity b4GuardIdentity) {
@@ -475,6 +930,10 @@ func TestB4StoreReadbackHelper(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("LoadNodeIdentity() = (%q, %v, %v), want persisted identity", nodeID, found, err)
 	}
+	if state := os.Getenv(b4TargetStoreStateEnv); state != "" {
+		b4AssertTargetStoreState(t, database, nodeID, state)
+		return
+	}
 	desired, err := database.LoadDesiredFirewallState(context.Background(), nodeID)
 	if err != nil {
 		t.Fatalf("LoadDesiredFirewallState(): %v", err)
@@ -500,5 +959,159 @@ func TestB4StoreReadbackHelper(t *testing.T) {
 		fmt.Printf("B4_STORE_SIGNATURE=%d:%d:%d:%d\n",
 			observed.Infrastructure.ObservedAt.UnixMicro(), observed.Policy.ObservedAt.UnixMicro(),
 			recovery.States[0].UpdatedAt.UnixMicro(), recovery.States[1].UpdatedAt.UnixMicro())
+	}
+}
+
+func b4AssertTargetStoreState(t *testing.T, database *store.Store, nodeID core.NodeID, state string) {
+	t.Helper()
+	target := netip.MustParsePrefix(b4NativeTimeoutTarget)
+	desired, err := database.LoadDesiredFirewallState(context.Background(), nodeID)
+	if err != nil || desired.PolicyRevision == 0 || desired.Policy.ValidateComplete() != nil || len(desired.Targets) != 1 {
+		t.Fatalf("target desired state = %#v, err=%v", desired, err)
+	}
+	intent := desired.Targets[0]
+	if intent.CanonicalTarget != target || intent.Scopes != core.ScopeInput|core.ScopeForward || intent.AddressFamily != core.AddressFamilyIPv4 {
+		t.Fatalf("target desired intent = %#v", intent)
+	}
+	observed, err := database.LoadObservedFirewallSnapshot(context.Background(), nodeID)
+	if err != nil || observed.NodeID != nodeID || len(observed.Targets) != 1 {
+		t.Fatalf("target observed state = %#v, err=%v", observed, err)
+	}
+	physical := observed.Targets[0]
+	recovery, err := database.LoadReconcileRecovery(context.Background(), nodeID)
+	if err != nil {
+		t.Fatalf("target recovery state: %v", err)
+	}
+	var targetState *core.PersistedReconcileState
+	for index := range recovery.States {
+		candidate := &recovery.States[index]
+		if candidate.Domain == core.ReconcileDomainTarget && candidate.Target == target {
+			targetState = candidate
+			break
+		}
+	}
+	if targetState == nil || targetState.RetryState.Status != core.ReconcileConverged {
+		t.Fatalf("target recovery state = %#v", recovery)
+	}
+	for _, probe := range recovery.ProbeRequirements {
+		if probe.Domain == core.ReconcileDomainTarget && probe.Target == target {
+			t.Fatalf("target Probe requirement survived convergence: %#v", probe)
+		}
+	}
+
+	switch state {
+	case b4TargetStoreStatePresent:
+		logicalExpiry, err := strconv.ParseInt(os.Getenv(b4TargetLogicalExpiryEnv), 10, 64)
+		if err != nil || logicalExpiry <= 0 || intent.BanMembership != core.BanPresent ||
+			intent.TimeoutMode != core.TimeoutNative || intent.EffectiveUntil == nil ||
+			intent.EffectiveUntil.UTC().UnixMicro() != logicalExpiry || intent.Generation != 1 ||
+			targetState.TargetGeneration != 1 || physical.BanMembership != core.ObservedMembershipPresent ||
+			physical.TimeoutMode != core.TimeoutNative || physical.ConfirmedGeneration != 1 {
+			t.Fatalf("present Target state = intent=%#v observed=%#v recovery=%#v", intent, physical, targetState)
+		}
+		want := time.UnixMicro(logicalExpiry).UTC().Add(enforcement.M0SafetyGrace)
+		if physical.NativeExpiry == nil || physical.Scopes != core.ScopeInput|core.ScopeForward {
+			t.Fatalf("present Target physical state = %#v", physical)
+		}
+		if delta := physical.NativeExpiry.Sub(want); delta < -b4NativeExpiryTolerance || delta > b4NativeExpiryTolerance {
+			t.Fatalf("Store native expiry = %s, want %s within %s", physical.NativeExpiry.UTC(), want, b4NativeExpiryTolerance)
+		}
+	case b4TargetStoreStateAbsent:
+		if intent.BanMembership != core.BanAbsent || intent.TimeoutMode != core.TimeoutNone || intent.EffectiveUntil != nil ||
+			intent.Generation != 2 || targetState.TargetGeneration != 2 || physical.BanMembership != core.ObservedMembershipAbsent ||
+			physical.ConfirmedGeneration != 2 {
+			t.Fatalf("absent Target state = intent=%#v observed=%#v recovery=%#v", intent, physical, targetState)
+		}
+	default:
+		t.Fatalf("unsupported Target Store state %q", state)
+	}
+}
+
+// TestB4TargetLifecycleHelper runs as the guard identity while no Agent owns
+// the Store. It uses the production Decision lifecycle to materialize the
+// test-only Target intent, then later expires that Decision for removal.
+func TestB4TargetLifecycleHelper(t *testing.T) {
+	action := os.Getenv(b4TargetLifecycleEnv)
+	if action == "" {
+		t.Skip("helper process only")
+	}
+	databasePath := os.Getenv("GUARD_B4_STORE_DATABASE")
+	if databasePath == "" {
+		t.Fatal("missing helper database path")
+	}
+	database, err := store.Open(context.Background(), databasePath, migrations.FS)
+	if err != nil {
+		t.Fatalf("Store.Open(): %v", err)
+	}
+	defer func() {
+		if err := database.Close(); err != nil {
+			t.Errorf("Store.Close(): %v", err)
+		}
+	}()
+	nodeID, found, err := database.LoadNodeIdentity(context.Background())
+	if err != nil || !found {
+		t.Fatalf("LoadNodeIdentity() = (%q, %v, %v), want persisted identity", nodeID, found, err)
+	}
+	resolver, err := nftables.NewFixedManagedPolicyTargetResolver()
+	if err != nil {
+		t.Fatalf("NewFixedManagedPolicyTargetResolver(): %v", err)
+	}
+	finalizer, err := decision.NewDesiredStateFinalizer(resolver)
+	if err != nil {
+		t.Fatalf("NewDesiredStateFinalizer(): %v", err)
+	}
+	lifecycle, err := decision.NewLifecycleService(nodeID, database, finalizer,
+		decision.TargetWakeSinkFunc(func(context.Context, core.NodeID, netip.Prefix) error { return nil }))
+	if err != nil {
+		t.Fatalf("NewLifecycleService(): %v", err)
+	}
+	target := netip.MustParsePrefix(b4NativeTimeoutTarget)
+	switch action {
+	case b4TargetLifecycleBan:
+		createdAt := time.Now().UTC().Truncate(time.Microsecond)
+		expiresAt := createdAt.Add(b4NativeTimeoutDecisionTTL)
+		result, err := lifecycle.BanManual(context.Background(), decision.ManualRequest{
+			DecisionID: b4NativeTimeoutDecisionID, NodeID: nodeID, Target: target, CreatedAt: createdAt, ExpiresAt: &expiresAt,
+		}, false)
+		if err != nil || len(result.EnforcementChanges) != 1 || result.EnforcementChanges[0].Target != target || result.EnforcementChanges[0].Generation != 1 {
+			t.Fatalf("BanManual() = %#v, %v", result, err)
+		}
+		fmt.Printf("B4_TARGET_LOGICAL_EXPIRY=%d\n", expiresAt.UnixMicro())
+	case b4TargetLifecycleExpire:
+		result, err := lifecycle.Expire(context.Background(), time.Now().UTC().Add(2*b4NativeTimeoutDecisionTTL))
+		if err != nil || len(result.Expired) != 1 || len(result.EnforcementChanges) != 1 ||
+			result.EnforcementChanges[0].Target != target || result.EnforcementChanges[0].Generation != 2 {
+			t.Fatalf("Expire() = %#v, %v", result, err)
+		}
+	default:
+		t.Fatalf("unsupported Target lifecycle action %q", action)
+	}
+}
+
+// TestB4TargetSnapshotHelper runs as the guard identity so the production
+// Enforcer validates the same peer credentials used by guard-agent.
+func TestB4TargetSnapshotHelper(t *testing.T) {
+	state := os.Getenv(b4TargetSnapshotStateEnv)
+	if state == "" {
+		t.Skip("helper process only")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), b4BinaryRecoveryTimeout)
+	defer cancel()
+	snapshot, err := ipc.RoundTripSnapshotManaged(ctx)
+	if err != nil {
+		t.Fatalf("RoundTripSnapshotManaged(): %v", err)
+	}
+	target := netip.MustParsePrefix(b4NativeTimeoutTarget)
+	switch state {
+	case b4TargetStoreStatePresent:
+		logicalExpiry, err := strconv.ParseInt(os.Getenv(b4TargetLogicalExpiryEnv), 10, 64)
+		if err != nil || logicalExpiry <= 0 {
+			t.Fatalf("Target logical expiry = %q", os.Getenv(b4TargetLogicalExpiryEnv))
+		}
+		b4AssertRuntimeTargetNativeTimeout(t, snapshot.ManagedState().Targets(), target, time.UnixMicro(logicalExpiry).UTC())
+	case b4TargetStoreStateAbsent:
+		b4AssertRuntimeTargetAbsent(t, snapshot.ManagedState().Targets(), target)
+	default:
+		t.Fatalf("unsupported Target snapshot state %q", state)
 	}
 }

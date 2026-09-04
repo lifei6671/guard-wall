@@ -514,10 +514,25 @@ func TestPhysicalTargetMatchIncludesSafetyGraceExpiry(t *testing.T) {
 	if !physicalTargetMatches(map[netip.Prefix]core.PhysicalTargetObserved{target: observed}, intent) {
 		t.Fatal("SafetyGrace-adjusted native expiry did not converge")
 	}
+	rounded := observed.NativeExpiry.Add(-time.Second)
+	observed.NativeExpiry = &rounded
+	if !physicalTargetMatches(map[netip.Prefix]core.PhysicalTargetObserved{target: observed}, intent) {
+		t.Fatal("nftables whole-second native expiry did not converge")
+	}
 	stale := effectiveUntil
 	observed.NativeExpiry = &stale
 	if physicalTargetMatches(map[netip.Prefix]core.PhysicalTargetObserved{target: observed}, intent) {
 		t.Fatal("unadjusted EffectiveUntil was accepted as native expiry")
+	}
+	later := enforcement.NativeExpiryForIntent(intent).Add(time.Microsecond)
+	observed.NativeExpiry = &later
+	if physicalTargetMatches(map[netip.Prefix]core.PhysicalTargetObserved{target: observed}, intent) {
+		t.Fatal("native expiry beyond requested physical expiry was accepted")
+	}
+	shortened := enforcement.NativeExpiryForIntent(intent).Add(-nativeExpirySnapshotTolerance - time.Microsecond)
+	observed.NativeExpiry = &shortened
+	if physicalTargetMatches(map[netip.Prefix]core.PhysicalTargetObserved{target: observed}, intent) {
+		t.Fatal("native expiry below snapshot precision was accepted")
 	}
 }
 

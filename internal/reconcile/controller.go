@@ -1381,7 +1381,7 @@ func physicalTargetMatches(targets map[netip.Prefix]core.PhysicalTargetObserved,
 	}
 	if observed.Evidence == core.TargetObservationEvidenceManagedSnapshot {
 		if intent.TimeoutMode == core.TimeoutNative {
-			return equalTime(observed.NativeExpiry, enforcement.NativeExpiryForIntent(intent))
+			return nativeExpiryMatchesIntent(observed.NativeExpiry, intent)
 		}
 		return observed.NativeExpiry == nil
 	}
@@ -1396,7 +1396,7 @@ func physicalTargetMatches(targets map[netip.Prefix]core.PhysicalTargetObserved,
 		return false
 	}
 	if intent.TimeoutMode == core.TimeoutNative {
-		return equalTime(observed.NativeExpiry, enforcement.NativeExpiryForIntent(intent))
+		return nativeExpiryMatchesIntent(observed.NativeExpiry, intent)
 	}
 	return observed.NativeExpiry == nil
 }
@@ -1429,11 +1429,17 @@ func cloneTime(value *time.Time) *time.Time {
 	return &cloned
 }
 
-func equalTime(left, right *time.Time) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
+// nativeExpiryMatchesIntent accepts the bounded absolute expiry reconstructed
+// from nftables' whole-second remaining timeout while preserving the requested
+// physical expiry boundary.
+const nativeExpirySnapshotTolerance = 3 * time.Second
+
+func nativeExpiryMatchesIntent(observed *time.Time, intent core.NormalizedTargetEnforcementIntent) bool {
+	want := enforcement.NativeExpiryForIntent(intent)
+	if observed == nil || want == nil || intent.EffectiveUntil == nil {
+		return observed == nil && want == nil
 	}
-	return left.Equal(*right)
+	return !observed.Before(want.Add(-nativeExpirySnapshotTolerance)) && !observed.After(*want)
 }
 
 func timePointer(value time.Time) *time.Time {

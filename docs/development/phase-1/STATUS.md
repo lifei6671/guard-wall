@@ -31,9 +31,10 @@ confirmed commit 后仅 Wake 语义变化 Target；同进程 Backend availabilit
 首次 Apply expiry fence、production Desired PlanProvider、共享虚拟时钟与 expiration runtime owner 已通过，
 且真实 SQLite→Fake Snapshot 的 62s 虚拟时间闭环已验证；完整三域 Observed SQLite authority、
 Probe/Unknown fencing 回写与 fresh startup Probe 原语已获用户 Code Review 通过；Dispatcher-owned Backend
-health lifecycle、双 context Probe、精确 capped backoff、mutation gate 与 Health/Metric read model 已获用户
-Code Review 通过；C1 signal-aware lifecycle owner 也已获用户 Code Review 通过，但仍缺真实
-Source reader/management intake、Enforcer/IPC health 事件源、可执行进程 composition/runtime startup、
+health lifecycle、双 context Probe、精确 capped backoff、mutation gate 与 Health/Metric read model，以及
+IPCBackend 认证 Probe health source/runtime owner 已获用户 Code Review 通过；C1 signal-aware lifecycle
+owner 也已获用户 Code Review 通过，但仍缺真实 Source reader/management intake、target Linux 默认 systemd
+拓扑的跨进程 Enforcer/IPC health source E2E、可执行进程 composition/runtime startup、
 真实 shutdown/crash、C3、正式 Contract Tests、
 目标 Linux durability 与 commit-bound Evidence Manifest。
 另按用户确认的 GORM-0b 边界接入 `gorm.io/gorm v1.31.2` core 与 project-owned
@@ -114,7 +115,7 @@ Race 与两路独立终审均通过；初审两项 P1 与一项 P2 已修复，�
 | B3 | nftables Backend Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/nftables-result.json`、`artifacts/evidence/M0/worktree/m0-b/nftables-golden-state-result.json` | 隔离基线已覆盖 Provider packet path、Snapshot/Plan/ownership；production hook/priority、非 clean Linux/UFW/Docker、重启恢复与 Apply-confirm 为后续验证边界 |
 | B4 | Agent/Enforcer 权限与 IPC Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`artifacts/evidence/M0/worktree/m0-b/ipc-response-codec/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-response-frame/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-request-codec/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-request-frame/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-mutation-client/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-mutation-server/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-snapshot-managed-transport/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-enforcer-loop/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-enforcer-handlers/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-enforcer-cross-uid-runtime/result.md` | WSL2 request framing fail-closed、四操作 allowlist、mutation/Probe/Snapshot typed codec/frame、Linux fixed-socket root-peer client、authenticated single-request server、serial persistent loop、production-neutral closed handler composition 的 Docker Linux Race，以及受控 WSL fixture 的 `/run/guard` root:guard/跨 UID runtime 集成均已通过；仍缺真实 Firewall provider/owner/object-role、production executable/systemd hardening、持续 fuzz、恢复与非 WSL target Linux 证据 |
 | C1 | Source Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/source-slice/result.md` | Queue Seal fixed accepted set、单 Source runtime owner、drain/Flush/Audit/Close、timeout 不提前 Close 与 commit-unknown readback 已通过 race；缺真实 Source reader/management intake、signal executable、进程 restart 与 Linux durability |
-| C2 | Decision/Enforcement Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | Automatic/Manual/expiry generation/SnapshotRevision/Wake、retry/pending-Probe SQLite 恢复、60s scheduler、62s SQLite→Fake 闭环、完整三域 Observed、Dispatcher-owned Backend health lifecycle 原语与受限 `guard-agent` startup composition 已通过用户 Review；clean target Linux 已覆盖固定 socket、手工/systemd restart、SIGKILL reopen 与 normal OS reboot 后语义 reopen；仍缺受控 Target intent→真实 mutation/native timeout、跨进程 IPC health source、non-clean Firewall compatibility、跨 reboot 稳定身份/全行连续性以及 power-loss/fsync durability |
+| C2 | Decision/Enforcement Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | Automatic/Manual/expiry generation/SnapshotRevision/Wake、retry/pending-Probe SQLite 恢复、60s scheduler、62s SQLite→Fake 闭环、完整三域 Observed、Dispatcher-owned Backend health lifecycle、IPCBackend 认证 Probe health source/runtime owner 与受限 `guard-agent` startup composition 已通过用户 Review；clean Docker 与 target Linux 已覆盖有限期 Target intent→真实 mutation/native timeout，且 target Linux natural kernel-timeout E2E 已 `DONE / Implemented`；target Linux 已覆盖固定 socket、手工/systemd restart、SIGKILL reopen 与 normal OS reboot 后语义 reopen；test-only systemd drop-in 已覆盖 Agent 持续运行的跨进程 IPC health source 恢复；仍缺默认 packaged systemd 拓扑、non-clean Firewall compatibility、流量阻断、跨 reboot 稳定身份/全行连续性以及 power-loss/fsync durability |
 | C3 | 扩展 Crash Matrix | `BLOCKED` | `Specified` | `Unassigned` | `None` | 后续 M7/M10 验证项，不阻塞 M0 Gate |
 | D1 | Go 类型与接口 | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | Desired/Reconcile 端口及 Source Queue Seal/RunSourceRuntime 已通过 race/vet；缺真实 executable composition、Source reader/management intake 与 IPC health source wiring |
 | D2 | SQLite migration | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | migration 0001–0005、Target Desired/retry/probe/Observed 原子性、v4 cache 安全失效与 SQLite close/reopen 已通过；缺 replay/reprocess refs、真实进程/runtime restart 与目标 Linux durability |
@@ -1291,3 +1292,61 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
      运行时读回均记录 final-state digest，Evidence 同时冻结 runner、manifest、测试入口、004 runner/Dockerfile
      checksum 与容器 image manifest。D5 更新为 `COMPLETE / Verified`；D6/D7、其余 G18 输入与 commit-bound
      Evidence Manifest 仍未完成，G18.1–G18.3 保持 `FAIL`，M0 保持 `NO-GO`。
+148. 用户明确回复 `C2 IPC health source Code Review 通过`，该 Delivery Unit 更新为
+     `DONE / Implemented`。现有认证 `ProbeCapabilities` 轮询仅在不可达→可达边沿通知 Dispatcher，
+     Dispatcher 继续独占权威 Snapshot Probe、持久化、Probe-first 与 Wake；Runtime 先等待 health source、
+     expiration 与 Dispatcher 退出后关闭 Store。Docker targeted、全仓 verify、`internal/reconcile` race、
+     真实 SQLite 恢复 Observed 持久化失败联合路径与两路独立复审结论继续有效。本次仅同步验收，未暂存、
+     未提交、未推送。C2 总项仍为 `IN_PROGRESS / Implemented`，G18.1–G18.3 保持 `FAIL`，M0 保持 `NO-GO`；
+     跨进程 IPC health source E2E、受控 Target mutation/native timeout、non-clean Firewall compatibility
+     与 power-loss/fsync durability 尚未验证。
+149. 用户明确回复 `C2 IPC health source clean Docker cross-process E2E Code Review 通过`，该 Delivery Unit
+     更新为 `DONE / Implemented`：`--network none`、只读根文件系统的 disposable Docker 容器运行真实 guard-agent 与
+     guard-enforcer，并且仅在容器 namespace 创建和清理 Guard-owned `inet guard` nftables 对象。测试保持
+     Agent 存活，强杀 Enforcer 后读回 stale socket、Guard table 与 SQLite signature 不变；replacement
+     Enforcer 恢复后，以 test-only、`integration && nftables` scoped 的 PID/operation observer 证明
+     health-source `ProbeCapabilities` 后仅发生 Dispatcher 权威 `ProbeCapabilities → SnapshotManaged`，恢复
+     窗口拒绝 Apply/Remove。Docker targeted、全仓 verify、`internal/ipc`/`internal/enforcer` race、clean Docker
+     E2E 以及两路 fresh CHILD_AGENT 独立审查均 `PASSED`，P0-P3 为零；容器以 `--rm` 运行且临时 image 已移除。
+     不触及宿主、防火墙、systemd 或目标 Linux，不证明目标 Linux/service restart、durability、Target mutation/
+     native timeout 或 non-clean Firewall compatibility。C2 总项仍为 `IN_PROGRESS / Implemented`，G18.1–G18.3
+     保持 `FAIL`，M0 保持 `NO-GO`；本次仅同步验收，未重跑验证、未暂存、未提交、未推送。
+150. 用户明确回复 `C2 Target native-timeout clean Docker E2E Code Review 通过`，该 Delivery Unit 更新为
+     `DONE / Implemented`：在 `--network none`、只读根文件系统的 disposable Docker container 内，真实 guard-agent 通过认证 IPC
+     驱动 root guard-enforcer 创建有限期 Target；生产 LifecycleService 在测试专用 fixture 中物化和过期该 Target。测试
+     读回 guard 身份的 `SnapshotManaged`、nftables INPUT/FORWARD native timeout、SQLite Desired/Observed/reconcile
+     converged state，并验证过期后的 Target 移除。IPC Target 映射使用 `EffectiveUntil + M0SafetyGrace`，Controller 以
+     nftables 整秒 Snapshot 的有界精度校验物理 expiry。Docker targeted、全仓 verify、`internal/ipc`/`internal/reconcile`/
+     `internal/enforcer` race、最终 clean Docker E2E 与两路 fresh CHILD_AGENT 独立审查均 `PASSED`，P0-P3 为零；
+     container 以 `--rm` 运行且临时 image 已移除。不触及宿主、防火墙、systemd、目标 Linux、Schema、Config、公共 API
+     或 non-clean Firewall topology。C2 总项仍为 `IN_PROGRESS / Implemented`，G18.1–G18.3 保持 `FAIL`，M0 保持
+     `NO-GO`；本次仅同步验收，未重跑验证、未暂存、未提交、未推送。
+151. 用户明确回复 `C2 Target native-timeout clean Disposable Linux VM E2E Code Review 通过`，该 Delivery Unit
+     更新为 `DONE / Implemented`：
+     当前混合工作树经 Docker Linux amd64 构建后，先只读确认 VM 的 SSH/sudo、systemd 249、nftables 1.0.2、inactive
+     UFW、无 Docker 及 Guard resources；随后临时安装本轮 Core/Agent、systemd、config、sysusers 与 test-only
+     lifecycle/snapshot helper。真实 Agent→认证 IPC→root Enforcer 创建 `203.0.113.77/32` 有限 Target，guard 身份
+     Snapshot、nftables INPUT/FORWARD 与 SQLite Desired/Observed/Reconcile 收敛均读回，物理 expiry 按
+     `EffectiveUntil + M0SafetyGrace` 验证。生产 LifecycleService 过期 Target 后，replacement Agent 验证 Snapshot/
+     Store/nftables Target 移除；identity-guarded cleanup 读回本轮 Guard resources 全部 absent。二进制与 helper hash、
+     VM preflight、运行结果和边界已记录至 enforcement-slice Evidence。该项不证明 non-clean topology、自然 kernel
+     timeout、流量阻断、reboot/crash、power-loss/fsync durability 或 C2/G18/M0 aggregate，未暂存、未提交、未推送。
+152. 用户明确回复 `C2 IPC health source target Linux test-only systemd drop-in E2E Code Review 通过`，该
+     Delivery Unit 更新为 `DONE / Implemented`：
+     clean VM 上临时 Core `RuntimeDirectoryPreserve=restart`/operation-log 与 Agent `Requires=` reset drop-in
+     使 Agent 在 Core `SIGKILL` 后保持同一 PID，replacement Core 仅记录 health-source
+     `ProbeCapabilities → Dispatcher ProbeCapabilities → SnapshotManaged`，无 mutation；Guard table byte-stable，
+     SQLite/WAL 聚合 hash 变化，并已完成 identity-guarded cleanup 与 post-cleanup readback。该证据只覆盖
+     test-only systemd topology，不证明默认 packaged unit dependency/runtime-directory 行为、non-clean topology、
+     流量阻断、自然 timeout、reboot/crash、power-loss/fsync durability 或 C2/G18/M0 aggregate；未暂存、未提交、未推送。
+153. 用户明确回复 `C2 Target natural native-timeout clean Disposable Linux VM E2E Code Review 通过`，该
+     Delivery Unit 更新为 `DONE / Implemented`：Docker Linux amd64 Core/Agent 与 test-only lifecycle/snapshot/store helper 在
+     clean preflight 后创建有限期 `203.0.113.77/32` Target。logical expiry 为 `1788506611651543`，native
+     physical expiry 为 `1788506911651543`（`EffectiveUntil + M0SafetyGrace`）。Agent 在逻辑到期前停止、Core
+     保持 active；物理期限后 nftables INPUT/FORWARD 两元素与 authenticated `SnapshotManaged` 均自然 absent。
+     Agent 重启后的 startup expiry 使 Decision 成为 `expired/end_reason=expired`，SQLite
+     Desired/Observed/reconcile Target generation 2 收敛 absent、无 pending probe。observer 仅记录三次
+     completed `SnapshotManaged`，且未记录 completed `ApplyManagedPlan` 或 `RemoveManagedInfrastructure`。identity-guarded cleanup 与
+     独立 post-cleanup readback 均 PASS；两路 fresh Evidence-only/semantic review 均 P0-P3 无。该项不证明流量阻断、non-clean Firewall、运行中 scheduler expiry、
+     默认 packaged systemd topology、reboot/crash、power-loss/fsync durability、production release 或
+     C2/G18/M0 aggregate；未暂存、未提交、未推送。

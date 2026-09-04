@@ -138,6 +138,7 @@ func serveEnforcerConnection(
 	}
 	err = writeEnforcerServerPayload(ctx, connection, payload)
 	if err == nil {
+		recordCompletedEnforcerOperation(request)
 		return enforcerConnectionResult{}
 	}
 	if contextErr := contextTerminationError(ctx); contextErr != nil {

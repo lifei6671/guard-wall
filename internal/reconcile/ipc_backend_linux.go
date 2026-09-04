@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
+	"github.com/lifei6671/guard-wall/internal/enforcement"
 	"github.com/lifei6671/guard-wall/internal/firewall"
 	"github.com/lifei6671/guard-wall/internal/firewall/nftables"
 	"github.com/lifei6671/guard-wall/internal/ipc"
@@ -42,6 +43,7 @@ func (productionIPCTransport) Mutation(ctx context.Context, request ipc.Mutation
 type IPCBackend struct{ transport ipcTransport }
 
 var _ Backend = (*IPCBackend)(nil)
+var _ BackendHealthProber = (*IPCBackend)(nil)
 
 // NewIPCBackend constructs the fixed-socket production backend.
 func NewIPCBackend() *IPCBackend { return &IPCBackend{transport: productionIPCTransport{}} }
@@ -51,6 +53,26 @@ func NewIPCBackend() *IPCBackend { return &IPCBackend{transport: productionIPCTr
 func (*IPCBackend) RequiresFreshBasis() bool { return true }
 
 func newIPCBackend(transport ipcTransport) *IPCBackend { return &IPCBackend{transport: transport} }
+
+// ProbeHealth performs only the authenticated capability round trip used to
+// observe IPC reachability. Managed state and mutations remain outside this
+// narrow health boundary.
+func (b *IPCBackend) ProbeHealth(ctx context.Context) error {
+	if b == nil || b.transport == nil {
+		return fmt.Errorf("ipc backend is unavailable")
+	}
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	capabilities, err := b.transport.ProbeCapabilities(ctx)
+	if err != nil {
+		return err
+	}
+	if err := capabilities.Validate(); err != nil {
+		return fmt.Errorf("validate IPC capabilities: %w", err)
+	}
+	return nil
+}
 
 func (b *IPCBackend) Probe(ctx context.Context) (Snapshot, error) {
 	if b == nil || b.transport == nil {
@@ -155,9 +177,10 @@ func authorizeIPCRequest(
 			timeoutMode = firewall.ManagedTimeoutNative
 		}
 		expiry := int64(0)
-		hasExpiry := plan.DesiredTarget.EffectiveUntil != nil
-		if hasExpiry {
-			expiry = plan.DesiredTarget.EffectiveUntil.UTC().UnixMicro()
+		hasExpiry := false
+		if nativeExpiry := enforcement.NativeExpiryForIntent(plan.DesiredTarget); nativeExpiry != nil {
+			expiry = nativeExpiry.UTC().UnixMicro()
+			hasExpiry = true
 		}
 		scopes := firewallScopes(plan.DesiredTarget.Scopes)
 		_, err = firewall.AuthorizeTargetMutation(capabilities, snapshot, plan.BasisSnapshotDigest,

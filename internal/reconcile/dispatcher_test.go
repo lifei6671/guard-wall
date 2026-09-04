@@ -56,6 +56,22 @@ func TestDispatcherBackendHealthyRecoversByProbeWithoutAnotherMutation(t *testin
 	}
 }
 
+func TestDispatcherBackendHealthyClassifiesRecoverableBackendUnavailability(t *testing.T) {
+	clock := newDispatcherManualClock()
+	backend := newHealthFlapBackend()
+	backend.healthy.Store(false)
+	controller := newTestController(t, backend, clock, &memoryAudit{})
+	dispatcher := newTestDispatcher(t, controller, &staticPlanProvider{}, clock, 1)
+	_, err := dispatcher.BackendHealthy(context.Background())
+	var unavailable *backendHealthUnavailableError
+	if !errors.As(err, &unavailable) || !errors.Is(err, errBackendUnavailable) {
+		t.Fatalf("BackendHealthy() error = %T %v, want recoverable Backend unavailability", err, err)
+	}
+	if status := dispatcher.BackendHealthStatus(); status.State != BackendHealthDegraded || status.TotalFailures != 1 {
+		t.Fatalf("Backend health status = %+v, want one recoverable failure", status)
+	}
+}
+
 func TestDispatcherUsesAbsoluteRetryDeadlineAfterHealthProbe(t *testing.T) {
 	clock := newDispatcherManualClock()
 	backend := newHealthFlapBackend()

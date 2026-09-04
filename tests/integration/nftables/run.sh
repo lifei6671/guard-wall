@@ -62,3 +62,11 @@ if ! printf '%s\n' "$enforcer_output" | grep -F -- '--- PASS: TestEnforcerRuntim
   echo "missing required M0-RECOVERY-004 binary recovery result" >&2
   exit 1
 fi
+if ! printf '%s\n' "$enforcer_output" | grep -F -- '--- PASS: TestEnforcerRuntimeNftablesIntegration/C2-IPC-HEALTH-001' >/dev/null; then
+  echo "missing required C2-IPC-HEALTH-001 recovery result" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$enforcer_output" | grep -F -- '--- PASS: TestEnforcerRuntimeNftablesIntegration/C2-TARGET-NATIVE-TIMEOUT-001' >/dev/null; then
+  echo "missing required C2-TARGET-NATIVE-TIMEOUT-001 result" >&2
+  exit 1
+fi
