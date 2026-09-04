@@ -324,9 +324,6 @@ type Decision struct {
 
     EndReason *DecisionEndReason
 
-    RetryCount int
-    NextRetryAt *time.Time
-    LastError string
 }
 ```
 
@@ -337,22 +334,14 @@ type Decision struct {
 状态：
 
 ```text
-Pending
 Active
-Revoking
 Revoked
 Expired
-Failed
 ```
 
 状态流：
 
 ```text
-                ┌─────────────┐
-                │   Pending   │
-                └──────┬──────┘
-                       │ Apply success
-                       ▼
                 ┌─────────────┐
                 │   Active    │
                 └──────┬──────┘
@@ -362,31 +351,11 @@ Failed
      ExpiresAt                 Explicit Revoke
           │                         │
           ▼                         ▼
-      Expired                   Revoking
-                                    │
-                                    ▼
-                                 Revoked
+      Expired                   Revoked
 ```
 
-Apply 持续失败：
-
-```text
-Pending
-  ↓ retry
-Pending
-  ↓ max retry
-Failed
-```
-
-Revoke 持续失败：
-
-```text
-Revoking
-  ↓ retry
-Revoking
-  ↓ max retry
-Failed
-```
+Decision 表示安全意图，不承载 Firewall Apply、Revoke、Probe 或重试结果。创建后直接为
+`Active`；只允许 `Active → Expired` 或 `Active → Revoked`，终态不可复活。
 
 ---
 
@@ -399,10 +368,9 @@ Failed
 ```text
 expired
 manual
+manual_replace
 rule_disabled
-allowlisted
 system_cleanup
-maintenance_cleanup
 ```
 
 例如：
@@ -416,11 +384,19 @@ EndReason = manual
 
 ---
 
-# 9. Decision Apply 重试
+# 9. Reconcile failure-domain 重试
 
-不得无限每 60 秒重试。
+Retry 只属于 Reconcile，不属于 Decision。Infrastructure、Policy、Target 各自持久化
+attempt、last error、next attempt 和状态；一个 domain 的失败不消耗另一个 domain 的预算。
+三个 retry key 固定为：
 
-默认建议：
+```text
+Infrastructure = InfrastructureRevision + RetryEpoch
+Policy = PolicyRevision + RetryEpoch
+Target = CanonicalTarget + TargetEnforcementGeneration + RetryEpoch
+```
+
+每个 revision/generation key 最多执行一次首次 mutation 与五次自动重试，退避固定为：
 
 ```text
 1s
@@ -430,61 +406,29 @@ EndReason = manual
 15m
 ```
 
-最大：
+每次外部 mutation 前必须先持久化 `Applying` 与 attempt。crash、timeout 或结果不确定时，
+对应 attempt 保持已消耗，Observed domain 标记为 `Unknown`。`Unknown` 结果必须先通过该
+domain 的权威 Probe/Snapshot 确认后，才允许建立新的 mutation plan，不得盲目重放原 mutation。
 
-```text
-5 次
-```
-
-具体可配置。
-
-超过上限：
-
-```text
-State = Failed
-```
-
-记录：
-
-```text
-LastError
-RetryCount
-```
-
-同时：
-
-- Audit
-- Metrics
-- Web Warning
-- 可选 Email Alert
+普通 Reconcile、Probe、Agent restart 与 Backend health flap 不重置预算。达到上限后，
+对应 domain 进入 `Degraded`，但 Decision 和 Desired intent 保持不变。`OwnershipConflict`、
+不支持能力与非法 Plan 为 non-retryable，直接进入 `Degraded`，不得以自动重试掩盖设计错误。
 
 ---
 
-# 10. Failed Decision 恢复
+# 10. Reconcile Retry 恢复
 
-Reconciler 不得无限自动复活 Failed Decision。
-
-允许重新尝试的触发条件：
-
-```text
-管理员 Retry
-
-Firewall backend 从 unhealthy → healthy
-
-Agent restart 后 backend re-probe
-```
-
-提供：
+管理员 Retry 只能为指定 failure domain 创建新的 `RetryEpoch`，并与 Critical Audit 在同一
+事务中提交；不得直接修改 Decision。Phase 1 CLI 为：
 
 ```bash
-guard-agent decision retry <id>
+guard-agent reconcile retry infrastructure
+guard-agent reconcile retry policy
+guard-agent reconcile retry target <canonical-target>
 ```
 
-Web：
-
-```text
-Retry
-```
+Backend 从 unhealthy → healthy 只触发立即 Probe。若该 domain 预算已经耗尽，它保持
+`Degraded`，直到受影响 revision/generation 前进或管理员显式创建新的 RetryEpoch。
 
 ---
 
@@ -1758,21 +1702,9 @@ backend drift
 
 # 66. Reconciler 不处理无限失败重试
 
-如果对应 Decision：
-
-```text
-State = Failed
-```
-
-Reconciler 不每周期继续 Apply。
-
-失败恢复由：
-
-```text
-Retry State Machine
-```
-
-控制。
+Reconciler 不得无限重放已耗尽预算的 domain。达到上限后对应 domain 保持 `Degraded`；
+普通周期、Probe、Agent restart 与 Backend 状态抖动都不重置预算。恢复由 revision/generation
+前进或管理员创建新的 RetryEpoch 控制，且不能改写 Decision。
 
 ---
 
@@ -2291,7 +2223,6 @@ Rule Exclusion
 Active
 Expired
 Revoked
-Failed
 ```
 
 以及：
@@ -2510,7 +2441,15 @@ guard_alerts_total
 
 guard_decisions_total
 
-guard_decision_failed_total
+guard_reconcile_mutations_total{domain,result}
+
+guard_reconcile_duration_seconds{domain,result}
+
+guard_reconcile_unknown_results_total{domain}
+
+guard_reconcile_degraded{domain}
+
+guard_firewall_probes_total{backend,result}
 
 guard_active_bans
 
@@ -2526,6 +2465,9 @@ process_cpu_seconds_total
 
 process_resident_memory_bytes
 ```
+
+Reconcile Metrics 的 `domain` 只能是 `infrastructure|policy|target`；`result` 和
+`backend` 必须是有限枚举。CanonicalTarget、DecisionID、错误文本和 Retry key 禁止进入 label。
 
 ---
 
@@ -2713,7 +2655,9 @@ guard-agent list-bans
 guard-agent allowlist add
 guard-agent allowlist remove
 
-guard-agent decision retry
+guard-agent reconcile retry infrastructure
+guard-agent reconcile retry policy
+guard-agent reconcile retry target <canonical-target>
 
 guard-agent purge
 
@@ -2920,8 +2864,6 @@ state machine
 
 duplicate trigger
 
-retry
-
 end reason
 
 expiration
@@ -3086,7 +3028,7 @@ Target Enforcement State
 
 Expiration
 
-Retry
+Reconcile failure-domain Retry
 ```
 
 这一阶段先不接真实 Firewall。
@@ -3416,7 +3358,8 @@ Firewall Native Timeout 是 failsafe，不是 Source of Truth。
 
 ## ADR-017
 
-Failed Decision 不允许 Reconciler 无限重试。
+Reconcile Retry 不属于 Decision；耗尽预算的 domain 保持 Degraded，直到 revision/generation
+前进或管理员显式创建新的 RetryEpoch。
 
 ## ADR-018
 

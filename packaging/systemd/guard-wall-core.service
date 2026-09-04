@@ -1,21 +1,25 @@
 [Unit]
-Description=GuardWall privileged firewall enforcer
+Description=GuardWall privileged firewall core
 After=network.target
-Before=guard-agent.service
+Before=guard-wall-agent.service
 
 [Service]
 Type=exec
 User=root
-Group=root
+Group=guard
 SupplementaryGroups=guard
-ExecStart=/usr/local/bin/guard-enforcer
+ExecStart=/usr/local/bin/guard-wall-core
+SyslogIdentifier=guard-wall-core
+RuntimeDirectory=guard
+RuntimeDirectoryMode=0750
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-# The listener creates and validates /run/guard as root:guard 0750 itself.
+# systemd creates /run/guard as root:guard 0750 before the sandbox is applied.
+# The listener then validates the directory and creates the fixed socket.
 ReadWritePaths=/run/guard
 CapabilityBoundingSet=CAP_NET_ADMIN
 AmbientCapabilities=CAP_NET_ADMIN

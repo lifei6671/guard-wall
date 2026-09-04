@@ -4,115 +4,49 @@ package fake
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net/netip"
-	"sort"
 	"sync"
 	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
 	"github.com/lifei6671/guard-wall/internal/enforcement"
+	"github.com/lifei6671/guard-wall/internal/reconcile/model"
 )
 
-// Domain assigns every external mutation to exactly one retry budget.
-type Domain uint8
+// Domain Reconcile owns all plan, result, and physical-observation semantics. The
+// fake exposes aliases solely as a test simulator, so production Reconcile no
+// longer imports this package.
+type Domain = model.Domain
+type ResultKind = model.ResultKind
+type PhysicalInfrastructure = model.PhysicalInfrastructure
+type PhysicalPolicy = model.PhysicalPolicy
+type OperationPlan = model.OperationPlan
+type ApplyResult = model.ApplyResult
+type Snapshot = model.Snapshot
 
 const (
-	DomainInfrastructure Domain = iota + 1
-	DomainPolicy
-	DomainTarget
+	DomainInfrastructure = model.DomainInfrastructure
+	DomainPolicy         = model.DomainPolicy
+	DomainTarget         = model.DomainTarget
+	ResultConfirmed      = model.ResultConfirmed
+	ResultRejected       = model.ResultRejected
+	ResultUnknown        = model.ResultUnknown
 )
 
-// ResultKind distinguishes authoritative success, known rejection, and ambiguous outcome.
-type ResultKind uint8
-
-const (
-	ResultConfirmed ResultKind = iota + 1
-	ResultRejected
-	ResultUnknown
-)
-
-// PhysicalInfrastructure is the fake's externally observable infrastructure state.
-type PhysicalInfrastructure struct {
-	Backend      string
-	OwnerVersion string
-	Digest       string
-}
-
-// PhysicalPolicy is the fake's externally observable managed policy state.
-type PhysicalPolicy struct {
-	RelationDigest string
-}
-
-// OperationPlan is one domain-scoped fake mutation. A target plan contains one target only.
-type OperationPlan struct {
-	Domain                         Domain
-	Target                         netip.Prefix
-	DesiredTarget                  core.NormalizedTargetEnforcementIntent
-	DesiredInfrastructure          core.ManagedInfrastructureIntent
-	DesiredPolicy                  core.ManagedPolicyIntent
-	ExpectedInfrastructureRevision core.InfrastructureRevision
-	ExpectedPolicyRevision         core.PolicyRevision
-	ExpectedTargetGeneration       core.TargetEnforcementGeneration
-	ExpectedSnapshotRevision       core.SnapshotRevision
-	FenceSnapshotRevision          bool
-	BasisSnapshotDigest            string
-	Digest                         string
-}
-
-// ApplyResult reports only the physical fake operation outcome; DB fencing belongs to Reconcile.
-type ApplyResult struct {
-	Kind      ResultKind
-	Domain    Domain
-	Target    netip.Prefix
-	Digest    string
-	ErrorCode string
-}
-
-// QueuedOutcome controls one subsequent Apply. Unknown may mutate first to model an ambiguous
-// timeout after dispatch.
+// QueuedOutcome controls one subsequent fake Apply. Unknown may mutate first
+// to model an ambiguous timeout after dispatch.
 type QueuedOutcome struct {
 	Kind      ResultKind
 	Mutate    bool
 	ErrorCode string
 }
 
-// Snapshot is a deep copy of the current fake physical state. It contains no application
-// revision or target generation.
-type Snapshot struct {
-	Infrastructure *PhysicalInfrastructure
-	Policy         *PhysicalPolicy
-	Targets        map[netip.Prefix]core.PhysicalTargetObserved
-}
+// PlanDigest and ValidatePlan preserve the fake test API while delegating to
+// the production-owned Reconcile definitions.
+func PlanDigest(plan OperationPlan) string { return model.PlanDigest(plan) }
 
-// Digest returns a canonical physical-snapshot digest suitable for binding a freshly rebuilt plan.
-func (s Snapshot) Digest() string {
-	hash := sha256.New()
-	if s.Infrastructure == nil {
-		fmt.Fprint(hash, "infra:nil\n")
-	} else {
-		fmt.Fprintf(hash, "infra:%q:%q:%q\n", s.Infrastructure.Backend, s.Infrastructure.OwnerVersion, s.Infrastructure.Digest)
-	}
-	if s.Policy == nil {
-		fmt.Fprint(hash, "policy:nil\n")
-	} else {
-		fmt.Fprintf(hash, "policy:%q\n", s.Policy.RelationDigest)
-	}
-	targets := make([]netip.Prefix, 0, len(s.Targets))
-	for target := range s.Targets {
-		targets = append(targets, target)
-	}
-	sort.Slice(targets, func(left, right int) bool { return targets[left].String() < targets[right].String() })
-	for _, target := range targets {
-		observed := s.Targets[target]
-		fmt.Fprintf(hash, "target:%s:%d:%d:%q:%d:", target, observed.BanMembership, observed.PolicyCoverage, observed.PolicyRelationDigest, observed.TimeoutMode)
-		writeTime(hash, observed.NativeExpiry)
-		fmt.Fprintf(hash, ":%d:%d:%q\n", observed.Scopes, observed.AddressFamily, observed.OwnerVersion)
-	}
-	return hex.EncodeToString(hash.Sum(nil))
-}
+func ValidatePlan(plan OperationPlan) error { return model.ValidatePlan(plan) }
 
 // Backend is an in-process external-state simulator.
 type Backend struct {
@@ -131,60 +65,6 @@ func NewBackend() *Backend {
 		targets:  make(map[netip.Prefix]core.PhysicalTargetObserved),
 		outcomes: make(map[Domain][]QueuedOutcome),
 	}
-}
-
-// PlanDigest binds one operation's payload, fences, and optional fresh physical basis.
-func PlanDigest(plan OperationPlan) string {
-	hash := sha256.New()
-	fmt.Fprintf(hash, "domain:%d\ntarget:%s\ninfra-rev:%d\npolicy-rev:%d\ntarget-gen:%d\nsnapshot-rev:%d\nfence-snapshot:%t\nbasis:%q\n",
-		plan.Domain, plan.Target, plan.ExpectedInfrastructureRevision, plan.ExpectedPolicyRevision,
-		plan.ExpectedTargetGeneration, plan.ExpectedSnapshotRevision, plan.FenceSnapshotRevision, plan.BasisSnapshotDigest)
-	fmt.Fprintf(hash, "infra:%q:%q:%q\n", plan.DesiredInfrastructure.Backend, plan.DesiredInfrastructure.OwnerVersion, plan.DesiredInfrastructure.Digest)
-	fmt.Fprintf(hash, "policy:%q\n", plan.DesiredPolicy.RelationDigest)
-	intent := plan.DesiredTarget
-	fmt.Fprintf(hash, "intent:%q:%s:%d:", intent.NodeID, intent.CanonicalTarget, intent.BanMembership)
-	writeTime(hash, intent.EffectiveUntil)
-	fmt.Fprintf(hash, ":%d:%d:%d:%d:%q:%q:%d\n", intent.TimeoutMode, intent.Scopes, intent.AddressFamily,
-		intent.PolicyCoverage, intent.PolicyRelationDigest, intent.BackendAttributesDigest, intent.Generation)
-	return hex.EncodeToString(hash.Sum(nil))
-}
-
-// ValidatePlan validates both its domain payload and stable digest.
-func ValidatePlan(plan OperationPlan) error {
-	if !validDomain(plan.Domain) {
-		return fmt.Errorf("unknown failure domain %d", plan.Domain)
-	}
-	if plan.Digest == "" || plan.Digest != PlanDigest(plan) {
-		return fmt.Errorf("plan digest does not bind its payload")
-	}
-	switch plan.Domain {
-	case DomainInfrastructure:
-		if plan.Target.IsValid() || plan.ExpectedInfrastructureRevision == 0 {
-			return fmt.Errorf("infrastructure plan has an invalid fence or target")
-		}
-		if plan.DesiredInfrastructure.Backend == "" || plan.DesiredInfrastructure.OwnerVersion == "" || plan.DesiredInfrastructure.Digest == "" {
-			return fmt.Errorf("infrastructure plan requires a complete desired payload")
-		}
-	case DomainPolicy:
-		if plan.Target.IsValid() || plan.ExpectedPolicyRevision == 0 {
-			return fmt.Errorf("policy plan has an invalid fence or target")
-		}
-		if plan.DesiredPolicy.RelationDigest == "" {
-			return fmt.Errorf("policy plan requires a relation digest")
-		}
-	case DomainTarget:
-		if !plan.Target.IsValid() || plan.Target != plan.Target.Masked() {
-			return fmt.Errorf("target plan requires one canonical target")
-		}
-		if plan.DesiredTarget.CanonicalTarget != plan.Target || plan.ExpectedTargetGeneration == 0 ||
-			plan.DesiredTarget.Generation != plan.ExpectedTargetGeneration {
-			return fmt.Errorf("target plan payload generation does not match its fence")
-		}
-		if err := plan.DesiredTarget.Validate(); err != nil {
-			return fmt.Errorf("validate desired target: %w", err)
-		}
-	}
-	return nil
 }
 
 // QueueOutcome appends a deterministic Apply result for one domain.

@@ -130,6 +130,13 @@ func TestDesiredPlanProviderWakeRefreshesPastConvergedGeneration(t *testing.T) {
 	controller := newTestController(t, backend, clock, &memoryAudit{})
 	present := targetIntent(target, 1)
 	initial := desiredSnapshot(present)
+	policy, err := core.NewManagedPolicyIntent(nil, []netip.Prefix{
+		netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.Policy = policy
 	setDesired(t, controller, initial)
 	if _, err := controller.Execute(context.Background(), targetPlan(initial, target)); err != nil {
 		t.Fatal(err)
@@ -173,11 +180,9 @@ func newTestDesiredPlanProvider(
 	t.Helper()
 	provider, err := NewDesiredPlanProvider(testNodeID, controller, reader, StaticDesiredFirewallState{
 		InfrastructureRevision: 1,
-		PolicyRevision:         1,
 		Infrastructure: core.ManagedInfrastructureIntent{
 			Backend: "fake", OwnerVersion: "v1", Digest: "infra-v1",
 		},
-		Policy: core.ManagedPolicyIntent{RelationDigest: "policy-v1"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -187,20 +192,36 @@ func newTestDesiredPlanProvider(
 
 type desiredStateReaderStub struct {
 	revision    core.SnapshotRevision
+	policy      core.ManagedPolicyIntent
 	targets     []core.NormalizedTargetEnforcementIntent
 	recovery    core.ReconcileRecoverySnapshot
 	desiredErr  error
 	recoveryErr error
 }
 
-func (r *desiredStateReaderStub) LoadDesiredTargetState(
+func (r *desiredStateReaderStub) LoadDesiredFirewallState(
 	context.Context,
 	core.NodeID,
-) (core.SnapshotRevision, []core.NormalizedTargetEnforcementIntent, error) {
+) (core.DesiredFirewallState, error) {
 	if r.desiredErr != nil {
-		return 0, nil, r.desiredErr
+		return core.DesiredFirewallState{}, r.desiredErr
 	}
-	return r.revision, append([]core.NormalizedTargetEnforcementIntent(nil), r.targets...), nil
+	policy := r.policy
+	if policy.RelationDigest == "" {
+		var err error
+		policy, err = core.NewManagedPolicyIntent(nil, []netip.Prefix{
+			netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128"),
+		})
+		if err != nil {
+			return core.DesiredFirewallState{}, err
+		}
+	}
+	return core.DesiredFirewallState{
+		SnapshotRevision: r.revision,
+		PolicyRevision:   1,
+		Policy:           policy,
+		Targets:          append([]core.NormalizedTargetEnforcementIntent(nil), r.targets...),
+	}, nil
 }
 
 func (r *desiredStateReaderStub) LoadReconcileRecovery(

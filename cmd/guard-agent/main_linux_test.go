@@ -15,6 +15,7 @@ import (
 
 	"github.com/lifei6671/guard-wall/internal/config"
 	"github.com/lifei6671/guard-wall/internal/core"
+	"github.com/lifei6671/guard-wall/internal/decision"
 	"github.com/lifei6671/guard-wall/internal/store"
 	"github.com/lifei6671/guard-wall/migrations"
 )
@@ -72,82 +73,69 @@ func TestRunGuardAgent(t *testing.T) {
 		}, func(context.Context, string, fs.FS) (agentStore, error) {
 			t.Fatal("store must not open before identity validation")
 			return nil, nil
-		}, migrationFS, func(context.Context) error { return nil })
+		}, migrationFS, func(context.Context, core.NodeID, agentStore, config.Config) (guardAgentRuntime, error) {
+			t.Fatal("runtime must not construct before identity validation")
+			return nil, nil
+		})
 		if !errors.Is(err, errGuardAgentIdentity) || called {
 			t.Fatalf("runGuardAgent() = %v, config loaded = %v", err, called)
 		}
 	})
 
-	t.Run("configuration failure does not open store or probe", func(t *testing.T) {
-		probeCalled := false
-		err := runGuardAgent(context.Background(), identityLookup, func() int { return 1001 }, configPath,
-			func(context.Context, string) (config.Config, error) {
-				return config.Config{}, errors.New("config failed")
-			},
-			func(context.Context, string, fs.FS) (agentStore, error) {
-				t.Fatal("store must not open after configuration failure")
-				return nil, nil
-			}, migrationFS, func(context.Context) error {
-				probeCalled = true
-				return nil
-			})
-		if err == nil || probeCalled {
-			t.Fatalf("runGuardAgent() = %v, probe called = %v", err, probeCalled)
-		}
-	})
-
-	t.Run("probe failure is preserved and closes store", func(t *testing.T) {
+	t.Run("runtime construction failure closes store", func(t *testing.T) {
 		database := &testAgentStore{}
-		probeErr := errors.New("probe failed")
+		want := errors.New("runtime construction failed")
 		err := runGuardAgent(context.Background(), identityLookup, func() int { return 1001 }, configPath,
-			func(context.Context, string) (config.Config, error) { return loadedConfig, nil },
-			openTestAgentStore(database), migrationFS, func(context.Context) error { return probeErr })
-		if !errors.Is(err, errGuardAgentProbe) || !errors.Is(err, probeErr) || !database.closed || database.nodeID == "" {
-			t.Fatalf("runGuardAgent() = %v, closed = %v, nodeID = %q", err, database.closed, database.nodeID)
-		}
-	})
-
-	t.Run("probe receives fixed readiness deadline", func(t *testing.T) {
-		var deadline time.Time
-		database := &testAgentStore{}
-		err := runGuardAgent(context.Background(), identityLookup, func() int { return 1001 }, configPath,
-			func(context.Context, string) (config.Config, error) { return loadedConfig, nil },
-			openTestAgentStore(database), migrationFS, func(ctx context.Context) error {
-				var ok bool
-				deadline, ok = ctx.Deadline()
-				if !ok {
-					t.Fatal("probe context has no deadline")
-				}
-				return errors.New("stop after deadline observation")
+			func(context.Context, string) (config.Config, error) { return loadedConfig, nil }, openTestAgentStore(database), migrationFS,
+			func(context.Context, core.NodeID, agentStore, config.Config) (guardAgentRuntime, error) {
+				return nil, want
 			})
-		if !errors.Is(err, errGuardAgentProbe) || deadline.IsZero() || time.Until(deadline) <= 0 || time.Until(deadline) > guardAgentProbeTimeout {
-			t.Fatalf("probe deadline = %s, error = %v", deadline, err)
+		if !errors.Is(err, want) || database.closeCalls != 1 || database.nodeID == "" {
+			t.Fatalf("runGuardAgent() = %v, close calls = %d, nodeID = %q", err, database.closeCalls, database.nodeID)
 		}
 	})
 
-	t.Run("ready process waits for cancellation then closes store", func(t *testing.T) {
+	t.Run("policy bootstrap failure closes store without run", func(t *testing.T) {
+		database := &testAgentStore{}
+		want := errors.New("bootstrap failed")
+		runtime := &testGuardAgentRuntime{bootstrap: func(context.Context, time.Time) (decision.PolicyChange, error) { return decision.PolicyChange{}, want }}
+		err := runGuardAgent(context.Background(), identityLookup, func() int { return 1001 }, configPath,
+			func(context.Context, string) (config.Config, error) { return loadedConfig, nil }, openTestAgentStore(database), migrationFS,
+			testGuardAgentRuntimeFactory(runtime))
+		if !errors.Is(err, want) || runtime.runCalls != 0 || database.closeCalls != 1 {
+			t.Fatalf("runGuardAgent() = %v, runtime runs = %d, close calls = %d", err, runtime.runCalls, database.closeCalls)
+		}
+	})
+
+	t.Run("runtime takes store ownership after bootstrap", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		database := &testAgentStore{}
+		started := make(chan struct{})
+		runtime := &testGuardAgentRuntime{run: func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return database.Close()
+		}}
 		done := make(chan error, 1)
 		go func() {
 			done <- runGuardAgent(ctx, identityLookup, func() int { return 1001 }, configPath,
-				func(context.Context, string) (config.Config, error) { return loadedConfig, nil },
-				openTestAgentStore(database), migrationFS, func(context.Context) error { return nil })
+				func(context.Context, string) (config.Config, error) { return loadedConfig, nil }, openTestAgentStore(database), migrationFS,
+				testGuardAgentRuntimeFactory(runtime))
 		}()
 		select {
-		case err := <-done:
-			t.Fatalf("runGuardAgent returned before cancellation: %v", err)
-		case <-time.After(50 * time.Millisecond):
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("guard-agent did not start runtime")
 		}
 		cancel()
 		select {
 		case err := <-done:
-			if !errors.Is(err, context.Canceled) || !database.closed {
-				t.Fatalf("runGuardAgent() = %v, closed = %v", err, database.closed)
+			if err != nil || runtime.bootstrapCalls != 1 || database.closeCalls != 1 {
+				t.Fatalf("runGuardAgent() = %v, bootstrap calls = %d, close calls = %d", err, runtime.bootstrapCalls, database.closeCalls)
 			}
 		case <-time.After(time.Second):
-			t.Fatal("runGuardAgent did not stop after cancellation")
+			t.Fatal("guard-agent did not stop runtime")
 		}
 	})
 }
@@ -157,8 +145,8 @@ func openTestAgentStore(database agentStore) storeOpener {
 }
 
 type testAgentStore struct {
-	nodeID core.NodeID
-	closed bool
+	nodeID     core.NodeID
+	closeCalls int
 }
 
 func (s *testAgentStore) LoadNodeIdentity(context.Context) (core.NodeID, bool, error) {
@@ -171,8 +159,37 @@ func (s *testAgentStore) CreateNodeIdentity(_ context.Context, nodeID core.NodeI
 }
 
 func (s *testAgentStore) Close() error {
-	s.closed = true
+	s.closeCalls++
 	return nil
+}
+
+type testGuardAgentRuntime struct {
+	bootstrap      func(context.Context, time.Time) (decision.PolicyChange, error)
+	run            func(context.Context) error
+	bootstrapCalls int
+	runCalls       int
+}
+
+func (r *testGuardAgentRuntime) BootstrapInitialManagedPolicy(ctx context.Context, now time.Time) (decision.PolicyChange, error) {
+	r.bootstrapCalls++
+	if r.bootstrap != nil {
+		return r.bootstrap(ctx, now)
+	}
+	return decision.PolicyChange{Changed: true, PolicyRevision: 1, SnapshotRevision: 1}, nil
+}
+
+func (r *testGuardAgentRuntime) Run(ctx context.Context) error {
+	r.runCalls++
+	if r.run != nil {
+		return r.run(ctx)
+	}
+	return nil
+}
+
+func testGuardAgentRuntimeFactory(runtime guardAgentRuntime) guardAgentRuntimeFactory {
+	return func(context.Context, core.NodeID, agentStore, config.Config) (guardAgentRuntime, error) {
+		return runtime, nil
+	}
 }
 
 func TestParseGuardAgentConfigPath(t *testing.T) {
@@ -197,7 +214,7 @@ func TestRunGuardAgentLoadsConfiguredStoreAndPersistsNodeID(t *testing.T) {
 		t.Fatalf("write configuration: %v", err)
 	}
 
-	probeStarted := make(chan struct{})
+	runtimeStarted := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
 		done <- runGuardAgent(
@@ -208,22 +225,25 @@ func TestRunGuardAgentLoadsConfiguredStoreAndPersistsNodeID(t *testing.T) {
 			loadGuardAgentConfig,
 			openGuardAgentStore,
 			migrations.FS,
-			func(context.Context) error {
-				close(probeStarted)
-				return nil
+			func(_ context.Context, _ core.NodeID, database agentStore, _ config.Config) (guardAgentRuntime, error) {
+				return &testGuardAgentRuntime{run: func(ctx context.Context) error {
+					close(runtimeStarted)
+					<-ctx.Done()
+					return database.Close()
+				}}, nil
 			},
 		)
 	}()
 	select {
-	case <-probeStarted:
+	case <-runtimeStarted:
 	case <-time.After(time.Second):
-		t.Fatal("guard-agent did not reach readiness probe")
+		t.Fatal("guard-agent did not start reconcile runtime")
 	}
 	cancel()
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("runGuardAgent() = %v, want context.Canceled", err)
+		if err != nil {
+			t.Fatalf("runGuardAgent() = %v, want nil after runtime shutdown", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("guard-agent did not stop after cancellation")
@@ -237,5 +257,32 @@ func TestRunGuardAgentLoadsConfiguredStoreAndPersistsNodeID(t *testing.T) {
 	nodeID, found, err := database.LoadNodeIdentity(context.Background())
 	if err != nil || !found || nodeID == "" {
 		t.Fatalf("LoadNodeIdentity() = (%q, %t, %v), want persisted NodeID", nodeID, found, err)
+	}
+}
+
+func TestNewGuardAgentRuntimeBootstrapsSQLiteOwnedPolicyBeforeRun(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "guard.db"), migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	nodeID, err := core.BootstrapPersistentNodeID(ctx, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := newGuardAgentRuntime(ctx, nodeID, database, config.Config{
+		Runtime: config.Runtime{ReconcileQueueCapacity: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	change, err := runtime.BootstrapInitialManagedPolicy(ctx, time.Unix(1_700_000_000, 0).UTC())
+	if err != nil || !change.Changed || change.PolicyRevision != 1 || change.SnapshotRevision != 1 {
+		t.Fatalf("BootstrapInitialManagedPolicy() = %+v, %v", change, err)
+	}
+	state, err := database.LoadDesiredFirewallState(ctx, nodeID)
+	if err != nil || len(state.Policy.Allowlist) != 0 || len(state.Policy.ProtectedTargets) != 2 {
+		t.Fatalf("LoadDesiredFirewallState() = %+v, %v", state, err)
 	}
 }

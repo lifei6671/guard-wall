@@ -5,6 +5,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,7 +28,7 @@ const (
 	processingCrashResultEnv     = "GUARD_PROCESSING_CRASH_RESULT"
 )
 
-func TestSQLiteProcessingTransactionSIGKILLReplay(t *testing.T) {
+func TestM0Recovery003SQLiteProcessingTransactionSIGKILLReplay(t *testing.T) {
 	migrationDir, err := filepath.Abs(filepath.Join("..", "..", "migrations"))
 	if err != nil {
 		t.Fatalf("resolve migration directory: %v", err)
@@ -44,6 +45,12 @@ func TestSQLiteProcessingTransactionSIGKILLReplay(t *testing.T) {
 	if !snapshot.ReceiptFound || snapshot.CheckpointSequence != 1 || snapshot.CheckpointEndOffset != 10 {
 		t.Fatalf("replay snapshot = %+v", snapshot)
 	}
+	contents, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal replay snapshot: %v", err)
+	}
+	digest := sha256.Sum256(contents)
+	t.Logf("M0_FINAL_STATE_DIGEST=%x", digest)
 }
 
 func TestSQLiteProcessingTransactionSIGKILLReplayHelper(t *testing.T) {

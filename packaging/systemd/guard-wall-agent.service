@@ -1,21 +1,24 @@
 [Unit]
-Description=GuardWall unprivileged agent readiness process
-Requires=guard-enforcer.service
-After=guard-enforcer.service
+Description=GuardWall unprivileged agent
+Requires=guard-wall-core.service
+After=guard-wall-core.service
 
 [Service]
 Type=exec
 User=guard
 Group=guard
-ExecStart=/usr/local/bin/guard-agent
+ExecStart=/usr/local/bin/guard-wall-agent --config /etc/guard/guard-wall.yaml
+SyslogIdentifier=guard-wall-agent
+StateDirectory=guard
+StateDirectoryMode=0750
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-# The agent is a Unix-socket client and receives no writable filesystem path.
-ReadWritePaths=
+# StateDirectory=guard creates /var/lib/guard as guard:guard; the agent never writes /etc/guard.
+ReadWritePaths=/var/lib/guard
 CapabilityBoundingSet=
 AmbientCapabilities=
 PrivateTmp=yes

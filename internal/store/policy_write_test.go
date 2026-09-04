@@ -93,6 +93,94 @@ func TestPolicyServiceReplaceAtomicallyRematerializesTargetsAndWakes(t *testing.
 	}
 }
 
+func TestPolicyServiceBootstrapInitialManagedPolicyIsDurableAndDoesNotWake(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if err := database.EnsureNodeIdentity(ctx, testNodeID, now); err != nil {
+		t.Fatal(err)
+	}
+	service := newPolicyWriteService(t, database,
+		decision.PolicyWakeSinkFunc(func(context.Context, core.NodeID) error { t.Fatal("bootstrap woke Policy"); return nil }),
+		decision.TargetWakeSinkFunc(func(context.Context, core.NodeID, netip.Prefix) error { t.Fatal("bootstrap woke Target"); return nil }),
+	)
+	first, err := service.BootstrapInitialManagedPolicy(ctx, testNodeID, now)
+	if err != nil || !first.Changed || first.PolicyRevision != 1 || first.SnapshotRevision != 1 {
+		t.Fatalf("BootstrapInitialManagedPolicy(first) = %+v, %v", first, err)
+	}
+	state, err := database.LoadDesiredFirewallState(ctx, testNodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !samePrefixes(state.Policy.Allowlist, nil) || !samePrefixes(state.Policy.ProtectedTargets, []netip.Prefix{
+		netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128"),
+	}) || !containsPolicyRetryState(mustLoadReconcileRecovery(t, database, ctx), 1) {
+		t.Fatalf("bootstrap desired state = %+v", state)
+	}
+	second, err := service.BootstrapInitialManagedPolicy(ctx, testNodeID, now.Add(time.Second))
+	if err != nil || second.Changed || second.PolicyRevision != 1 || second.SnapshotRevision != 1 {
+		t.Fatalf("BootstrapInitialManagedPolicy(second) = %+v, %v", second, err)
+	}
+	var auditCount int
+	if err := database.db.QueryRowContext(ctx, "SELECT count(*) FROM audit_logs WHERE idempotency_key = ?", "policy-bootstrap:"+string(testNodeID)).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount != 1 {
+		t.Fatalf("bootstrap audit count = %d, want 1", auditCount)
+	}
+}
+
+func TestPolicyServiceBootstrapInitialManagedPolicyRejectsPartialState(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if err := database.EnsureNodeIdentity(ctx, testNodeID, now); err != nil {
+		t.Fatal(err)
+	}
+	seedDesiredFirewallPolicyRows(t, database, []desiredFirewallPolicyRow{{
+		table: "protected_targets", target: "127.0.0.0/8", enabled: 1, revision: 1,
+	}})
+	service := newPolicyWriteService(t, database,
+		decision.PolicyWakeSinkFunc(func(context.Context, core.NodeID) error { t.Fatal("partial bootstrap woke Policy"); return nil }),
+		decision.TargetWakeSinkFunc(func(context.Context, core.NodeID, netip.Prefix) error {
+			t.Fatal("partial bootstrap woke Target")
+			return nil
+		}),
+	)
+	if _, err := service.BootstrapInitialManagedPolicy(ctx, testNodeID, now); err == nil || !strings.Contains(err.Error(), "missing mandatory protected targets") {
+		t.Fatalf("BootstrapInitialManagedPolicy(partial) error = %v", err)
+	}
+}
+
+func TestPolicyServiceBootstrapInitialManagedPolicyProvesCommitUnknownWithoutWake(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if err := database.EnsureNodeIdentity(ctx, testNodeID, now); err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := decision.NewManagedPolicyTargetResolver(core.ScopeInput, false, strings.Repeat("b", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalizer, err := decision.NewDesiredStateFinalizer(resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := decision.NewPolicyService(
+		policyCommitUnknownRunner{database: database}, database, finalizer,
+		decision.PolicyWakeSinkFunc(func(context.Context, core.NodeID) error { t.Fatal("bootstrap woke Policy"); return nil }),
+		decision.TargetWakeSinkFunc(func(context.Context, core.NodeID, netip.Prefix) error { t.Fatal("bootstrap woke Target"); return nil }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	change, err := service.BootstrapInitialManagedPolicy(ctx, testNodeID, now)
+	if err != nil || !change.Changed || change.PolicyRevision != 1 || change.SnapshotRevision != 1 {
+		t.Fatalf("BootstrapInitialManagedPolicy() = %+v, %v", change, err)
+	}
+}
+
 func TestPolicyServiceRejectsStaleRevisionWithoutWritesOrWake(t *testing.T) {
 	database := openTestStore(t)
 	ctx := context.Background()
@@ -316,6 +404,15 @@ func containsPolicyRetryState(states []core.PersistedReconcileState, revision co
 		}
 	}
 	return false
+}
+
+func mustLoadReconcileRecovery(t *testing.T, database *Store, ctx context.Context) []core.PersistedReconcileState {
+	t.Helper()
+	recovery, err := database.LoadReconcileRecovery(ctx, testNodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return recovery.States
 }
 
 type policyCommitUnknownRunner struct{ database *Store }

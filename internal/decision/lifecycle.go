@@ -54,11 +54,12 @@ type LifecycleAudit struct {
 // and expiration application-service operations.
 type LifecycleTransaction interface {
 	DesiredStateTransaction
+	RequireNodeIdentity(context.Context, core.NodeID) error
 	InsertManualDecision(context.Context, core.Decision) (bool, error)
 	FindDecisionByID(context.Context, core.DecisionID) (core.Decision, bool, error)
 	FindActiveManualDecision(context.Context, core.NodeID, netip.Prefix) (core.Decision, bool, error)
 	RevokeActiveManualDecision(context.Context, core.DecisionID, time.Time) (core.Decision, error)
-	ExpireDueActiveDecisions(context.Context, time.Time) ([]core.Decision, error)
+	ExpireDueActiveDecisions(context.Context, core.NodeID, time.Time) ([]core.Decision, error)
 	AppendDecisionLifecycleAudit(context.Context, LifecycleAudit) error
 }
 
@@ -67,10 +68,11 @@ type TransactionRunner interface {
 	RunDecisionTransaction(context.Context, func(LifecycleTransaction) error) error
 }
 
-// LifecycleService owns Manual and expiry Decision, Projection, normalized
-// Intent, SnapshotRevision, retry reset, Audit, and post-commit Target wake.
-// Callers never receive a transaction handle.
+// LifecycleService owns one node's Manual and expiry Decision, Projection,
+// normalized Intent, SnapshotRevision, retry reset, Audit, and post-commit
+// Target wake. Callers never receive a transaction handle.
 type LifecycleService struct {
+	nodeID          core.NodeID
 	runner          TransactionRunner
 	finalizer       *DesiredStateFinalizer
 	wake            TargetWakeSink
@@ -79,21 +81,26 @@ type LifecycleService struct {
 
 // NewLifecycleService constructs a Decision lifecycle application service.
 func NewLifecycleService(
+	nodeID core.NodeID,
 	runner TransactionRunner,
 	finalizer *DesiredStateFinalizer,
 	wake TargetWakeSink,
 ) (*LifecycleService, error) {
-	return NewLifecycleServiceWithClock(runner, finalizer, wake, appclock.NewWallClock())
+	return NewLifecycleServiceWithClock(nodeID, runner, finalizer, wake, appclock.NewWallClock())
 }
 
 // NewLifecycleServiceWithClock constructs a Decision lifecycle application
 // service using schedulerClock for expiration scheduling.
 func NewLifecycleServiceWithClock(
+	nodeID core.NodeID,
 	runner TransactionRunner,
 	finalizer *DesiredStateFinalizer,
 	wake TargetWakeSink,
 	schedulerClock appclock.Clock,
 ) (*LifecycleService, error) {
+	if nodeID == "" {
+		return nil, fmt.Errorf("decision lifecycle node id is required")
+	}
 	if runner == nil {
 		return nil, fmt.Errorf("decision transaction runner is required")
 	}
@@ -107,7 +114,7 @@ func NewLifecycleServiceWithClock(
 		return nil, fmt.Errorf("expiration scheduler clock is required")
 	}
 	return &LifecycleService{
-		runner: runner, finalizer: finalizer, wake: wake, expirationClock: schedulerClock,
+		nodeID: nodeID, runner: runner, finalizer: finalizer, wake: wake, expirationClock: schedulerClock,
 	}, nil
 }
 
@@ -124,9 +131,15 @@ func (s *LifecycleService) BanManual(
 	if ctx == nil {
 		return ManualResult{}, fmt.Errorf("manual decision context is required")
 	}
+	if request.NodeID != s.nodeID {
+		return ManualResult{}, fmt.Errorf("manual decision node id does not match lifecycle node id")
+	}
 
 	var result ManualResult
 	err := s.runner.RunDecisionTransaction(ctx, func(tx LifecycleTransaction) error {
+		if err := tx.RequireNodeIdentity(ctx, s.nodeID); err != nil {
+			return err
+		}
 		var err error
 		result, err = RecordManualInTransaction(ctx, tx, request, replace)
 		if err != nil {
@@ -164,7 +177,7 @@ type ExpirationResult struct {
 	EnforcementChanges []TargetEnforcementChange
 }
 
-// Expire atomically terminates every Active Decision due at now.
+// Expire atomically terminates this service's Active Decisions due at now.
 func (s *LifecycleService) Expire(ctx context.Context, now time.Time) (ExpirationResult, error) {
 	return s.expire(ctx, now, true)
 }
@@ -184,7 +197,7 @@ func (s *LifecycleService) expire(
 	var result ExpirationResult
 	err := s.runner.RunDecisionTransaction(ctx, func(tx LifecycleTransaction) error {
 		var err error
-		result, err = ExpireInTransaction(ctx, tx, now)
+		result, err = ExpireInTransaction(ctx, tx, s.nodeID, now)
 		if err != nil {
 			return err
 		}
@@ -283,11 +296,12 @@ func RecordManualInTransaction(
 	}, nil
 }
 
-// ExpireInTransaction ends each due Active Decision and rebuilds every
-// affected target Projection exactly once.
+// ExpireInTransaction ends each due Active Decision for nodeID and rebuilds
+// every affected target Projection exactly once.
 func ExpireInTransaction(
 	ctx context.Context,
 	tx LifecycleTransaction,
+	nodeID core.NodeID,
 	now time.Time,
 ) (ExpirationResult, error) {
 	if ctx == nil || tx == nil {
@@ -296,7 +310,10 @@ func ExpireInTransaction(
 	if now.IsZero() {
 		return ExpirationResult{}, fmt.Errorf("expiration time is required")
 	}
-	due, err := tx.ExpireDueActiveDecisions(ctx, now)
+	if nodeID == "" {
+		return ExpirationResult{}, fmt.Errorf("expiration node id is required")
+	}
+	due, err := tx.ExpireDueActiveDecisions(ctx, nodeID, now)
 	if err != nil {
 		return ExpirationResult{}, err
 	}

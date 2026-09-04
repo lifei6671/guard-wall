@@ -57,6 +57,40 @@ func TestObservedFirewallUpdateValidation(t *testing.T) {
 				Scopes: ScopeInput, AddressFamily: AddressFamilyIPv6, OwnerVersion: "v1",
 			}}},
 		}, wantErr: "address family"},
+		{name: "managed snapshot present", update: ObservedFirewallUpdate{
+			NodeID: nodeID,
+			Targets: []TargetObservedState{{
+				PhysicalTargetObserved: PhysicalTargetObserved{
+					CanonicalTarget: target, ObservedAt: now,
+					Evidence:      TargetObservationEvidenceManagedSnapshot,
+					BanMembership: ObservedMembershipPresent, PolicyCoverage: ObservedPolicyUnknown,
+					TimeoutMode: TimeoutNone, Scopes: ScopeInput, AddressFamily: AddressFamilyIPv4,
+				},
+			}},
+		}},
+		{name: "managed snapshot cannot infer complete fields", update: ObservedFirewallUpdate{
+			NodeID: nodeID,
+			Targets: []TargetObservedState{{
+				PhysicalTargetObserved: PhysicalTargetObserved{
+					CanonicalTarget: target, ObservedAt: now, Backend: "nftables",
+					Evidence:      TargetObservationEvidenceManagedSnapshot,
+					BanMembership: ObservedMembershipPresent, PolicyCoverage: ObservedPolicyUnknown,
+					TimeoutMode: TimeoutNone, Scopes: ScopeInput, AddressFamily: AddressFamilyIPv4,
+				},
+			}},
+		}, wantErr: "cannot contain inferred"},
+		{name: "managed snapshot confirms exposed target facts", update: ObservedFirewallUpdate{
+			NodeID: nodeID,
+			Targets: []TargetObservedState{{
+				PhysicalTargetObserved: PhysicalTargetObserved{
+					CanonicalTarget: target, ObservedAt: now,
+					Evidence:      TargetObservationEvidenceManagedSnapshot,
+					BanMembership: ObservedMembershipPresent, PolicyCoverage: ObservedPolicyUnknown,
+					TimeoutMode: TimeoutNone, Scopes: ScopeInput, AddressFamily: AddressFamilyIPv4,
+				},
+				ConfirmedGeneration: 1,
+			}},
+		}},
 		{name: "empty update", update: ObservedFirewallUpdate{NodeID: nodeID}, wantErr: "at least one"},
 	}
 	for _, test := range tests {

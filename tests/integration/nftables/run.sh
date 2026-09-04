@@ -11,7 +11,7 @@ fi
 
 current_caps=$(capsh --print | sed -n 's/^Current: //p')
 current_caps=${current_caps%%=*}
-for capability in cap_net_admin cap_net_raw cap_sys_admin; do
+for capability in cap_net_admin cap_net_raw cap_sys_admin cap_setuid cap_setgid cap_chown; do
   case ",$current_caps," in
     *",$capability,"*) ;;
     *)
@@ -48,9 +48,17 @@ go test \
   -v \
   ./internal/firewall/nftables
 
-exec go test \
+if ! enforcer_output=$(go test \
   -tags=integration,nftables \
   -count=1 \
   -v \
   -run '^TestEnforcerRuntimeNftablesIntegration$' \
-  ./internal/enforcer
+  ./internal/enforcer); then
+  printf '%s\n' "$enforcer_output"
+  exit 1
+fi
+printf '%s\n' "$enforcer_output"
+if ! printf '%s\n' "$enforcer_output" | grep -F -- '--- PASS: TestEnforcerRuntimeNftablesIntegration/M0-RECOVERY-004' >/dev/null; then
+  echo "missing required M0-RECOVERY-004 binary recovery result" >&2
+  exit 1
+fi

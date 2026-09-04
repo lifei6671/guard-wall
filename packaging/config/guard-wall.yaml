@@ -1,0 +1,4 @@
+# GuardWall's packaged Phase 1 configuration. Add optional settings here only
+# when they are defined by schema/config-v1.schema.json.
+store:
+  database_path: /var/lib/guard/guard-wall.db

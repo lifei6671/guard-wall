@@ -202,9 +202,6 @@ func TestPersistentControllerKeepsAmbiguousProbeAcrossAdministratorRetry(t *test
 	if controller.ProbeRequired() {
 		t.Fatal("successful administrator retry retained a stale Probe barrier")
 	}
-	if audit.Count() != 1 {
-		t.Fatalf("administrator Retry audit count = %d, want 1", audit.Count())
-	}
 }
 
 func TestPersistentControllerDoesNotResetExhaustedBudgetAcrossSQLiteReopen(t *testing.T) {
@@ -397,6 +394,28 @@ func TestPersistentControllerResolvesPostApplyCommitUnknownByReadback(t *testing
 				t.Fatalf("commit-unknown recovery duplicated Apply: %d", applies)
 			}
 		})
+	}
+}
+
+func TestPersistentControllerResolvesRetryCommitUnknownByJointReadback(t *testing.T) {
+	ctx := context.Background()
+	clock := newManualClock()
+	backend := fake.NewBackend()
+	database := openRestartStore(t, ctx, filepath.Join(t.TempDir(), "guard.db"), clock.Now())
+	defer database.Close()
+	unknown := &commitUnknownTransitionStore{PersistentStateStore: database, unknownRetry: true, retryCommit: true}
+	controller := newPersistentTestController(t, ctx, unknown, backend, clock, &memoryAudit{})
+	target := netip.MustParsePrefix("192.0.2.4/32")
+	desired := desiredSnapshot(targetIntent(target, 1))
+	setPersistentDesired(t, ctx, database, controller, desired)
+
+	key, err := controller.RetryTarget(ctx, target)
+	if err != nil || key.Epoch != 1 {
+		t.Fatalf("RetryTarget() = key=%+v err=%v, want committed epoch 1", key, err)
+	}
+	_, state, ok := controller.TargetState(target)
+	if !ok || state.Status != core.ReconcilePending || state.AttemptCount != 0 {
+		t.Fatalf("joint readback did not publish retry state: %+v exists=%v", state, ok)
 	}
 }
 
@@ -677,6 +696,8 @@ type commitUnknownTransitionStore struct {
 	failLoadOnCall int
 	loadErr        error
 	loadCalls      int
+	unknownRetry   bool
+	retryCommit    bool
 }
 
 func (s *commitUnknownTransitionStore) ApplyReconcileTransition(ctx context.Context, transition core.ReconcileStateTransition) error {
@@ -690,6 +711,18 @@ func (s *commitUnknownTransitionStore) ApplyReconcileTransition(ctx context.Cont
 		}
 	}
 	return core.NewReconcileCommitUnknownError(errors.New("injected lost commit acknowledgement"))
+}
+
+func (s *commitUnknownTransitionStore) ApplyReconcileRetryTransition(ctx context.Context, transition core.ReconcileRetryTransition) error {
+	if !s.unknownRetry {
+		return s.PersistentStateStore.ApplyReconcileRetryTransition(ctx, transition)
+	}
+	if s.retryCommit {
+		if err := s.PersistentStateStore.ApplyReconcileRetryTransition(ctx, transition); err != nil {
+			return err
+		}
+	}
+	return core.NewReconcileCommitUnknownError(errors.New("injected lost retry commit acknowledgement"))
 }
 
 func (s *commitUnknownTransitionStore) LoadReconcileRecovery(ctx context.Context, nodeID core.NodeID) (core.ReconcileRecoverySnapshot, error) {

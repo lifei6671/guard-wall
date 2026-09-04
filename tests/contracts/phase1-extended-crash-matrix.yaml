@@ -1,12 +1,12 @@
-version: guard.m0-crash-matrix.v1
-status: specified
+version: guard.phase1-extended-crash-matrix.v1
+status: specified_for_m7_m10
+m0_gate_input: false
 contract:
   path: docs/contracts/guard-phase-1-m0-contract-freeze-v0.3.md
   sections:
-    - "12.3"
-    - "17.3"
+    - "12.4"
 
-# 本文件是 Crash Contract Test 的用例清单，不是测试通过证据。
+# 本文件定义 Phase 1 扩展 Crash Matrix，不是 M0 Gate 输入或测试通过证据。
 # runner 落地后必须为每个 case 记录注入是否命中、重启轮次和最终断言。
 required_final_assertions:
   - desired_ban_projection
@@ -20,7 +20,7 @@ required_final_assertions:
   - critical_audit
 
 cases:
-  - id: M0-CRASH-001
+  - id: P1-CRASH-001
     name: decision_before_commit
     injection_point: decision_transaction_before_commit
     setup: create_new_automatic_decision
@@ -45,7 +45,7 @@ cases:
       - no_firewall_side_effect
       - no_false_success_audit
 
-  - id: M0-CRASH-002
+  - id: P1-CRASH-002
     name: decision_committed_before_firewall
     injection_point: after_decision_projection_audit_commit_before_reconcile_apply
     setup: create_active_decision_for_absent_target
@@ -69,7 +69,7 @@ cases:
       - policy_and_infrastructure_included
       - target_eventually_converged
 
-  - id: M0-CRASH-003
+  - id: P1-CRASH-003
     name: firewall_success_before_target_observed_write
     injection_point: after_firewall_apply_success_before_target_observed_commit
     setup: apply_present_target
@@ -93,7 +93,7 @@ cases:
       - stale_generation_not_confirmed
       - current_generation_eventually_converged
 
-  - id: M0-CRASH-004
+  - id: P1-CRASH-004
     name: decision_ended_before_firewall_revoke
     injection_point: after_decision_end_projection_commit_before_target_relaxation
     setup: end_last_active_decision_for_target
@@ -117,7 +117,7 @@ cases:
       - old_present_intent_not_recreated
       - target_eventually_absent
 
-  - id: M0-CRASH-005
+  - id: P1-CRASH-005
     name: firewall_revoke_before_observed_write
     injection_point: after_firewall_revoke_success_before_target_observed_commit
     setup: remove_present_target
@@ -140,7 +140,7 @@ cases:
       - target_eventually_converged_absent
       - history_and_audit_not_duplicated
 
-  - id: M0-CRASH-006
+  - id: P1-CRASH-006
     name: attempt_persisted_before_external_call
     injection_point: after_attempt_commit_before_external_mutation
     setup: prepare_each_failure_domain_once
@@ -168,7 +168,7 @@ cases:
       - only_matching_domain_budget_consumed
       - restart_does_not_create_new_retry_epoch
 
-  - id: M0-CRASH-007
+  - id: P1-CRASH-007
     name: firewall_timeout_unknown_result
     injection_point: external_mutation_timeout_after_dispatch
     setup: backend_result_is_ambiguous
@@ -195,7 +195,7 @@ cases:
       - no_converged_claim_from_timeout
       - no_second_write_before_probe
 
-  - id: M0-CRASH-008
+  - id: P1-CRASH-008
     name: unrelated_snapshot_revision_advance
     injection_point: after_target_confirm_before_confirmed_generation_commit
     setup: advance_snapshot_revision_with_unrelated_target

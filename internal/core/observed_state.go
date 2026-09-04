@@ -45,6 +45,18 @@ type TargetObservedState struct {
 	ConfirmedGeneration TargetEnforcementGeneration
 }
 
+// TargetObservationEvidence records which physical target fields the backend
+// actually observed. Complete evidence carries the full legacy ownership and
+// policy projection. ManagedSnapshot is limited to the target facts exposed by
+// firewall.ManagedSnapshot. A confirmation with this evidence covers only the
+// target facts it exposes; Policy and Infrastructure remain separate domains.
+type TargetObservationEvidence uint8
+
+const (
+	TargetObservationEvidenceComplete TargetObservationEvidence = iota
+	TargetObservationEvidenceManagedSnapshot
+)
+
 // ObservedFirewallUpdate atomically replaces Infrastructure and Policy when
 // included and upserts each included Target key. Nil Infrastructure/Policy
 // values, an empty Targets slice, and unlisted Target keys remain unchanged.
@@ -167,56 +179,83 @@ func (s TargetObservedState) Validate() error {
 	}
 	switch s.BanMembership {
 	case ObservedMembershipUnknown:
-		if s.hasTargetPhysicalState() || s.ConfirmedGeneration != 0 {
+		if s.Evidence != TargetObservationEvidenceComplete || s.hasTargetPhysicalState() || s.ConfirmedGeneration != 0 {
 			return fmt.Errorf("unknown observation cannot contain physical or confirmed state")
 		}
 		if s.LastErrorCode == "" {
 			return fmt.Errorf("unknown observation requires an error code")
 		}
 	case ObservedMembershipAbsent:
+		if !s.validEvidence() {
+			return fmt.Errorf("absent observation has invalid evidence")
+		}
 		if s.hasTargetPhysicalState() || s.LastErrorCode != "" {
 			return fmt.Errorf("absent observation cannot contain physical or error state")
 		}
 	case ObservedMembershipPresent:
-		if s.Backend == "" || s.OwnerVersion == "" || s.Scopes == 0 ||
-			(s.AddressFamily != AddressFamilyIPv4 && s.AddressFamily != AddressFamilyIPv6) {
-			return fmt.Errorf("present observation requires complete physical identity")
-		}
-		if s.Scopes&^(ScopeInput|ScopeForward) != 0 {
-			return fmt.Errorf("present observation has unsupported enforcement scopes")
-		}
-		wantFamily := AddressFamilyIPv6
-		if s.CanonicalTarget.Addr().Is4() {
-			wantFamily = AddressFamilyIPv4
-		}
-		if s.AddressFamily != wantFamily {
-			return fmt.Errorf("present observation address family does not match target")
-		}
-		if s.PolicyCoverage < ObservedPolicyNone || s.PolicyCoverage > ObservedPolicyFull {
-			return fmt.Errorf("present observation has invalid policy coverage")
-		}
-		if s.PolicyCoverage == ObservedPolicyNone && s.PolicyRelationDigest != "" {
-			return fmt.Errorf("no policy coverage requires an empty relation digest")
-		}
-		if s.PolicyCoverage != ObservedPolicyNone && s.PolicyRelationDigest == "" {
-			return fmt.Errorf("covered observation requires a relation digest")
-		}
-		if s.TimeoutMode != TimeoutNone && s.TimeoutMode != TimeoutNative {
-			return fmt.Errorf("present observation has invalid timeout mode")
-		}
-		if (s.TimeoutMode == TimeoutNative) != (s.NativeExpiry != nil) {
-			return fmt.Errorf("native timeout and expiry must be present together")
-		}
-		if s.NativeExpiry != nil && (s.NativeExpiry.IsZero() || s.NativeExpiry.UTC().UnixMicro() <= 0) {
-			return fmt.Errorf("native expiry is invalid")
-		}
-		if s.LastErrorCode != "" {
-			return fmt.Errorf("present observation cannot contain an error code")
+		if err := s.validatePresent(); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("membership is invalid")
 	}
 	return nil
+}
+
+func (s TargetObservedState) validatePresent() error {
+	if !s.validEvidence() {
+		return fmt.Errorf("present observation has invalid evidence")
+	}
+	if s.Scopes == 0 || (s.AddressFamily != AddressFamilyIPv4 && s.AddressFamily != AddressFamilyIPv6) {
+		return fmt.Errorf("present observation requires target identity")
+	}
+	if s.Scopes&^(ScopeInput|ScopeForward) != 0 {
+		return fmt.Errorf("present observation has unsupported enforcement scopes")
+	}
+	wantFamily := AddressFamilyIPv6
+	if s.CanonicalTarget.Addr().Is4() {
+		wantFamily = AddressFamilyIPv4
+	}
+	if s.AddressFamily != wantFamily {
+		return fmt.Errorf("present observation address family does not match target")
+	}
+	if s.TimeoutMode != TimeoutNone && s.TimeoutMode != TimeoutNative {
+		return fmt.Errorf("present observation has invalid timeout mode")
+	}
+	if (s.TimeoutMode == TimeoutNative) != (s.NativeExpiry != nil) {
+		return fmt.Errorf("native timeout and expiry must be present together")
+	}
+	if s.NativeExpiry != nil && (s.NativeExpiry.IsZero() || s.NativeExpiry.UTC().UnixMicro() <= 0) {
+		return fmt.Errorf("native expiry is invalid")
+	}
+	if s.LastErrorCode != "" {
+		return fmt.Errorf("present observation cannot contain an error code")
+	}
+	if s.Evidence == TargetObservationEvidenceManagedSnapshot {
+		if s.Backend != "" || s.OwnerVersion != "" || s.PolicyCoverage != ObservedPolicyUnknown ||
+			s.PolicyRelationDigest != "" {
+			return fmt.Errorf("managed snapshot observation cannot contain inferred state")
+		}
+		return nil
+	}
+	if s.Backend == "" || s.OwnerVersion == "" {
+		return fmt.Errorf("present observation requires complete physical identity")
+	}
+	if s.PolicyCoverage < ObservedPolicyNone || s.PolicyCoverage > ObservedPolicyFull {
+		return fmt.Errorf("present observation has invalid policy coverage")
+	}
+	if s.PolicyCoverage == ObservedPolicyNone && s.PolicyRelationDigest != "" {
+		return fmt.Errorf("no policy coverage requires an empty relation digest")
+	}
+	if s.PolicyCoverage != ObservedPolicyNone && s.PolicyRelationDigest == "" {
+		return fmt.Errorf("covered observation requires a relation digest")
+	}
+	return nil
+}
+
+func (s TargetObservedState) validEvidence() bool {
+	return s.Evidence == TargetObservationEvidenceComplete ||
+		s.Evidence == TargetObservationEvidenceManagedSnapshot
 }
 
 func (s TargetObservedState) hasTargetPhysicalState() bool {

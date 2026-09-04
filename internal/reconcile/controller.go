@@ -3,6 +3,8 @@ package reconcile
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -11,7 +13,6 @@ import (
 
 	"github.com/lifei6671/guard-wall/internal/core"
 	"github.com/lifei6671/guard-wall/internal/enforcement"
-	"github.com/lifei6671/guard-wall/internal/firewall/fake"
 )
 
 var (
@@ -42,10 +43,10 @@ type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
 
-// Backend is the minimum physical boundary required by the fake slice.
+// Backend is the minimum physical boundary required by the reconciler.
 type Backend interface {
-	Probe(context.Context) (fake.Snapshot, error)
-	Apply(context.Context, fake.OperationPlan) (fake.ApplyResult, error)
+	Probe(context.Context) (Snapshot, error)
+	Apply(context.Context, OperationPlan) (ApplyResult, error)
 }
 
 type backendOperationError struct {
@@ -75,7 +76,7 @@ type probeRecoveryOutcome struct {
 // CriticalAuditEvent records an explicit administrator retry request.
 type CriticalAuditEvent struct {
 	Action        string
-	Domain        fake.Domain
+	Domain        Domain
 	Target        netip.Prefix
 	PreviousEpoch core.RetryEpoch
 	NewEpoch      core.RetryEpoch
@@ -91,7 +92,7 @@ type CriticalAuditWriter interface {
 
 // ExecutionResult records one attempted mutation or a convergence recovered by authoritative Probe.
 type ExecutionResult struct {
-	Apply            fake.ApplyResult
+	Apply            ApplyResult
 	RecoveredByProbe bool
 }
 
@@ -175,17 +176,17 @@ func (c *Controller) SetDesiredSnapshot(snapshot core.DesiredFirewallSnapshot) e
 
 // Execute validates a plan against current authoritative Desired state and applies it under the
 // single external mutation lock.
-func (c *Controller) Execute(ctx context.Context, plan fake.OperationPlan) (ExecutionResult, error) {
+func (c *Controller) Execute(ctx context.Context, plan OperationPlan) (ExecutionResult, error) {
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
 	if err := c.reloadRecoveryIfNeeded(ctx); err != nil {
 		return ExecutionResult{}, err
 	}
 
-	if err := fake.ValidatePlan(plan); err != nil {
+	if err := ValidatePlan(plan); err != nil {
 		persistErr := c.markInvalidPlan(ctx, plan)
-		return ExecutionResult{Apply: fake.ApplyResult{
-			Kind: fake.ResultRejected, Domain: plan.Domain, Target: plan.Target, Digest: plan.Digest, ErrorCode: "invalid_plan",
+		return ExecutionResult{Apply: ApplyResult{
+			Kind: ResultRejected, Domain: plan.Domain, Target: plan.Target, Digest: plan.Digest, ErrorCode: "invalid_plan",
 		}}, errors.Join(fmt.Errorf("%w: %v", ErrInvalidPlan, err), persistErr)
 	}
 	if err := c.targetExpirationFence(plan); err != nil {
@@ -193,16 +194,17 @@ func (c *Controller) Execute(ctx context.Context, plan fake.OperationPlan) (Exec
 	}
 	probeKey := pendingProbeKeyForPlan(plan)
 	var attempt attemptRef
+	var err error
 	if c.hasPendingProbes() {
 		snapshot, err := c.backend.Probe(ctx)
 		if err != nil {
 			persistErr := c.recordAllUnknownObserved(ctx, probeFailureErrorCode)
 			return ExecutionResult{}, backendOperationFailure("required probe", err, persistErr)
 		}
-		// The ambiguous result did not establish the desired postcondition. Bind a fresh fake plan
+		// The ambiguous result did not establish the desired postcondition. Bind a fresh Plan
 		// to the just-observed physical state before another attempt is persisted.
 		plan.BasisSnapshotDigest = snapshot.Digest()
-		plan.Digest = fake.PlanDigest(plan)
+		plan.Digest = PlanDigest(plan)
 		var recovered bool
 		attempt, recovered, err = c.beginAfterRequiredProbe(ctx, plan, snapshot, probeKey)
 		if err != nil {
@@ -218,7 +220,7 @@ func (c *Controller) Execute(ctx context.Context, plan fake.OperationPlan) (Exec
 			return ExecutionResult{}, backendOperationFailure("startup recovery probe", err, persistErr)
 		}
 		plan.BasisSnapshotDigest = snapshot.Digest()
-		plan.Digest = fake.PlanDigest(plan)
+		plan.Digest = PlanDigest(plan)
 		var recovered bool
 		attempt, recovered, err = c.beginAfterStartupProbe(ctx, plan, snapshot)
 		if err != nil {
@@ -228,7 +230,17 @@ func (c *Controller) Execute(ctx context.Context, plan fake.OperationPlan) (Exec
 			return ExecutionResult{RecoveredByProbe: true}, nil
 		}
 	} else {
-		var err error
+		if backend, requiresFreshBasis := c.backend.(freshBasisBackend); requiresFreshBasis && backend.RequiresFreshBasis() {
+			// IPC authorization binds every mutation to a same-lock fresh physical
+			// observation. Legacy test simulators retain their original boundary.
+			snapshot, err := c.backend.Probe(ctx)
+			if err != nil {
+				persistErr := c.recordAllUnknownObserved(ctx, probeFailureErrorCode)
+				return ExecutionResult{}, backendOperationFailure("pre-apply probe", err, persistErr)
+			}
+			plan.BasisSnapshotDigest = snapshot.Digest()
+			plan.Digest = PlanDigest(plan)
+		}
 		attempt, err = c.beginAttempt(ctx, plan)
 		if err != nil {
 			return ExecutionResult{}, err
@@ -255,7 +267,7 @@ func (c *Controller) Execute(ctx context.Context, plan fake.OperationPlan) (Exec
 	execution := ExecutionResult{Apply: result}
 
 	switch result.Kind {
-	case fake.ResultUnknown:
+	case ResultUnknown:
 		code := result.ErrorCode
 		if code == "" {
 			code = "unknown_result"
@@ -264,7 +276,7 @@ func (c *Controller) Execute(ctx context.Context, plan fake.OperationPlan) (Exec
 			return execution, err
 		}
 		return execution, nil
-	case fake.ResultRejected:
+	case ResultRejected:
 		code := result.ErrorCode
 		if code == "" {
 			code = "rejected"
@@ -273,7 +285,7 @@ func (c *Controller) Execute(ctx context.Context, plan fake.OperationPlan) (Exec
 			return execution, err
 		}
 		return execution, nil
-	case fake.ResultConfirmed:
+	case ResultConfirmed:
 		snapshot, probeErr := c.backend.Probe(ctx)
 		if probeErr != nil {
 			persistErr := c.finishFailureAndRequireProbeObserved(ctx, attempt, probeKey, "confirm_probe_failed", true)
@@ -438,7 +450,7 @@ func (c *Controller) probeStartupRecovery(ctx context.Context, keys []ReconcileK
 			return probeRecoveryOutcome{}, fmt.Errorf("persist startup Probe recovery: %w", err)
 		}
 		c.putState(ref, state)
-		if key.Domain == fake.DomainTarget {
+		if key.Domain == DomainTarget {
 			c.confirmedTargets[key.Target] = ref.target.Generation
 		}
 	}
@@ -446,7 +458,7 @@ func (c *Controller) probeStartupRecovery(ctx context.Context, keys []ReconcileK
 	return probeRecoveryOutcome{unresolved: unresolved}, nil
 }
 
-func (c *Controller) probeBackend(ctx context.Context, timeout time.Duration) (fake.Snapshot, error) {
+func (c *Controller) probeBackend(ctx context.Context, timeout time.Duration) (Snapshot, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return c.backend.Probe(probeCtx)
@@ -469,14 +481,10 @@ func (c *Controller) RetryInfrastructure(ctx context.Context) (core.Infrastructu
 	if next == 0 {
 		return core.InfrastructureRetryKey{}, fmt.Errorf("infrastructure retry epoch overflow")
 	}
-	event := CriticalAuditEvent{Action: "reconcile_retry", Domain: fake.DomainInfrastructure, PreviousEpoch: previous, NewEpoch: next, OccurredAt: c.clock.Now()}
-	if err := c.audit.AppendCriticalAudit(ctx, event); err != nil {
-		return core.InfrastructureRetryKey{}, err
-	}
 	key := core.InfrastructureRetryKey{Revision: c.desired.InfrastructureRevision, Epoch: next}
 	state := core.RetryState{Status: core.ReconcilePending}
-	ref := attemptRef{domain: fake.DomainInfrastructure, infrastructure: key}
-	if err := c.persistStateLocked(ctx, ref, state, nil, nil); err != nil {
+	ref := attemptRef{domain: DomainInfrastructure, infrastructure: key}
+	if err := c.persistRetryLocked(ctx, ref, state, previous); err != nil {
 		return core.InfrastructureRetryKey{}, fmt.Errorf("persist infrastructure retry epoch: %w", err)
 	}
 	c.markPendingRefsSupersededLocked(ref)
@@ -502,14 +510,10 @@ func (c *Controller) RetryPolicy(ctx context.Context) (core.PolicyRetryKey, erro
 	if next == 0 {
 		return core.PolicyRetryKey{}, fmt.Errorf("policy retry epoch overflow")
 	}
-	event := CriticalAuditEvent{Action: "reconcile_retry", Domain: fake.DomainPolicy, PreviousEpoch: previous, NewEpoch: next, OccurredAt: c.clock.Now()}
-	if err := c.audit.AppendCriticalAudit(ctx, event); err != nil {
-		return core.PolicyRetryKey{}, err
-	}
 	key := core.PolicyRetryKey{Revision: c.desired.PolicyRevision, Epoch: next}
 	state := core.RetryState{Status: core.ReconcilePending}
-	ref := attemptRef{domain: fake.DomainPolicy, policy: key}
-	if err := c.persistStateLocked(ctx, ref, state, nil, nil); err != nil {
+	ref := attemptRef{domain: DomainPolicy, policy: key}
+	if err := c.persistRetryLocked(ctx, ref, state, previous); err != nil {
 		return core.PolicyRetryKey{}, fmt.Errorf("persist policy retry epoch: %w", err)
 	}
 	c.markPendingRefsSupersededLocked(ref)
@@ -536,20 +540,68 @@ func (c *Controller) RetryTarget(ctx context.Context, target netip.Prefix) (core
 	if next == 0 {
 		return core.TargetRetryKey{}, fmt.Errorf("target retry epoch overflow")
 	}
-	event := CriticalAuditEvent{Action: "reconcile_retry", Domain: fake.DomainTarget, Target: target, PreviousEpoch: previous, NewEpoch: next, OccurredAt: c.clock.Now()}
-	if err := c.audit.AppendCriticalAudit(ctx, event); err != nil {
-		return core.TargetRetryKey{}, err
-	}
 	key := core.TargetRetryKey{Target: target, Generation: intent.Generation, Epoch: next}
 	state := core.RetryState{Status: core.ReconcilePending}
-	ref := attemptRef{domain: fake.DomainTarget, target: key}
-	if err := c.persistStateLocked(ctx, ref, state, nil, nil); err != nil {
+	ref := attemptRef{domain: DomainTarget, target: key}
+	if err := c.persistRetryLocked(ctx, ref, state, previous); err != nil {
 		return core.TargetRetryKey{}, fmt.Errorf("persist target retry epoch: %w", err)
 	}
 	c.markPendingRefsSupersededLocked(ref)
 	c.targetEpochs[target] = next
 	c.targetStates[key] = state
 	return key, nil
+}
+
+// persistRetryLocked durably creates an administrator retry epoch. Persistent
+// controllers require the Store to commit the retry ledger and audit together;
+// the in-memory controller retains its existing fail-before-publication seam.
+func (c *Controller) persistRetryLocked(ctx context.Context, ref attemptRef, state core.RetryState, previous core.RetryEpoch) error {
+	persisted := c.persistedState(ref, state)
+	audit := reconcileRetryAudit(persisted, previous)
+	if c.store == nil {
+		event := CriticalAuditEvent{
+			Action: "reconcile_retry", Domain: ref.domain, Target: persisted.Target,
+			PreviousEpoch: previous, NewEpoch: persisted.RetryEpoch, OccurredAt: audit.OccurredAt,
+		}
+		return c.audit.AppendCriticalAudit(ctx, event)
+	}
+	transition := core.ReconcileRetryTransition{State: persisted, Audit: audit}
+	err := c.store.ApplyReconcileRetryTransition(ctx, transition)
+	if !errors.Is(err, core.ErrReconcileCommitUnknown) {
+		return err
+	}
+	readback, readErr := c.store.ReadReconcileRetryTransition(ctx, transition)
+	if readErr != nil {
+		c.recoveryReloadNeeded = true
+		return errors.Join(err, fmt.Errorf("read back indeterminate retry commit: %w", readErr))
+	}
+	if replaceErr := c.replaceRecoveryLocked(readback.Recovery); replaceErr != nil {
+		c.recoveryReloadNeeded = true
+		return errors.Join(err, fmt.Errorf("replace state after indeterminate retry commit: %w", replaceErr))
+	}
+	c.recoveryReloadNeeded = false
+	if readback.Applied {
+		return nil
+	}
+	return err
+}
+
+func reconcileRetryAudit(state core.PersistedReconcileState, previous core.RetryEpoch) core.ReconcileRetryAudit {
+	frame := fmt.Sprintf(
+		"guard-reconcile-retry/v1\\n%s\\n%d\\n%d\\n%d\\n%s\\n%d\\n%d\\n%d",
+		state.NodeID, state.Domain, state.InfrastructureRevision, state.PolicyRevision,
+		state.Target.String(), state.TargetGeneration, previous, state.RetryEpoch,
+	)
+	digest := sha256.Sum256([]byte(frame))
+	hexDigest := hex.EncodeToString(digest[:])
+	return core.ReconcileRetryAudit{
+		ID:             "audit-reconcile-retry-" + hexDigest,
+		IdempotencyKey: "reconcile-retry:" + hexDigest,
+		NodeID:         state.NodeID,
+		ActorType:      "administrator",
+		PreviousEpoch:  previous,
+		OccurredAt:     state.UpdatedAt,
+	}
 }
 
 // InfrastructureState returns the current infrastructure ledger entry.
@@ -601,7 +653,7 @@ func (c *Controller) ProbeRequired() bool {
 // pendingProbeKey binds an ambiguous physical outcome to its failure domain and operation fence.
 // A result for one domain, target, or generation must never force or satisfy a Probe for another.
 type pendingProbeKey struct {
-	domain                 fake.Domain
+	domain                 Domain
 	target                 netip.Prefix
 	infrastructureRevision core.InfrastructureRevision
 	policyRevision         core.PolicyRevision
@@ -611,13 +663,13 @@ type pendingProbeKey struct {
 }
 
 type attemptRef struct {
-	domain         fake.Domain
+	domain         Domain
 	infrastructure core.InfrastructureRetryKey
 	policy         core.PolicyRetryKey
 	target         core.TargetRetryKey
 }
 
-func (c *Controller) beginAttempt(ctx context.Context, plan fake.OperationPlan) (attemptRef, error) {
+func (c *Controller) beginAttempt(ctx context.Context, plan OperationPlan) (attemptRef, error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if !c.planMatchesCurrentDesiredLocked(plan) {
@@ -626,7 +678,7 @@ func (c *Controller) beginAttempt(ctx context.Context, plan fake.OperationPlan) 
 	return c.beginAttemptLocked(ctx, plan)
 }
 
-func (c *Controller) beginAttemptLocked(ctx context.Context, plan fake.OperationPlan) (attemptRef, error) {
+func (c *Controller) beginAttemptLocked(ctx context.Context, plan OperationPlan) (attemptRef, error) {
 	if err := c.targetExpirationFenceLocked(plan); err != nil {
 		return attemptRef{}, err
 	}
@@ -659,7 +711,7 @@ func (c *Controller) beginAttemptLocked(ctx context.Context, plan fake.Operation
 	return ref, nil
 }
 
-func (c *Controller) beginAfterRequiredProbe(ctx context.Context, plan fake.OperationPlan, snapshot fake.Snapshot, key pendingProbeKey) (attemptRef, bool, error) {
+func (c *Controller) beginAfterRequiredProbe(ctx context.Context, plan OperationPlan, snapshot Snapshot, key pendingProbeKey) (attemptRef, bool, error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if !c.planMatchesCurrentDesiredLocked(plan) {
@@ -691,7 +743,7 @@ func (c *Controller) beginAfterRequiredProbe(ctx context.Context, plan fake.Oper
 	return attempt, false, nil
 }
 
-func (c *Controller) beginAfterStartupProbe(ctx context.Context, plan fake.OperationPlan, snapshot fake.Snapshot) (attemptRef, bool, error) {
+func (c *Controller) beginAfterStartupProbe(ctx context.Context, plan OperationPlan, snapshot Snapshot) (attemptRef, bool, error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if !c.planMatchesCurrentDesiredLocked(plan) {
@@ -726,13 +778,13 @@ func (c *Controller) beginAfterStartupProbe(ctx context.Context, plan fake.Opera
 	}
 	c.putState(ref, state)
 	c.startupProbeRequired = false
-	if plan.Domain == fake.DomainTarget {
+	if plan.Domain == DomainTarget {
 		c.confirmedTargets[plan.Target] = plan.ExpectedTargetGeneration
 	}
 	return attemptRef{}, true, nil
 }
 
-func (c *Controller) resolvePendingProbesLocked(ctx context.Context, snapshot fake.Snapshot, currentKey pendingProbeKey, currentPlan fake.OperationPlan) (bool, error) {
+func (c *Controller) resolvePendingProbesLocked(ctx context.Context, snapshot Snapshot, currentKey pendingProbeKey, currentPlan OperationPlan) (bool, error) {
 	currentRecovered := false
 	for key, ref := range c.pendingProbes {
 		if !c.pendingKeyMatchesCurrentDesiredLocked(key) {
@@ -762,12 +814,12 @@ func (c *Controller) resolvePendingProbesLocked(ctx context.Context, snapshot fa
 
 func (c *Controller) pendingKeyMatchesCurrentDesiredLocked(key pendingProbeKey) bool {
 	switch key.domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		return key.infrastructureRevision == c.desired.InfrastructureRevision &&
 			(!key.fenceSnapshotRevision || key.snapshotRevision == c.desired.SnapshotRevision)
-	case fake.DomainPolicy:
+	case DomainPolicy:
 		return key.policyRevision == c.desired.PolicyRevision
-	case fake.DomainTarget:
+	case DomainTarget:
 		intent, ok := c.desiredTargets[key.target]
 		return ok && key.targetGeneration == intent.Generation
 	default:
@@ -789,24 +841,24 @@ func (c *Controller) finishRecoveredPendingLocked(ctx context.Context, ref attem
 	}
 	c.putState(stateRef, state)
 	delete(c.syntheticRefs, ref)
-	if key.domain == fake.DomainTarget {
+	if key.domain == DomainTarget {
 		c.confirmedTargets[key.target] = key.targetGeneration
 	}
 	return nil
 }
 
-func (c *Controller) attemptStateLocked(plan fake.OperationPlan) (attemptRef, core.RetryState, bool) {
+func (c *Controller) attemptStateLocked(plan OperationPlan) (attemptRef, core.RetryState, bool) {
 	ref := attemptRef{domain: plan.Domain}
 	switch plan.Domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		ref.infrastructure = core.InfrastructureRetryKey{Revision: plan.ExpectedInfrastructureRevision, Epoch: c.infrastructureEpoch}
 		state, ok := c.infrastructureStates[ref.infrastructure]
 		return ref, state, ok
-	case fake.DomainPolicy:
+	case DomainPolicy:
 		ref.policy = core.PolicyRetryKey{Revision: plan.ExpectedPolicyRevision, Epoch: c.policyEpoch}
 		state, ok := c.policyStates[ref.policy]
 		return ref, state, ok
-	case fake.DomainTarget:
+	case DomainTarget:
 		ref.target = core.TargetRetryKey{Target: plan.Target, Generation: plan.ExpectedTargetGeneration, Epoch: c.targetEpochs[plan.Target]}
 		state, ok := c.targetStates[ref.target]
 		return ref, state, ok
@@ -818,13 +870,13 @@ func (c *Controller) attemptStateLocked(plan fake.OperationPlan) (attemptRef, co
 func (c *Controller) currentAttemptRefForKeyLocked(key ReconcileKey) (attemptRef, bool) {
 	ref := attemptRef{domain: key.Domain}
 	switch key.Domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		ref.infrastructure = core.InfrastructureRetryKey{Revision: c.desired.InfrastructureRevision, Epoch: c.infrastructureEpoch}
 		return ref, true
-	case fake.DomainPolicy:
+	case DomainPolicy:
 		ref.policy = core.PolicyRetryKey{Revision: c.desired.PolicyRevision, Epoch: c.policyEpoch}
 		return ref, true
-	case fake.DomainTarget:
+	case DomainTarget:
 		intent, exists := c.desiredTargets[key.Target]
 		if !exists {
 			return ref, false
@@ -935,11 +987,11 @@ func sameAttemptPhysicalKey(left, right attemptRef) bool {
 		return false
 	}
 	switch left.domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		return left.infrastructure.Revision == right.infrastructure.Revision
-	case fake.DomainPolicy:
+	case DomainPolicy:
 		return left.policy.Revision == right.policy.Revision
-	case fake.DomainTarget:
+	case DomainTarget:
 		return left.target.Target == right.target.Target && left.target.Generation == right.target.Generation
 	default:
 		return false
@@ -949,7 +1001,7 @@ func sameAttemptPhysicalKey(left, right attemptRef) bool {
 func (c *Controller) finishConvergedLocked(
 	ctx context.Context,
 	ref attemptRef,
-	plan fake.OperationPlan,
+	plan OperationPlan,
 	key pendingProbeKey,
 	observed *core.ObservedFirewallUpdate,
 ) error {
@@ -961,7 +1013,7 @@ func (c *Controller) finishConvergedLocked(
 		return fmt.Errorf("persist converged state: %w", err)
 	}
 	c.putState(ref, state)
-	if plan.Domain == fake.DomainTarget {
+	if plan.Domain == DomainTarget {
 		c.confirmedTargets[plan.Target] = plan.ExpectedTargetGeneration
 	}
 	return nil
@@ -969,7 +1021,7 @@ func (c *Controller) finishConvergedLocked(
 
 func (c *Controller) finishRecoveredByProbeLocked(
 	ctx context.Context,
-	plan fake.OperationPlan,
+	plan OperationPlan,
 	key pendingProbeKey,
 	pendingRef attemptRef,
 ) error {
@@ -985,13 +1037,13 @@ func (c *Controller) finishRecoveredByProbeLocked(
 	}
 	c.putState(ref, state)
 	delete(c.syntheticRefs, pendingRef)
-	if plan.Domain == fake.DomainTarget {
+	if plan.Domain == DomainTarget {
 		c.confirmedTargets[plan.Target] = plan.ExpectedTargetGeneration
 	}
 	return nil
 }
 
-func (c *Controller) commitConfirmed(ctx context.Context, ref attemptRef, plan fake.OperationPlan, snapshot fake.Snapshot, key pendingProbeKey) error {
+func (c *Controller) commitConfirmed(ctx context.Context, ref attemptRef, plan OperationPlan, snapshot Snapshot, key pendingProbeKey) error {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	observed, err := c.observedUpdateForSnapshotLocked(snapshot)
@@ -1032,10 +1084,10 @@ func (c *Controller) commitConfirmed(ctx context.Context, ref attemptRef, plan f
 
 func (c *Controller) reloadSupersededTargetCompletionLocked(
 	ctx context.Context,
-	plan fake.OperationPlan,
+	plan OperationPlan,
 	persistErr error,
 ) (bool, error) {
-	if c.store == nil || plan.Domain != fake.DomainTarget ||
+	if c.store == nil || plan.Domain != DomainTarget ||
 		!errors.Is(persistErr, core.ErrReconcileStateRegression) {
 		return false, nil
 	}
@@ -1061,14 +1113,14 @@ func (c *Controller) reloadSupersededTargetCompletionLocked(
 	return true, nil
 }
 
-func (c *Controller) markInvalidPlan(ctx context.Context, plan fake.OperationPlan) error {
+func (c *Controller) markInvalidPlan(ctx context.Context, plan OperationPlan) error {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if !c.hasDesired {
 		return nil
 	}
 	ref, state, ok := c.attemptStateLocked(plan)
-	if ref.domain != fake.DomainInfrastructure && ref.domain != fake.DomainPolicy && ref.domain != fake.DomainTarget {
+	if ref.domain != DomainInfrastructure && ref.domain != DomainPolicy && ref.domain != DomainTarget {
 		return nil
 	}
 	if !ok {
@@ -1086,11 +1138,11 @@ func (c *Controller) markInvalidPlan(ctx context.Context, plan fake.OperationPla
 
 func (c *Controller) getState(ref attemptRef) core.RetryState {
 	switch ref.domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		return c.infrastructureStates[ref.infrastructure]
-	case fake.DomainPolicy:
+	case DomainPolicy:
 		return c.policyStates[ref.policy]
-	case fake.DomainTarget:
+	case DomainTarget:
 		return c.targetStates[ref.target]
 	default:
 		panic("invalid attempt domain")
@@ -1099,31 +1151,31 @@ func (c *Controller) getState(ref attemptRef) core.RetryState {
 
 func (c *Controller) putState(ref attemptRef, state core.RetryState) {
 	switch ref.domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		c.infrastructureStates[ref.infrastructure] = state
-	case fake.DomainPolicy:
+	case DomainPolicy:
 		c.policyStates[ref.policy] = state
-	case fake.DomainTarget:
+	case DomainTarget:
 		c.targetStates[ref.target] = state
 	default:
 		panic("invalid attempt domain")
 	}
 }
 
-func (c *Controller) planMatchesCurrentDesired(plan fake.OperationPlan) bool {
+func (c *Controller) planMatchesCurrentDesired(plan OperationPlan) bool {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	return c.planMatchesCurrentDesiredLocked(plan)
 }
 
-func (c *Controller) targetExpirationFence(plan fake.OperationPlan) error {
+func (c *Controller) targetExpirationFence(plan OperationPlan) error {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	return c.targetExpirationFenceLocked(plan)
 }
 
-func (c *Controller) targetExpirationFenceLocked(plan fake.OperationPlan) error {
-	if plan.Domain != fake.DomainTarget ||
+func (c *Controller) targetExpirationFenceLocked(plan OperationPlan) error {
+	if plan.Domain != DomainTarget ||
 		plan.DesiredTarget.BanMembership != core.BanPresent ||
 		plan.DesiredTarget.EffectiveUntil == nil ||
 		plan.DesiredTarget.EffectiveUntil.After(c.clock.Now()) {
@@ -1135,18 +1187,19 @@ func (c *Controller) targetExpirationFenceLocked(plan fake.OperationPlan) error 
 	return errTargetIntentExpired
 }
 
-func (c *Controller) planMatchesCurrentDesiredLocked(plan fake.OperationPlan) bool {
+func (c *Controller) planMatchesCurrentDesiredLocked(plan OperationPlan) bool {
 	if !c.hasDesired {
 		return false
 	}
 	switch plan.Domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		return plan.ExpectedInfrastructureRevision == c.desired.InfrastructureRevision &&
 			(!plan.FenceSnapshotRevision || plan.ExpectedSnapshotRevision == c.desired.SnapshotRevision) &&
 			plan.DesiredInfrastructure == c.desired.Infrastructure
-	case fake.DomainPolicy:
-		return plan.ExpectedPolicyRevision == c.desired.PolicyRevision && plan.DesiredPolicy == c.desired.Policy
-	case fake.DomainTarget:
+	case DomainPolicy:
+		return plan.ExpectedPolicyRevision == c.desired.PolicyRevision &&
+			policyIntentEqual(plan.DesiredPolicy, c.desired.Policy)
+	case DomainTarget:
 		intent, ok := c.desiredTargets[plan.Target]
 		return ok && plan.ExpectedTargetGeneration == intent.Generation && plan.DesiredTarget.Generation == intent.Generation &&
 			enforcement.Equivalent(plan.DesiredTarget, intent)
@@ -1155,23 +1208,41 @@ func (c *Controller) planMatchesCurrentDesiredLocked(plan fake.OperationPlan) bo
 	}
 }
 
-func (c *Controller) snapshotMatchesCurrentDesired(snapshot fake.Snapshot, domain fake.Domain, target netip.Prefix) bool {
+func policyIntentEqual(left, right core.ManagedPolicyIntent) bool {
+	if left.RelationDigest != right.RelationDigest || len(left.Allowlist) != len(right.Allowlist) ||
+		len(left.ProtectedTargets) != len(right.ProtectedTargets) {
+		return false
+	}
+	for index := range left.Allowlist {
+		if left.Allowlist[index] != right.Allowlist[index] {
+			return false
+		}
+	}
+	for index := range left.ProtectedTargets {
+		if left.ProtectedTargets[index] != right.ProtectedTargets[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Controller) snapshotMatchesCurrentDesired(snapshot Snapshot, domain Domain, target netip.Prefix) bool {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	return c.snapshotMatchesCurrentDesiredLocked(snapshot, domain, target)
 }
 
-func (c *Controller) snapshotMatchesCurrentDesiredLocked(snapshot fake.Snapshot, domain fake.Domain, target netip.Prefix) bool {
+func (c *Controller) snapshotMatchesCurrentDesiredLocked(snapshot Snapshot, domain Domain, target netip.Prefix) bool {
 	if !c.hasDesired {
 		return false
 	}
 	switch domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		return snapshot.Infrastructure != nil && snapshot.Infrastructure.Backend == c.desired.Infrastructure.Backend &&
 			snapshot.Infrastructure.OwnerVersion == c.desired.Infrastructure.OwnerVersion && snapshot.Infrastructure.Digest == c.desired.Infrastructure.Digest
-	case fake.DomainPolicy:
+	case DomainPolicy:
 		return snapshot.Policy != nil && snapshot.Policy.RelationDigest == c.desired.Policy.RelationDigest
-	case fake.DomainTarget:
+	case DomainTarget:
 		intent, ok := c.desiredTargets[target]
 		return ok && physicalTargetMatches(snapshot.Targets, intent)
 	default:
@@ -1198,11 +1269,11 @@ func (c *Controller) markPendingRefsSupersededLocked(current attemptRef) {
 		}
 		samePhysicalKey := false
 		switch current.domain {
-		case fake.DomainInfrastructure:
+		case DomainInfrastructure:
 			samePhysicalKey = pending.infrastructure.Revision == current.infrastructure.Revision
-		case fake.DomainPolicy:
+		case DomainPolicy:
 			samePhysicalKey = pending.policy.Revision == current.policy.Revision
-		case fake.DomainTarget:
+		case DomainTarget:
 			samePhysicalKey = pending.target.Target == current.target.Target &&
 				pending.target.Generation == current.target.Generation
 		}
@@ -1212,7 +1283,7 @@ func (c *Controller) markPendingRefsSupersededLocked(current attemptRef) {
 	}
 }
 
-func pendingProbeKeyForPlan(plan fake.OperationPlan) pendingProbeKey {
+func pendingProbeKeyForPlan(plan OperationPlan) pendingProbeKey {
 	return pendingProbeKey{
 		domain:                 plan.Domain,
 		target:                 plan.Target,
@@ -1225,28 +1296,17 @@ func pendingProbeKeyForPlan(plan fake.OperationPlan) pendingProbeKey {
 }
 
 func prepareDesired(snapshot core.DesiredFirewallSnapshot) (core.DesiredFirewallSnapshot, map[netip.Prefix]core.NormalizedTargetEnforcementIntent, error) {
-	if snapshot.SnapshotRevision == 0 || snapshot.InfrastructureRevision == 0 || snapshot.PolicyRevision == 0 {
-		return core.DesiredFirewallSnapshot{}, nil, fmt.Errorf("desired revisions must be positive")
+	prepared, err := core.NewDesiredFirewallSnapshot(snapshot)
+	if err != nil {
+		return core.DesiredFirewallSnapshot{}, nil, fmt.Errorf("validate desired snapshot: %w", err)
 	}
-	if snapshot.Infrastructure.Backend == "" || snapshot.Infrastructure.OwnerVersion == "" || snapshot.Infrastructure.Digest == "" {
-		return core.DesiredFirewallSnapshot{}, nil, fmt.Errorf("desired infrastructure is incomplete")
-	}
-	if snapshot.Policy.RelationDigest == "" {
-		return core.DesiredFirewallSnapshot{}, nil, fmt.Errorf("desired policy digest is required")
-	}
-	targets := make(map[netip.Prefix]core.NormalizedTargetEnforcementIntent, len(snapshot.Targets))
-	prepared := snapshot
-	prepared.Targets = make([]core.NormalizedTargetEnforcementIntent, 0, len(snapshot.Targets))
-	for _, intent := range snapshot.Targets {
-		if err := intent.Validate(); err != nil {
-			return core.DesiredFirewallSnapshot{}, nil, fmt.Errorf("validate desired target: %w", err)
-		}
+	targets := make(map[netip.Prefix]core.NormalizedTargetEnforcementIntent, len(prepared.Targets))
+	for _, intent := range prepared.Targets {
 		if _, duplicate := targets[intent.CanonicalTarget]; duplicate {
 			return core.DesiredFirewallSnapshot{}, nil, fmt.Errorf("duplicate desired target %s", intent.CanonicalTarget)
 		}
 		cloned := cloneIntent(intent)
 		targets[intent.CanonicalTarget] = cloned
-		prepared.Targets = append(prepared.Targets, cloned)
 	}
 	return prepared, targets, nil
 }
@@ -1261,7 +1321,7 @@ func validateDesiredTransition(
 		return fmt.Errorf("desired revisions cannot move backward")
 	}
 	infraChanged := previous.Infrastructure != next.Infrastructure
-	policyChanged := previous.Policy != next.Policy
+	policyChanged := !policyIntentEqual(previous.Policy, next.Policy)
 	if infraChanged != (next.InfrastructureRevision > previous.InfrastructureRevision) {
 		return fmt.Errorf("infrastructure revision must change exactly with infrastructure intent")
 	}
@@ -1311,9 +1371,19 @@ func physicalTargetMatches(targets map[netip.Prefix]core.PhysicalTargetObserved,
 			observed.AddressFamily == 0 && observed.OwnerVersion == "" && observed.LastErrorCode == ""
 	}
 	if !exists || observed.BanMembership != core.ObservedMembershipPresent || observed.TimeoutMode != intent.TimeoutMode ||
-		observed.Scopes != intent.Scopes || observed.AddressFamily != intent.AddressFamily ||
-		observed.PolicyRelationDigest != intent.PolicyRelationDigest || observed.OwnerVersion != intent.BackendAttributesDigest {
+		observed.Scopes != intent.Scopes || observed.AddressFamily != intent.AddressFamily {
 		return false
+	}
+	if observed.Evidence != core.TargetObservationEvidenceManagedSnapshot &&
+		(observed.Evidence != core.TargetObservationEvidenceComplete ||
+			observed.PolicyRelationDigest != intent.PolicyRelationDigest || observed.OwnerVersion != intent.BackendAttributesDigest) {
+		return false
+	}
+	if observed.Evidence == core.TargetObservationEvidenceManagedSnapshot {
+		if intent.TimeoutMode == core.TimeoutNative {
+			return equalTime(observed.NativeExpiry, enforcement.NativeExpiryForIntent(intent))
+		}
+		return observed.NativeExpiry == nil
 	}
 	wantCoverage := core.ObservedPolicyNone
 	switch intent.PolicyCoverage {

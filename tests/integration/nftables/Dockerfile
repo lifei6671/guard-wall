@@ -6,8 +6,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends iproute2 iputils-ping libcap2-bin nftables \
+    && apt-get install --yes --no-install-recommends iproute2 iputils-ping libcap2-bin nftables passwd \
     && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system guard \
+    && useradd --system --gid guard --no-create-home --shell /usr/sbin/nologin guard
 
 COPY . ./
 

@@ -21,10 +21,12 @@ M0 的目标是把 Phase 1 核心语义从 `Specified` 推进到 `Verified/Froze
 
 ```text
 M0-A 行为不变量 ─┐
-                  ├─→ C1/C2 Fake Slice ─→ C3 ─→ M0-D ─→ M0 GO
+                  ├─→ C1/C2 Fake Slice ─→ M0-D ─→ M0 GO
 B1/B2 风险 Spike ─┘
 
 B3/B4 风险 Spike ─────────────────────────────↗ G18.1 / M0 GO
+
+扩展 Crash Matrix ────────────────────────────→ M7/M10 Verification
 ```
 
 - M0-A 与 M0-B 中互不依赖的工作可以并行。
@@ -40,7 +42,7 @@ B3/B4 风险 Spike ────────────────────�
 | A1 | Core Model 与权威关系 | §4、§7、§10–11 | `docs/contracts/core-model.md` | 模型职责、唯一权威源、身份和版本边界无实现级 TBD；一致性审查无 P0/P1 | `artifacts/evidence/M0/<commit>/m0-a/core-model-review.*` |
 | A2 | Source delivery 与事务协调 | §6、§8–9、§22.2 | `docs/contracts/source-delivery.md` | SourceDurable、ProcessingComplete、checkpoint、重放与唯一 UnitOfWork 可由接口表达 | `artifacts/evidence/M0/<commit>/m0-a/source-contract-review.*` |
 | A3 | Decision / Enforcement / Reconcile | §10–12 | `docs/contracts/decision-enforcement.md` | Decision、Projection、三个 failure domain、fencing 和安全顺序只有一套状态模型 | `artifacts/evidence/M0/<commit>/m0-a/enforcement-review.*` |
-| A4 | Crash Matrix | §12.3、§17.3 | `tests/contracts/` 中的 crash case manifest | 每个 crash point 都有测试 ID、注入点和预期最终状态 | `artifacts/evidence/M0/<commit>/m0-a/crash-matrix.*` |
+| A4 | M0 Crash/Recovery Evidence | §12.3、§17.3 | `tests/contracts/m0-process-recovery.yaml` | 每个 M0 用例都有测试 ID、注入点、读回范围和预期最终状态 | `artifacts/evidence/M0/<commit>/m0-a/crash-recovery.*` |
 
 M0-A 判定要求：
 
@@ -75,11 +77,11 @@ nftables Spike 只能在隔离 VM、network namespace 或专用测试环境执�
 |---|---|---|---|---|---|
 | C1 | Source Slice | A1、A2、A4、B1、B2 | §17.1 | receipt pipeline 全部用例通过；事务失败、重放、乱序、shutdown 与 checkpoint 行为正确 | `artifacts/evidence/M0/<commit>/m0-c/source-slice/` |
 | C2 | Decision/Enforcement Slice | A1、A3、A4、B1 | §17.2 | Fake Backend 用例通过；Decision、Projection、Retry domain 与 drift 状态正确 | `artifacts/evidence/M0/<commit>/m0-c/enforcement-slice/` |
-| C3 | 完整 Crash Matrix | C1、C2 | §12.3、§17.3 | 全部故障点通过，并断言 DB、Firewall、Observed、History、Retry、Audit 最终状态 | `artifacts/evidence/M0/<commit>/m0-c/crash-matrix/` |
+| C3 | 扩展 Crash Matrix | C1、C2 | §12.4 | M7/M10 阶段覆盖全部故障点，并断言 DB、Firewall、Observed、History、Retry、Audit 最终状态 | `artifacts/evidence/M7-or-M10/<commit>/crash-matrix/` |
 
 M0-C 判定要求：
 
-- 测试命令可以重复执行，必测 crash point 无跳过。
+- 测试命令可以重复执行，M0 process crash/reopen 用例无跳过。
 - 不产生重复持久化副作用。
 - checkpoint 不越过未持久化记录。
 - Fake Firewall 的最终状态与 Desired/Observed Contract 一致。
@@ -91,8 +93,8 @@ M0-C 判定要求：
 | D1 | Go 类型与接口 | 编译通过的 Core/Source/Store/Firewall/Reconcile 接口 | 只表达已验证语义；compile、format、lint、race 通过 | `artifacts/evidence/M0/<commit>/m0-d/code/` |
 | D2 | SQLite migration | `migrations/` | 空库迁移、重复启动、失败回滚、唯一约束和重启恢复通过 | `artifacts/evidence/M0/<commit>/m0-d/migration/` |
 | D3 | Config Schema | `schema/config-v1.schema.*` | ownership、默认值、范围、未知字段拒绝和派生配置一致 | `artifacts/evidence/M0/<commit>/m0-d/config-schema/` |
-| D4 | ADR | `docs/adr/` | 工程语言、delivery、durability、权限、Firewall 与 Retry 决策得到批准 | `artifacts/evidence/M0/<commit>/m0-d/adr-review.*` |
-| D5 | Contract Tests | `tests/contracts/` | §17 与 §18.2 的自动化验证全部通过 | `artifacts/evidence/M0/<commit>/m0-d/contracts/` |
+| D4 | ADR | `docs/adr/` | 工程语言、delivery、M0 process recovery 边界、权限、Firewall 与 Retry 决策得到批准 | `artifacts/evidence/M0/<commit>/m0-d/adr-review.*` |
+| D5 | Contract Tests | `tests/contracts/m0-process-recovery.yaml`、`scripts/test-m0-process-recovery.ps1` | §17 中 M0 范围的自动化验证全部通过 | `artifacts/evidence/M0/<commit>/m0-d/contracts/` |
 | D6 | V0.4 同步 | 总体技术方案 V0.4 | 旧 Decision/Retry CLI/Metric/ADR 语义已清理，一致性检查通过 | `artifacts/evidence/M0/<commit>/m0-d/v0.4-sync.*` |
 | D7 | Evidence Manifest | `artifacts/evidence/M0/<commit>/manifest.*` | 汇总命令、环境、结果、失败、checksum、限制和 reviewer | 同责任产物 |
 
@@ -102,8 +104,8 @@ Gate 当前结果记录在 [STATUS.md](STATUS.md)。本表只定义判定输入�
 
 | Gate | Contract | 依赖工作包 | 必需证据 | PASS 规则 |
 |---|---|---|---|---|
-| G18.1 Contract 完整性 | §18.1 | A1–A4、B1–B4、D1、D4、D6 | Contract/ADR review、Spike、编译模型、一致性报告 | 单轨模型、权限、durability、Retry、Backend 接口均 Verified；V0.4 已同步 |
-| G18.2 可执行验证 | §18.2 | C1–C3、D2、D5 | 测试日志、故障注入结果、环境信息、JUnit 或等价报告 | 两条 Slice、crash、并发、重放、迁移、drift、durability 必测项全部通过 |
+| G18.1 Contract 完整性 | §18.1 | A1–A4、B1–B4、D1、D4、D6 | Contract/ADR review、Spike、编译模型、一致性报告 | 单轨模型、权限、process recovery 边界、Retry、Backend 接口均 Verified；V0.4 已同步 |
+| G18.2 可执行验证 | §18.2 | C1、C2、D2、D5 | 测试日志、进程级故障注入结果、clean target Evidence、环境信息、JUnit 或等价报告 | 两条 Slice、M0 crash/reopen、并发、重放、迁移、drift 与进程级 durability 必测项全部通过 |
 | G18.3 产物一致性 | §18.3 | D1–D7 | drift check、checksum、Evidence Manifest | migration、Config Schema、代码、文档和测试无权威冲突 |
 
 任一必测项为 `FAIL` 或 `NOT RUN` 时，Gate 必须保持 `FAIL`。
@@ -112,7 +114,7 @@ Gate 当前结果记录在 [STATUS.md](STATUS.md)。本表只定义判定输入�
 
 1. 并行启动 A1–A4 与 B1–B4。
 2. A/B 形成首轮可验证接口后，分别判断 C1、C2 的依赖是否满足。
-3. C1、C2 通过后执行 C3。
+3. C1、C2 通过后完成 M0 范围的 process crash/reopen Evidence；扩展 Crash Matrix 留给 M7/M10。
 4. 只把已经由 Spike/Slice 验证的接口纳入 D1–D5。
 5. 同步完成 D6，生成 D7。
 6. 逐项复核 G18.1、G18.2、G18.3。

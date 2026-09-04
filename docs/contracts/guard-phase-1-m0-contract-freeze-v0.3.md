@@ -344,7 +344,7 @@ M0-D 只能冻结已经被 Spike 或 Slice 验证过的接口。
 | Automatic Decision 唯一键 | `node_id + rule_id + canonical_target` partial unique index | SQLite 并发触发 |
 | Manual Decision 唯一键 | `node_id + canonical_target` partial unique index | replace 原子性 |
 | Reconcile | Infrastructure / Policy / Target 三个 failure domain，每个外部 batch 只属于一个 domain | 顺序、fencing、预算隔离、unknown result |
-| SQLite | WAL + `synchronous=FULL` + `foreign_keys=ON` + `busy_timeout=5000ms` | PRAGMA read-back、SIGKILL/reboot/power-loss 证据边界 |
+| SQLite | WAL + `synchronous=FULL` + `foreign_keys=ON` + `busy_timeout=5000ms` | PRAGMA read-back、进程级 SIGKILL/reopen；OS/power-loss 保持后续验证边界 |
 | 权限 | 非特权 `guard-agent` + 最小 root `guard-enforcer` | Unix Socket 身份、协议白名单、systemd hardening |
 | Firewall 写入 | 单一 Enforcer 串行执行，声明式 Snapshot/Plan | 隔离环境中的 atomicity、ownership、drift |
 
@@ -1480,7 +1480,20 @@ Probe/Snapshot failure
 Backend 不可用时仍必须持久化安全意图。Backend 恢复只触发 Probe，并严格遵守对应
 Infrastructure / Policy / Target Retry budget，不得因 healthy 状态变化自动清零预算。
 
-### 12.3 必测 Crash Points
+### 12.3 M0 进程级 Crash/Recovery 证据
+
+M0 只要求已提交与未提交边界的进程级 `SIGKILL → reopen` 可执行证据。每个
+证据用例必须明确注入点，并读回其覆盖范围内的持久化状态，证明未提交写入不会
+被当作已提交、已提交写入不会在重开后丢失，且不产生重复副作用。
+
+C2 还必须具备 clean target Linux 上 Guard-owned socket、SQLite 与 nftables 对象的
+进程重开证据。该证据只覆盖记录的 clean topology 和 Guard-owned 对象。
+
+OS reboot、power loss、filesystem barrier/fsync、non-clean Firewall topology 与跨节点
+或跨发行版恢复不属于 M0 Gate。它们在未获得独立运行证据前保持 `NOT VERIFIED`，
+并由后续里程碑或 Release Evidence 验证。
+
+### 12.4 扩展 Crash Matrix
 
 | Crash Point | 重启后的预期行为 |
 |---|---|
@@ -1493,7 +1506,8 @@ Infrastructure / Policy / Target Retry budget，不得因 healthy 状态变化�
 | Firewall 调用超时、结果未知 | 对应 Observed=Unknown；重试写操作前必须先 Probe |
 | 无关 Target 更新导致 SnapshotRevision 前进 | 不得使已确认且 generation 未变化的另一个 Target 永久无法 Converged |
 
-每个 Crash Point 必须有自动故障注入测试。
+完整 Crash Matrix 属于后续 M7/M10 验证：每个 Crash Point 必须有自动故障注入测试。
+它不构成 M0 Frozen 的前置条件。
 
 ---
 
@@ -1928,8 +1942,8 @@ Health 影响
 17. 同一 `EventID + RuleID/Version` 已进入 Window 后 SQLite outcome transaction 失败，
     同进程 retry 不得再次增加 count/distinct_count。
 18. 一次 attempt 内 Parser Set/Rule Catalog snapshot 不受 Active 版本切换影响；未提交重放重新建立当前 snapshot。
-19. SQLite durability 配置通过已声明故障域的 crash/reboot/power-loss 测试，
-    未验证故障域明确标记 `NOT VERIFIED`。
+19. SQLite durability 配置通过进程级 crash/SIGKILL/reopen 测试；OS reboot、
+    power-loss 与 filesystem barrier/fsync 未验证时明确标记 `NOT VERIFIED`。
 
 ### 17.2 Decision/Enforcement Slice
 
@@ -1979,9 +1993,10 @@ Health 影响
 30. Policy Apply 失败只消耗 Policy budget；PolicyRevision 变化但未影响某 Target 最终 Intent
     时不得重置该 Target budget。
 
-### 17.3 Crash Matrix
+### 17.3 M0 Crash/Recovery Evidence
 
-第 12.3 节列出的全部 crash points 必须自动化，并断言：
+M0 必须自动化第 12.3 节的进程级 crash/reopen 证据，并在各自覆盖范围内断言适用的最终状态。
+未参与的 domain 必须记录为 unchanged 或 `N/A`，不得用缺失断言代替边界说明：
 
 ```text
 最终 DB Desired Ban Projection / Normalized Enforcement Intent
@@ -1991,6 +2006,10 @@ Decision History
 Retry Domain State
 Audit
 ```
+
+clean target Linux Evidence 还必须证明 Guard-owned socket、SQLite 与 nftables 对象在
+记录的进程重开范围内可读回并完成 identity-guarded cleanup。第 12.4 节完整 Crash
+Matrix 由 M7/M10 验证，不作为 M0 Gate 条件。
 
 ---
 
@@ -2021,7 +2040,8 @@ Audit
 ### 18.2 可执行验证
 
 - 两条 Fake Vertical Slice 全部通过。
-- 第 12.3 节全部 crash points 均能够最终收敛。
+- 第 17.3 节的进程级 crash/reopen Evidence 全部通过；clean target Linux Evidence
+  覆盖记录的 Guard-owned 进程重开范围。
 - receipt pipeline 的 SourceDurable 语义与 checkpoint 行为符合第 8 节。
 - kill/restart 测试证明未提交 outcome/receipt 的记录不会被 checkpoint 越过。
 - 重放和同进程 transaction retry 不会产生重复持久化副作用或重复 Window 贡献。
@@ -2037,7 +2057,8 @@ Audit
 - Backend health flap 不会重置预算；管理员 Retry 使用指定 domain 的新 RetryEpoch。
 - 正常运行期 Expiration、Critical Audit 和 Detection Window transaction failure 测试通过。
 - 无关 Target 高频变化不会导致另一个 Target 永久无法 Converged。
-- SQLite durability 测试与声明的 process/OS/power-loss 保证一致。
+- SQLite durability 测试与 M0 声明的进程级 crash/reopen 保证一致；OS reboot、
+  power-loss 与 filesystem barrier/fsync 保持 `NOT VERIFIED`，不作为 M0 Gate 条件。
 
 ### 18.3 产物一致性
 
@@ -2297,7 +2318,8 @@ Delivery ID、generation 状态机与第 16 节队列/checkpoint 参数已 Froze
 ### 24.4 Exit Gate
 
 File/Journald 在声明支持的恢复场景下满足 at-least-once 与 receipt 幂等语义；
-Source Slice 与第 12.3、17.3 节中 Source/receipt/checkpoint 相关 crash points 通过；
+Source Slice 与第 12.3、17.3 节中的进程级 Source/receipt/checkpoint crash/reopen
+证据通过；
 未发现 checkpoint 越过未持久化记录的路径；M3 可稳定消费 RawRecord。完整跨模块
 Crash Matrix 仍由 M7/M10 Gate 负责。
 
@@ -2468,7 +2490,7 @@ M5 Decision/Projection 与 M6 Backend 已通过 Exit Gate；第 11 节安全顺�
   `ConfirmedTargetEnforcementGeneration` 和三个 domain retry ledger。
 - `[M7-WP2 Planner]` Reconcile planner、单一 mutation executor、fencing、启动 Initial Reconcile、周期/事件唤醒。
 - `[M7-WP3 Operations]` Maintenance enable/disable/status，Degraded/NotReady，domain retry CLI/API，drift recovery。
-- `[M7-WP4 Verification]` 第 12.3、17.2、17.3 节完整故障注入和 Contract Tests。
+- `[M7-WP4 Verification]` 第 12.4 节与第 17.1/17.2 节的完整故障注入和 Contract Tests。
 
 ### 29.3 Required Tests
 

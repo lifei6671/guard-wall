@@ -76,7 +76,11 @@ func TestEnforcerRuntimeNftablesIntegration(t *testing.T) {
 	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
 	runtimeDone := make(chan error, 1)
 	go func() { runtimeDone <- runtime.Run(runtimeCtx) }()
+	runtimeStopped := false
 	t.Cleanup(func() {
+		if runtimeStopped {
+			return
+		}
 		stopRuntime()
 		select {
 		case err := <-runtimeDone:
@@ -169,6 +173,25 @@ func TestEnforcerRuntimeNftablesIntegration(t *testing.T) {
 	if err := b4NftablesCommand(ctx, nil, "--json", "list", "table", "inet", b4NftablesForeignTable); err != nil {
 		t.Fatalf("foreign table was not preserved: %v", err)
 	}
+
+	stopRuntime()
+	select {
+	case err := <-runtimeDone:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("EnforcerRuntime.Run() stop error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("EnforcerRuntime.Run() did not stop before binary recovery test")
+	}
+	runtimeStopped = true
+	if err := b4NftablesCommand(ctx, []byte("delete table inet "+b4NftablesForeignTable+"\n"), "--file", "-"); err != nil {
+		t.Fatalf("remove library fixture foreign table: %v", err)
+	}
+	foreignCreated = false
+	if err := os.Remove("/run/guard"); err != nil {
+		t.Fatalf("remove library fixture socket directory: %v", err)
+	}
+	t.Run("M0-RECOVERY-004", b4RunBinaryRecovery)
 }
 
 func b4RuntimeProbe(t *testing.T, ctx context.Context) firewall.FirewallCapabilities {

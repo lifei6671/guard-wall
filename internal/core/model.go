@@ -2,9 +2,12 @@
 package core
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/netip"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -663,9 +666,131 @@ type ManagedInfrastructureIntent struct {
 	Digest       string
 }
 
-// ManagedPolicyIntent is the minimal immutable managed-policy payload for M0.
+// ManagedPolicyIntent is the immutable managed-policy payload for M0.
 type ManagedPolicyIntent struct {
-	RelationDigest string
+	RelationDigest   string
+	Allowlist        []netip.Prefix
+	ProtectedTargets []netip.Prefix
+}
+
+// DesiredFirewallState is one immutable node-scoped Desired read. It keeps
+// Policy and Target inputs together with the revisions that fence their use by
+// a Reconcile backend, without coupling that boundary to a persistence package.
+type DesiredFirewallState struct {
+	SnapshotRevision SnapshotRevision
+	PolicyRevision   PolicyRevision
+	Policy           ManagedPolicyIntent
+	Targets          []NormalizedTargetEnforcementIntent
+}
+
+const maxManagedPolicyPrefixes = 1024
+
+// NewManagedPolicyIntent constructs a canonical complete policy payload.
+func NewManagedPolicyIntent(
+	allowlist []netip.Prefix,
+	protectedTargets []netip.Prefix,
+) (ManagedPolicyIntent, error) {
+	preparedAllowlist, err := canonicalPolicyPrefixes("allowlist", allowlist)
+	if err != nil {
+		return ManagedPolicyIntent{}, err
+	}
+	preparedProtectedTargets, err := canonicalPolicyPrefixes("protected targets", protectedTargets)
+	if err != nil {
+		return ManagedPolicyIntent{}, err
+	}
+	if len(preparedAllowlist)+len(preparedProtectedTargets) > maxManagedPolicyPrefixes {
+		return ManagedPolicyIntent{}, fmt.Errorf("managed policy contains too many prefixes")
+	}
+	if len(preparedProtectedTargets) < 2 || !containsPolicyPrefix(preparedProtectedTargets, netip.MustParsePrefix("127.0.0.0/8")) ||
+		!containsPolicyPrefix(preparedProtectedTargets, netip.MustParsePrefix("::1/128")) {
+		return ManagedPolicyIntent{}, fmt.Errorf("managed policy is missing mandatory protected targets")
+	}
+	return ManagedPolicyIntent{
+		RelationDigest:   managedPolicyRelationDigest(preparedAllowlist, preparedProtectedTargets),
+		Allowlist:        preparedAllowlist,
+		ProtectedTargets: preparedProtectedTargets,
+	}, nil
+}
+
+// Complete reports whether the policy contains its canonical request payload.
+func (i ManagedPolicyIntent) Complete() bool {
+	return i.RelationDigest != "" && i.ProtectedTargets != nil
+}
+
+// ValidateComplete checks that the payload is canonical and bound to its digest.
+func (i ManagedPolicyIntent) ValidateComplete() error {
+	if !i.Complete() {
+		return fmt.Errorf("managed policy payload is incomplete")
+	}
+	value, err := NewManagedPolicyIntent(i.Allowlist, i.ProtectedTargets)
+	if err != nil {
+		return err
+	}
+	if i.RelationDigest != value.RelationDigest {
+		return fmt.Errorf("managed policy relation digest does not bind its payload")
+	}
+	if !equalPolicyPrefixes(i.Allowlist, value.Allowlist) || !equalPolicyPrefixes(i.ProtectedTargets, value.ProtectedTargets) {
+		return fmt.Errorf("managed policy prefixes are not canonical")
+	}
+	return nil
+}
+
+func canonicalPolicyPrefixes(name string, prefixes []netip.Prefix) ([]netip.Prefix, error) {
+	if prefixes == nil {
+		return nil, nil
+	}
+	prepared := append([]netip.Prefix(nil), prefixes...)
+	for _, prefix := range prepared {
+		if !prefix.IsValid() || prefix != prefix.Masked() {
+			return nil, fmt.Errorf("managed policy %s contains a non-canonical prefix", name)
+		}
+	}
+	sort.Slice(prepared, func(left, right int) bool { return prepared[left].String() < prepared[right].String() })
+	for index := 1; index < len(prepared); index++ {
+		if prepared[index-1] == prepared[index] {
+			return nil, fmt.Errorf("managed policy %s contains a duplicate prefix", name)
+		}
+	}
+	return prepared, nil
+}
+
+func containsPolicyPrefix(prefixes []netip.Prefix, want netip.Prefix) bool {
+	for _, prefix := range prefixes {
+		if prefix == want {
+			return true
+		}
+	}
+	return false
+}
+
+func equalPolicyPrefixes(left, right []netip.Prefix) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func managedPolicyRelationDigest(allowlist, protectedTargets []netip.Prefix) string {
+	parts := make([]string, 0, len(allowlist)+len(protectedTargets))
+	appendParts := func(name string, prefixes []netip.Prefix) {
+		for _, prefix := range prefixes {
+			family := "v6"
+			if prefix.Addr().Is4() {
+				family = "v4"
+			}
+			parts = append(parts, name+"_"+family+":"+prefix.String())
+		}
+	}
+	appendParts("allow", allowlist)
+	appendParts("protected", protectedTargets)
+	sort.Strings(parts)
+	hash := sha256.Sum256([]byte("guard-nftables-policy/v1\n" + strings.Join(parts, "\n")))
+	return hex.EncodeToString(hash[:])
 }
 
 // DesiredFirewallSnapshot is the complete desired input to planning.
@@ -684,6 +809,8 @@ func NewDesiredFirewallSnapshot(snapshot DesiredFirewallSnapshot) (DesiredFirewa
 		return DesiredFirewallSnapshot{}, err
 	}
 	prepared := snapshot
+	prepared.Policy.Allowlist = append([]netip.Prefix(nil), snapshot.Policy.Allowlist...)
+	prepared.Policy.ProtectedTargets = append([]netip.Prefix(nil), snapshot.Policy.ProtectedTargets...)
 	prepared.Targets = make([]NormalizedTargetEnforcementIntent, len(snapshot.Targets))
 	for index, intent := range snapshot.Targets {
 		prepared.Targets[index] = intent
@@ -708,6 +835,11 @@ func (s DesiredFirewallSnapshot) Validate() error {
 	}
 	if s.Policy.RelationDigest == "" {
 		return fmt.Errorf("desired policy relation digest is required")
+	}
+	if s.Policy.Allowlist != nil || s.Policy.ProtectedTargets != nil {
+		if err := s.Policy.ValidateComplete(); err != nil {
+			return fmt.Errorf("desired policy payload: %w", err)
+		}
 	}
 	seen := make(map[netip.Prefix]struct{}, len(s.Targets))
 	for _, intent := range s.Targets {
@@ -755,6 +887,7 @@ const (
 type PhysicalTargetObserved struct {
 	CanonicalTarget      netip.Prefix
 	ObservedAt           time.Time
+	Evidence             TargetObservationEvidence
 	Backend              string
 	BanMembership        ObservedMembership
 	PolicyCoverage       ObservedPolicyCoverage

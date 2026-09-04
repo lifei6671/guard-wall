@@ -152,6 +152,106 @@ func TestNftablesBackendIntegration(t *testing.T) {
 	}
 }
 
+func TestNftablesBackendIntegrationRepeatedInfrastructureApplyIsIdempotent(t *testing.T) {
+	if os.Geteuid() != 0 || os.Getenv("GUARD_NFTABLES_INTEGRATION") != "1" || os.Getenv("GUARD_NFTABLES_ISOLATED") != "1" {
+		t.Skip("requires the explicit isolated root nftables integration fixture")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := nftFixture(ctx, nil, "--version"); err != nil {
+		t.Skip("nft is unavailable in the isolated fixture")
+	}
+	if err := nftFixture(ctx, nil, "--json", "list", "table", "inet", "guard"); err == nil {
+		t.Fatal("isolated fixture already contains inet guard")
+	}
+
+	const foreignTable = "guard_nftables_fixture_repeated_apply_foreign"
+	createdForeign := false
+	t.Cleanup(func() {
+		if createdForeign {
+			_ = nftFixture(context.Background(), []byte("delete table inet "+foreignTable+"\n"), "--file", "-")
+		}
+		_ = nftFixture(context.Background(), []byte("delete table inet guard\n"), "--file", "-")
+	})
+	if err := nftFixture(ctx, []byte("add table inet "+foreignTable+"\n"), "--file", "-"); err != nil {
+		t.Fatalf("create isolated foreign table: %v", err)
+	}
+	createdForeign = true
+	foreignBefore, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", foreignTable)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	backend := NewBackend()
+	capabilities, err := backend.Probe(ctx)
+	if err != nil {
+		t.Fatalf("initial Probe(): %v", err)
+	}
+	snapshot, err := backend.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("initial Snapshot(): %v", err)
+	}
+	firstPlan, err := firewall.AuthorizeInfrastructureMutation(capabilities, snapshot, snapshot.Digest(), 1)
+	if err != nil {
+		t.Fatalf("AuthorizeInfrastructureMutation() first plan: %v", err)
+	}
+	assertConfirmedWithReadback(t, backend, ctx, snapshot, backend.Apply(ctx, firstPlan), firstPlan.Digest())
+
+	guardBefore, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", "guard")
+	if err != nil {
+		t.Fatalf("read Guard table before repeated Apply: %v", err)
+	}
+	beforeRepeat, err := backend.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("Snapshot() before repeated Apply: %v", err)
+	}
+	if _, present := beforeRepeat.ManagedState().Infrastructure(); !present {
+		t.Fatal("first Apply did not create Guard infrastructure")
+	}
+	capabilitiesBeforeRepeat, err := backend.Probe(ctx)
+	if err != nil {
+		t.Fatalf("Probe() before repeated Apply: %v", err)
+	}
+	if !reflect.DeepEqual(capabilitiesBeforeRepeat, capabilities) {
+		t.Fatalf("Probe() capability changed before repeated Apply: got %#v want %#v", capabilitiesBeforeRepeat, capabilities)
+	}
+	secondPlan, err := firewall.AuthorizeInfrastructureMutation(
+		capabilitiesBeforeRepeat, beforeRepeat, beforeRepeat.Digest(), 2,
+	)
+	if err != nil {
+		t.Fatalf("AuthorizeInfrastructureMutation() repeated plan: %v", err)
+	}
+	result := backend.Apply(ctx, secondPlan)
+	if err := result.Validate(); err != nil {
+		t.Fatalf("repeated Apply() returned invalid result: %v", err)
+	}
+	if result.Status() != firewall.MutationStatusConfirmed || result.MutationDigest() != secondPlan.Digest() {
+		t.Fatalf("repeated Apply() result = %#v, want confirmed result correlated to repeated plan", result)
+	}
+
+	guardAfter, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", "guard")
+	if err != nil {
+		t.Fatalf("read Guard table after repeated Apply: %v", err)
+	}
+	if strings.TrimSpace(string(guardAfter)) != strings.TrimSpace(string(guardBefore)) {
+		t.Fatal("repeated Apply changed Guard table")
+	}
+	afterRepeat, err := backend.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("Snapshot() after repeated Apply: %v", err)
+	}
+	if afterRepeat.Digest() != beforeRepeat.Digest() || afterRepeat.ForeignContext().Digest() != beforeRepeat.ForeignContext().Digest() {
+		t.Fatal("repeated Apply changed managed or foreign snapshot state")
+	}
+	foreignAfter, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", foreignTable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(foreignAfter)) != strings.TrimSpace(string(foreignBefore)) {
+		t.Fatal("repeated Apply changed foreign table")
+	}
+}
+
 func TestNftablesBackendIntegrationRejectsSameNameForeignTable(t *testing.T) {
 	if os.Geteuid() != 0 || os.Getenv("GUARD_NFTABLES_INTEGRATION") != "1" || os.Getenv("GUARD_NFTABLES_ISOLATED") != "1" {
 		t.Skip("requires the explicit isolated root nftables integration fixture")
@@ -181,6 +281,51 @@ func TestNftablesBackendIntegrationRejectsSameNameForeignTable(t *testing.T) {
 	}
 	if strings.TrimSpace(string(before)) != strings.TrimSpace(string(after)) {
 		t.Fatal("same-name foreign table changed after ownership conflict")
+	}
+}
+
+func TestNftablesBackendIntegrationRejectsOwnerVersionMismatch(t *testing.T) {
+	if os.Geteuid() != 0 || os.Getenv("GUARD_NFTABLES_INTEGRATION") != "1" || os.Getenv("GUARD_NFTABLES_ISOLATED") != "1" {
+		t.Skip("requires the explicit isolated root nftables integration fixture")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := nftFixture(ctx, nil, "--version"); err != nil {
+		t.Skip("nft is unavailable in the isolated fixture")
+	}
+	if err := nftFixture(ctx, nil, "--json", "list", "table", "inet", "guard"); err == nil {
+		t.Fatal("isolated fixture already contains inet guard")
+	}
+
+	const mismatchedInfrastructureComment = "guard/v2 infrastructure/v1"
+	batch := strings.Replace(infrastructureBatch(), infrastructureComment, mismatchedInfrastructureComment, 1)
+	if batch == infrastructureBatch() {
+		t.Fatal("infrastructure batch did not contain the fixed owner/version marker")
+	}
+	if err := nftFixture(ctx, []byte(batch), "--file", "-"); err != nil {
+		t.Fatalf("create owner-version mismatch fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = nftFixture(context.Background(), []byte("delete table inet guard\n"), "--file", "-")
+	})
+
+	guardBefore, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", "guard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := NewBackend()
+	if _, err := backend.Probe(ctx); !errors.Is(err, enforcer.ErrMutationBackendOwnershipConflict) {
+		t.Fatalf("Probe() owner-version mismatch error = %v, want ownership conflict", err)
+	}
+	if _, err := backend.Snapshot(ctx); !errors.Is(err, enforcer.ErrMutationBackendOwnershipConflict) {
+		t.Fatalf("Snapshot() owner-version mismatch error = %v, want ownership conflict", err)
+	}
+	guardAfter, err := nftFixtureOutput(ctx, nil, "--json", "list", "table", "inet", "guard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(guardAfter)) != strings.TrimSpace(string(guardBefore)) {
+		t.Fatal("owner-version mismatch fixture changed after ownership conflict")
 	}
 }
 

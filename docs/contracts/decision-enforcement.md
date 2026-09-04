@@ -270,6 +270,8 @@ Pending
 - OwnershipConflict、不支持能力和非法 Plan 是 non-retryable。
 - 管理员 Retry 只为指定 domain 创建新 RetryEpoch、归零 attempt，并写 Critical Audit；
   禁止直接修改 Decision。
+- 管理员 Retry 的新 Pending ledger 与 Critical Audit 必须在同一个 SQLite 事务中提交；commit
+  outcome 不明时，只有 ledger 与精确 audit 均由权威 readback 证明已提交，才允许发布新 epoch。
 
 管理员接口只能表达：
 

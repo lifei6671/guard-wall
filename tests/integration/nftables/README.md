@@ -1,7 +1,7 @@
 # nftables 隔离集成验证
 
 本目录的验证只在一次性 Docker 容器中运行。CI 使用 `--network none`、
-`--cap-drop ALL` 与显式补回的 `CAP_NET_ADMIN`、`CAP_NET_RAW`、`CAP_SYS_ADMIN`；容器只读，`/run` 与 `/tmp`
+`--cap-drop ALL` 与显式补回的 `CAP_NET_ADMIN`、`CAP_NET_RAW`、`CAP_SYS_ADMIN`、`CAP_SETUID`、`CAP_SETGID`、`CAP_CHOWN`；容器只读，`/run` 与 `/tmp`
 为 tmpfs；`/tmp` 为 1 GiB，以容纳并执行 Go test 编译缓存，因此它是唯一以
 `exec` 显式挂载的可写路径。容器不挂载 Docker socket、宿主 Firewall、工作目录或
 Go 缓存。
@@ -21,6 +21,16 @@ Enforcer Runtime/IPC 组合，而非只验证后端直连。
 Runner 只在完成容器与 capability 前置检查后导出
 `GUARD_NFTABLES_INTEGRATION=1` 和 `GUARD_NFTABLES_ISOLATED=1`，使该测试不会
 以 Skip 冒充隔离验证。
+
+容器镜像预置仅供该 fixture 使用的 `guard` 用户/组。`CAP_SETUID`、`CAP_SETGID` 与
+`CAP_CHOWN` 只用于 root Enforcer 创建 `root:guard` socket、测试启动降权 Agent 并准备 guard
+身份的 Store readback helper；Agent
+不会继承这些 capability，`no-new-privileges` 保持启用。`TestEnforcerRuntimeNftablesIntegration`
+还会在库层 IPC 验证结束后启动真实 `guard-enforcer` 与 `guard-agent`：依次验证 Agent
+SIGKILL/reopen、Enforcer SIGKILL 后 stale socket 的权限/属主与 inode 读回及替换、SQLite 通过
+生产 Store reopen 的 clean-target 读回和唯一 Guard table。它只覆盖 clean disposable topology，
+不替代 systemd、OS reboot、power-loss、
+非 clean Firewall 或生产主机证据。
 
 Runner 还会先运行 `run-nftables-golden-state`：它在同一个 disposable network namespace 中
 创建三个容器内 network namespace，并通过两对临时 veth 发送真实 IPv4/IPv6 INPUT 与 FORWARD

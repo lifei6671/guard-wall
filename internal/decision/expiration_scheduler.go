@@ -12,13 +12,13 @@ import (
 const expirationDetectionInterval = 60 * time.Second
 
 type pendingTargetEnforcementChangeReader interface {
-	PendingTargetEnforcementChanges(context.Context) ([]TargetEnforcementChange, error)
+	PendingTargetEnforcementChanges(context.Context, core.NodeID) ([]TargetEnforcementChange, error)
 }
 
-// RunExpirationScheduler expires due Decisions immediately at startup, then
-// repeats from each sweep's absolute 60-second deadline until ctx is canceled.
-// A startup sweep also redelivers durable Target work left pending by a prior
-// post-commit wake failure.
+// RunExpirationScheduler expires this node's due Decisions immediately at
+// startup, then repeats from each sweep's absolute 60-second deadline until
+// ctx is canceled. A startup sweep also redelivers this node's durable Target
+// work left pending by a prior post-commit wake failure.
 func (s *LifecycleService) RunExpirationScheduler(ctx context.Context) error {
 	if err := s.validateExpirationScheduler(ctx); err != nil {
 		return err
@@ -39,7 +39,7 @@ func (s *LifecycleService) RunExpirationScheduler(ctx context.Context) error {
 			return fmt.Errorf("expire due decisions: %w", err)
 		}
 		if firstSweep {
-			changes, err := pending.PendingTargetEnforcementChanges(ctx)
+			changes, err := pending.PendingTargetEnforcementChanges(ctx, s.nodeID)
 			if err != nil {
 				if ctx.Err() != nil {
 					return nil
@@ -71,10 +71,10 @@ func (s *LifecycleService) RunExpirationScheduler(ctx context.Context) error {
 	}
 }
 
-// PrepareExpirationStartup expires all Decisions due at startup without
-// sending wakeups. A Dispatcher started after this method observes the durable
-// Pending Target state through its startup recovery scan, avoiding queue
-// backpressure before the worker owns the queue.
+// PrepareExpirationStartup expires this node's due Decisions at startup
+// without sending wakeups. A Dispatcher started after this method observes the
+// durable Pending Target state through its startup recovery scan, avoiding
+// queue backpressure before the worker owns the queue.
 func (s *LifecycleService) PrepareExpirationStartup(ctx context.Context) (time.Time, error) {
 	if err := s.validateExpirationScheduler(ctx); err != nil {
 		return time.Time{}, err

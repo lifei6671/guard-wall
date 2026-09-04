@@ -11,7 +11,6 @@ import (
 
 	appclock "github.com/lifei6671/guard-wall/internal/clock"
 	"github.com/lifei6671/guard-wall/internal/core"
-	"github.com/lifei6671/guard-wall/internal/firewall/fake"
 )
 
 var (
@@ -61,7 +60,7 @@ const (
 // ReconcileKey is the stable queue coalescing key for one failure domain.
 // Revision, generation, epoch, and Plan are deliberately re-read after dequeue.
 type ReconcileKey struct {
-	Domain fake.Domain
+	Domain Domain
 	Target netip.Prefix
 }
 
@@ -72,7 +71,7 @@ type PlanProvider interface {
 	// recovery work. Dispatcher probes them as one authoritative snapshot before
 	// deciding which domains require mutation.
 	ReconcileKeys(context.Context) ([]ReconcileKey, error)
-	CurrentPlan(context.Context, ReconcileKey) (plan fake.OperationPlan, ok bool, err error)
+	CurrentPlan(context.Context, ReconcileKey) (plan OperationPlan, ok bool, err error)
 }
 
 // Dispatcher owns the bounded keyed wakeup queue and the single retry scheduler.
@@ -646,7 +645,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, wake dispatchWake, deadlines 
 	execution, executeErr := d.controller.Execute(ctx, plan)
 	d.updateDeadline(wake.key, deadlines)
 	if executeErr == nil {
-		return dispatchResult{backendUnavailable: execution.Apply.Kind == fake.ResultUnknown}, nil
+		return dispatchResult{backendUnavailable: execution.Apply.Kind == ResultUnknown}, nil
 	}
 	if errors.Is(executeErr, errTargetIntentExpired) {
 		return dispatchResult{}, nil
@@ -678,13 +677,13 @@ func (d *Dispatcher) updateDeadline(key ReconcileKey, deadlines map[ReconcileKey
 
 func (d *Dispatcher) retryState(key ReconcileKey) (core.RetryState, bool) {
 	switch key.Domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		_, state, ok := d.controller.InfrastructureState()
 		return state, ok
-	case fake.DomainPolicy:
+	case DomainPolicy:
 		_, state, ok := d.controller.PolicyState()
 		return state, ok
-	case fake.DomainTarget:
+	case DomainTarget:
 		_, state, ok := d.controller.TargetState(key.Target)
 		return state, ok
 	default:
@@ -719,11 +718,11 @@ func (d *Dispatcher) markDequeued(key ReconcileKey) {
 
 func validateReconcileKey(key ReconcileKey) error {
 	switch key.Domain {
-	case fake.DomainInfrastructure, fake.DomainPolicy:
+	case DomainInfrastructure, DomainPolicy:
 		if key.Target.IsValid() {
 			return fmt.Errorf("%s key must not include a target", reconcileKeyName(key))
 		}
-	case fake.DomainTarget:
+	case DomainTarget:
 		if !key.Target.IsValid() || key.Target != key.Target.Masked() {
 			return fmt.Errorf("target reconcile key must contain one canonical target")
 		}
@@ -734,7 +733,7 @@ func validateReconcileKey(key ReconcileKey) error {
 }
 
 func reconcileKeyName(key ReconcileKey) string {
-	if key.Domain == fake.DomainTarget {
+	if key.Domain == DomainTarget {
 		return fmt.Sprintf("target/%s", key.Target)
 	}
 	return fmt.Sprintf("domain/%d", key.Domain)

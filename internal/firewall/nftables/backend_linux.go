@@ -4,6 +4,7 @@
 package nftables
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -563,14 +564,105 @@ func parseRuleset(raw []byte, now time.Time) (rulesetState, error) {
 			state.ownershipConflict = true
 		}
 	}
-	canonical, err := json.Marshal(struct {
-		Nftables []map[string]json.RawMessage `json:"nftables"`
-	}{filtered})
+	foreignDigest, err := canonicalForeignDigest(filtered)
 	if err != nil {
 		return rulesetState{}, err
 	}
-	state.foreignDigest = sha256hex(canonical)
+	state.foreignDigest = foreignDigest
 	return state, nil
+}
+
+func canonicalForeignDigest(entries []map[string]json.RawMessage) (string, error) {
+	unordered := make([]json.RawMessage, 0, len(entries))
+	rulesByChain := make(map[string][]json.RawMessage)
+	for _, entry := range entries {
+		kind, body, ok := nftObject(entry)
+		if !ok {
+			return "", errNftNotReady
+		}
+		canonicalBody, err := canonicalNftJSON(body, false, kind == "set" || kind == "map" || kind == "element" || kind == "elem" || kind == "setelem")
+		if err != nil {
+			return "", err
+		}
+		canonical, err := json.Marshal(map[string]json.RawMessage{kind: canonicalBody})
+		if err != nil {
+			return "", err
+		}
+		if kind == "rule" {
+			head := nftHead(body)
+			key := head.family + "\x00" + head.table + "\x00" + head.chain
+			rulesByChain[key] = append(rulesByChain[key], canonical)
+			continue
+		}
+		unordered = append(unordered, canonical)
+	}
+	sort.Slice(unordered, func(i, j int) bool { return bytes.Compare(unordered[i], unordered[j]) < 0 })
+	ruleChains := make([]string, 0, len(rulesByChain))
+	for chain := range rulesByChain {
+		ruleChains = append(ruleChains, chain)
+	}
+	sort.Strings(ruleChains)
+	canonical := make([]json.RawMessage, 0, len(entries))
+	canonical = append(canonical, unordered...)
+	for _, chain := range ruleChains {
+		canonical = append(canonical, rulesByChain[chain]...)
+	}
+	encoded, err := json.Marshal(struct {
+		Nftables []json.RawMessage `json:"nftables"`
+	}{canonical})
+	if err != nil {
+		return "", err
+	}
+	return sha256hex(encoded), nil
+}
+
+func canonicalNftJSON(raw json.RawMessage, counter, sortElements bool) (json.RawMessage, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, errNftNotReady
+	}
+	switch raw[0] {
+	case '{':
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &object); err != nil {
+			return nil, err
+		}
+		canonical := make(map[string]json.RawMessage, len(object))
+		for key, value := range object {
+			if key == "handle" || counter && (key == "packets" || key == "bytes") {
+				continue
+			}
+			normalized, err := canonicalNftJSON(value, key == "counter", sortElements && key == "elem")
+			if err != nil {
+				return nil, err
+			}
+			canonical[key] = normalized
+		}
+		return json.Marshal(canonical)
+	case '[':
+		var array []json.RawMessage
+		if err := json.Unmarshal(raw, &array); err != nil {
+			return nil, err
+		}
+		canonical := make([]json.RawMessage, len(array))
+		for index, value := range array {
+			normalized, err := canonicalNftJSON(value, false, false)
+			if err != nil {
+				return nil, err
+			}
+			canonical[index] = normalized
+		}
+		if sortElements {
+			sort.Slice(canonical, func(i, j int) bool { return bytes.Compare(canonical[i], canonical[j]) < 0 })
+		}
+		return json.Marshal(canonical)
+	default:
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, raw); err != nil {
+			return nil, err
+		}
+		return compact.Bytes(), nil
+	}
 }
 
 func contains(values []string, wanted string) bool {

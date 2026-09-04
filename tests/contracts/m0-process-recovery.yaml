@@ -1,0 +1,180 @@
+version: guard.m0-process-recovery.v1
+status: specified
+suite_runner:
+  command: .\\scripts\\test-m0-process-recovery.ps1
+  isolation: docker_go_runner_and_disposable_docker_nftables
+contract:
+  path: docs/contracts/guard-phase-1-m0-contract-freeze-v0.3.md
+  sections:
+    - "12.3"
+    - "17.3"
+
+# 本文件定义 M0 Gate 的进程级恢复用例，不是测试通过证据。
+# 每个 case 必须记录 runner 命令、注入点、重开轮次和读回范围；未覆盖的故障域保持 NOT VERIFIED。
+required_final_assertions:
+  - desired_ban_projection
+  - normalized_enforcement_intent
+  - firewall_snapshot
+  - observed_infrastructure_state
+  - observed_policy_state
+  - observed_target_state
+  - decision_history
+  - retry_domain_state
+  - critical_audit
+
+cases:
+  - id: M0-RECOVERY-001
+    name: sqlite_committed_and_uncommitted_sigkill_reopen
+    scope: sqlite_store
+    runner:
+      package: ./internal/store
+      build_tags: integration
+      test_name: TestM0Recovery001SQLiteLinuxSIGKILLReopenDurability
+      isolation: docker_go_runner
+      command: go test -tags=integration -count=1 -run '^TestM0Recovery001SQLiteLinuxSIGKILLReopenDurability$' ./internal/store
+      source_path: internal/store/sqlite_linux_integration_test.go
+    injection_points:
+      - committed_transaction_boundary
+      - uncommitted_transaction_boundary
+    signal: SIGKILL
+    restart: process_reopen_required
+    reopen_count: 1
+    readback_scope:
+      - sqlite_pragmas
+      - migration_ledger
+      - node_identity
+    expected:
+      committed_state: readable_after_reopen
+      uncommitted_state: absent_after_reopen
+      duplicate_persistent_side_effect: forbidden
+    final_state:
+      desired_ban_projection: "N/A"
+      normalized_enforcement_intent: "N/A"
+      firewall_snapshot: "N/A"
+      observed_infrastructure_state: "N/A"
+      observed_policy_state: "N/A"
+      observed_target_state: "N/A"
+      decision_history: "N/A"
+      retry_domain_state: "N/A"
+      critical_audit: unchanged
+
+  - id: M0-RECOVERY-002
+    name: source_generation_sigkill_reopen
+    scope: source_receipt_checkpoint
+    runner:
+      package: ./internal/source
+      build_tags: integration
+      test_name: TestM0Recovery002SQLiteSourceGenerationTransitionSIGKILLRecovery
+      isolation: docker_go_runner
+      command: go test -tags=integration -count=1 -run '^TestM0Recovery002SQLiteSourceGenerationTransitionSIGKILLRecovery$' ./internal/source
+      source_path: internal/source/sqlite_state_crash_linux_integration_test.go
+    injection_points:
+      - after_rotation_before_receipt
+      - after_receipt_before_checkpoint
+    signal: SIGKILL
+    restart: process_reopen_required
+    reopen_count: 1
+    readback_scope:
+      - source_receipts
+      - source_checkpoint
+      - delivery_identity
+    expected:
+      checkpoint: does_not_advance_past_uncommitted_record
+      delivery_identity: stable_after_reopen
+      duplicate_persistent_side_effect: forbidden
+    final_state:
+      desired_ban_projection: "N/A"
+      normalized_enforcement_intent: "N/A"
+      firewall_snapshot: "N/A"
+      observed_infrastructure_state: "N/A"
+      observed_policy_state: "N/A"
+      observed_target_state: "N/A"
+      decision_history: "N/A"
+      retry_domain_state: "N/A"
+      critical_audit: unchanged
+
+  - id: M0-RECOVERY-003
+    name: processing_transaction_sigkill_reopen
+    scope: processing_unit_of_work
+    runner:
+      package: ./internal/store
+      build_tags: integration
+      test_name: TestM0Recovery003SQLiteProcessingTransactionSIGKILLReplay
+      isolation: docker_go_runner
+      command: go test -tags=integration -count=1 -run '^TestM0Recovery003SQLiteProcessingTransactionSIGKILLReplay$' ./internal/store
+      source_path: internal/store/processing_crash_linux_integration_test.go
+    injection_points:
+      - after_processing_writes_before_commit
+    signal: SIGKILL
+    restart: process_reopen_required
+    reopen_count: 1
+    readback_scope:
+      - processing_rows
+      - processing_receipt
+      - source_checkpoint
+    expected:
+      uncommitted_processing_rows: absent_after_reopen
+      replay: creates_one_committed_result
+      checkpoint: advances_only_after_commit
+    final_state:
+      desired_ban_projection: "N/A"
+      normalized_enforcement_intent: "N/A"
+      firewall_snapshot: "N/A"
+      observed_infrastructure_state: "N/A"
+      observed_policy_state: "N/A"
+      observed_target_state: "N/A"
+      decision_history: "N/A"
+      retry_domain_state: "N/A"
+      critical_audit: rolled_back_before_replay_then_one_committed_entry
+
+  - id: M0-RECOVERY-004
+    name: clean_target_guard_owned_process_reopen
+    scope: clean_target_linux
+    runner:
+      package: ./internal/enforcer
+      build_tags: integration,nftables
+      test_name: TestEnforcerRuntimeNftablesIntegration/M0-RECOVERY-004
+      isolation: disposable_docker_nftables
+      command: tests/integration/nftables/run.sh
+      source_path: internal/enforcer/runtime_nftables_integration_test.go
+      runner_path: tests/integration/nftables/run.sh
+    injection_points:
+      - guard_agent_sigkill
+      - guard_enforcer_sigkill
+    signal: SIGKILL
+    restart: process_reopen_required
+    reopen_count: 2
+    readback_scope:
+      - guard_owned_socket
+      - sqlite_desired_observed_recovery
+      - guard_owned_nftables_objects
+    expected:
+      guard_owned_socket: readable_after_reopen
+      sqlite_state: readable_after_reopen
+      guard_owned_nftables_objects: identity_preserved
+      cleanup: identity_guarded
+    final_state:
+      desired_ban_projection: N/A_clean_target_has_no_ban_projection
+      normalized_enforcement_intent: readable_clean_target_empty_after_reopen
+      firewall_snapshot: guard_owned_objects_match_clean_target_fixture
+      observed_infrastructure_state: readable_after_reopen
+      observed_policy_state: readable_after_reopen
+      observed_target_state: N/A_clean_target_has_no_targets
+      decision_history: N/A_clean_target_has_no_decisions
+      retry_domain_state: readable_after_reopen
+      critical_audit: N/A_clean_target_has_no_audit_events
+
+runner_requirements:
+  deterministic_injection: true
+  isolated_database_or_target_fixture_per_case: true
+  fail_on_skipped_case: true
+  evidence_fields:
+    - commit
+    - command
+    - environment
+    - case_id
+    - injection_hit
+    - reopen_count
+    - passed_assertions
+    - failed_assertions
+    - final_state_digest

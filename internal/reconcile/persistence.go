@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
-	"github.com/lifei6671/guard-wall/internal/firewall/fake"
 )
 
 // RetryStateStore is the durable boundary needed to recover retry budgets and
@@ -16,6 +15,8 @@ import (
 type RetryStateStore interface {
 	LoadReconcileRecovery(context.Context, core.NodeID) (core.ReconcileRecoverySnapshot, error)
 	ApplyReconcileTransition(context.Context, core.ReconcileStateTransition) error
+	ApplyReconcileRetryTransition(context.Context, core.ReconcileRetryTransition) error
+	ReadReconcileRetryTransition(context.Context, core.ReconcileRetryTransition) (core.ReconcileRetryReadback, error)
 }
 
 // ObservedStateStore persists the latest authoritative Firewall observation.
@@ -420,13 +421,13 @@ func (c *Controller) persistedState(ref attemptRef, state core.RetryState) core.
 		UpdatedAt:  c.clock.Now(),
 	}
 	switch ref.domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		persisted.InfrastructureRevision = ref.infrastructure.Revision
 		persisted.RetryEpoch = ref.infrastructure.Epoch
-	case fake.DomainPolicy:
+	case DomainPolicy:
 		persisted.PolicyRevision = ref.policy.Revision
 		persisted.RetryEpoch = ref.policy.Epoch
-	case fake.DomainTarget:
+	case DomainTarget:
 		persisted.Target = ref.target.Target
 		persisted.TargetGeneration = ref.target.Generation
 		persisted.RetryEpoch = ref.target.Epoch
@@ -456,7 +457,7 @@ func attemptRefFromPersistedState(persisted core.PersistedReconcileState) (attem
 		if persisted.InfrastructureRevision == 0 {
 			return attemptRef{}, fmt.Errorf("infrastructure retry state has zero revision")
 		}
-		return attemptRef{domain: fake.DomainInfrastructure, infrastructure: core.InfrastructureRetryKey{
+		return attemptRef{domain: DomainInfrastructure, infrastructure: core.InfrastructureRetryKey{
 			Revision: persisted.InfrastructureRevision,
 			Epoch:    persisted.RetryEpoch,
 		}}, nil
@@ -464,7 +465,7 @@ func attemptRefFromPersistedState(persisted core.PersistedReconcileState) (attem
 		if persisted.PolicyRevision == 0 {
 			return attemptRef{}, fmt.Errorf("policy retry state has zero revision")
 		}
-		return attemptRef{domain: fake.DomainPolicy, policy: core.PolicyRetryKey{
+		return attemptRef{domain: DomainPolicy, policy: core.PolicyRetryKey{
 			Revision: persisted.PolicyRevision,
 			Epoch:    persisted.RetryEpoch,
 		}}, nil
@@ -472,7 +473,7 @@ func attemptRefFromPersistedState(persisted core.PersistedReconcileState) (attem
 		if !persisted.Target.IsValid() || persisted.Target != persisted.Target.Masked() || persisted.TargetGeneration == 0 {
 			return attemptRef{}, fmt.Errorf("target retry state has invalid key")
 		}
-		return attemptRef{domain: fake.DomainTarget, target: core.TargetRetryKey{
+		return attemptRef{domain: DomainTarget, target: core.TargetRetryKey{
 			Target:     persisted.Target,
 			Generation: persisted.TargetGeneration,
 			Epoch:      persisted.RetryEpoch,
@@ -540,13 +541,13 @@ func validateRecoveredRetryState(state core.RetryState) error {
 
 func (c *Controller) stateForRef(ref attemptRef) (core.RetryState, bool) {
 	switch ref.domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		state, ok := c.infrastructureStates[ref.infrastructure]
 		return state, ok
-	case fake.DomainPolicy:
+	case DomainPolicy:
 		state, ok := c.policyStates[ref.policy]
 		return state, ok
-	case fake.DomainTarget:
+	case DomainTarget:
 		state, ok := c.targetStates[ref.target]
 		return state, ok
 	default:
@@ -556,26 +557,26 @@ func (c *Controller) stateForRef(ref attemptRef) (core.RetryState, bool) {
 
 func (c *Controller) currentStateForPendingKeyLocked(key pendingProbeKey) (attemptRef, core.RetryState, bool) {
 	switch key.domain {
-	case fake.DomainInfrastructure:
-		ref := attemptRef{domain: fake.DomainInfrastructure, infrastructure: core.InfrastructureRetryKey{
+	case DomainInfrastructure:
+		ref := attemptRef{domain: DomainInfrastructure, infrastructure: core.InfrastructureRetryKey{
 			Revision: c.desired.InfrastructureRevision,
 			Epoch:    c.infrastructureEpoch,
 		}}
 		state, ok := c.stateForRef(ref)
 		return ref, state, ok
-	case fake.DomainPolicy:
-		ref := attemptRef{domain: fake.DomainPolicy, policy: core.PolicyRetryKey{
+	case DomainPolicy:
+		ref := attemptRef{domain: DomainPolicy, policy: core.PolicyRetryKey{
 			Revision: c.desired.PolicyRevision,
 			Epoch:    c.policyEpoch,
 		}}
 		state, ok := c.stateForRef(ref)
 		return ref, state, ok
-	case fake.DomainTarget:
+	case DomainTarget:
 		intent, desired := c.desiredTargets[key.target]
 		if !desired {
 			return attemptRef{}, core.RetryState{}, false
 		}
-		ref := attemptRef{domain: fake.DomainTarget, target: core.TargetRetryKey{
+		ref := attemptRef{domain: DomainTarget, target: core.TargetRetryKey{
 			Target:     key.target,
 			Generation: intent.Generation,
 			Epoch:      c.targetEpochs[key.target],
@@ -596,27 +597,27 @@ func (c *Controller) hasPendingRef(ref attemptRef) bool {
 	return false
 }
 
-func coreDomain(domain fake.Domain) core.ReconcileDomain {
+func coreDomain(domain Domain) core.ReconcileDomain {
 	switch domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		return core.ReconcileDomainInfrastructure
-	case fake.DomainPolicy:
+	case DomainPolicy:
 		return core.ReconcileDomainPolicy
-	case fake.DomainTarget:
+	case DomainTarget:
 		return core.ReconcileDomainTarget
 	default:
 		return 0
 	}
 }
 
-func fakeDomain(domain core.ReconcileDomain) fake.Domain {
+func fakeDomain(domain core.ReconcileDomain) Domain {
 	switch domain {
 	case core.ReconcileDomainInfrastructure:
-		return fake.DomainInfrastructure
+		return DomainInfrastructure
 	case core.ReconcileDomainPolicy:
-		return fake.DomainPolicy
+		return DomainPolicy
 	case core.ReconcileDomainTarget:
-		return fake.DomainTarget
+		return DomainTarget
 	default:
 		return 0
 	}
@@ -624,11 +625,11 @@ func fakeDomain(domain core.ReconcileDomain) fake.Domain {
 
 func retryEpoch(ref attemptRef) core.RetryEpoch {
 	switch ref.domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		return ref.infrastructure.Epoch
-	case fake.DomainPolicy:
+	case DomainPolicy:
 		return ref.policy.Epoch
-	case fake.DomainTarget:
+	case DomainTarget:
 		return ref.target.Epoch
 	default:
 		return 0
@@ -650,11 +651,11 @@ func persistedDomainName(domain core.ReconcileDomain) string {
 
 func pendingProbeName(key pendingProbeKey) string {
 	switch key.domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		return fmt.Sprintf("infrastructure revision %d", key.infrastructureRevision)
-	case fake.DomainPolicy:
+	case DomainPolicy:
 		return fmt.Sprintf("policy revision %d", key.policyRevision)
-	case fake.DomainTarget:
+	case DomainTarget:
 		return fmt.Sprintf("target %s generation %d", key.target, key.targetGeneration)
 	default:
 		return "unknown domain"

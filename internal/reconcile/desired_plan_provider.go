@@ -6,26 +6,23 @@ import (
 	"net/netip"
 
 	"github.com/lifei6671/guard-wall/internal/core"
-	"github.com/lifei6671/guard-wall/internal/firewall/fake"
 )
 
-// DesiredStateReader returns one transaction-consistent Target Desired view
+// DesiredStateReader returns one transaction-consistent complete Desired view
 // and the durable reconcile work used during startup recovery.
 type DesiredStateReader interface {
-	LoadDesiredTargetState(
+	LoadDesiredFirewallState(
 		context.Context,
 		core.NodeID,
-	) (core.SnapshotRevision, []core.NormalizedTargetEnforcementIntent, error)
+	) (core.DesiredFirewallState, error)
 	LoadReconcileRecovery(context.Context, core.NodeID) (core.ReconcileRecoverySnapshot, error)
 }
 
-// StaticDesiredFirewallState is the immutable Infrastructure and Policy input
-// combined with SQLite-owned Target Desired state by DesiredPlanProvider.
+// StaticDesiredFirewallState is the immutable Infrastructure input combined
+// with SQLite-owned Policy and Target Desired state by DesiredPlanProvider.
 type StaticDesiredFirewallState struct {
 	InfrastructureRevision core.InfrastructureRevision
-	PolicyRevision         core.PolicyRevision
 	Infrastructure         core.ManagedInfrastructureIntent
-	Policy                 core.ManagedPolicyIntent
 }
 
 // DesiredPlanProvider rebuilds authoritative Plans from current SQLite Target
@@ -55,8 +52,9 @@ func NewDesiredPlanProvider(
 	if reader == nil {
 		return nil, fmt.Errorf("desired Plan provider reader is required")
 	}
-	if _, err := static.snapshot(1, nil); err != nil {
-		return nil, fmt.Errorf("desired Plan provider static state: %w", err)
+	if static.InfrastructureRevision == 0 || static.Infrastructure.Backend == "" ||
+		static.Infrastructure.OwnerVersion == "" || static.Infrastructure.Digest == "" {
+		return nil, fmt.Errorf("desired Plan provider static Infrastructure state is incomplete")
 	}
 	return &DesiredPlanProvider{
 		nodeID: nodeID, controller: controller, reader: reader, static: static,
@@ -127,59 +125,59 @@ func (p *DesiredPlanProvider) ReconcileKeys(ctx context.Context) ([]ReconcileKey
 func (p *DesiredPlanProvider) CurrentPlan(
 	ctx context.Context,
 	key ReconcileKey,
-) (fake.OperationPlan, bool, error) {
+) (OperationPlan, bool, error) {
 	if ctx == nil {
-		return fake.OperationPlan{}, false, fmt.Errorf("load current Plan: context is required")
+		return OperationPlan{}, false, fmt.Errorf("load current Plan: context is required")
 	}
 	if err := validateReconcileKey(key); err != nil {
-		return fake.OperationPlan{}, false, err
+		return OperationPlan{}, false, err
 	}
 	desired, err := p.loadAndPublishDesired(ctx)
 	if err != nil {
-		return fake.OperationPlan{}, false, err
+		return OperationPlan{}, false, err
 	}
-	var plan fake.OperationPlan
+	var plan OperationPlan
 	switch key.Domain {
-	case fake.DomainInfrastructure:
-		plan = fake.OperationPlan{
+	case DomainInfrastructure:
+		plan = OperationPlan{
 			Domain:                         key.Domain,
 			DesiredInfrastructure:          desired.Infrastructure,
 			ExpectedInfrastructureRevision: desired.InfrastructureRevision,
 			ExpectedSnapshotRevision:       desired.SnapshotRevision,
 			FenceSnapshotRevision:          true,
 		}
-	case fake.DomainPolicy:
-		plan = fake.OperationPlan{
+	case DomainPolicy:
+		plan = OperationPlan{
 			Domain:                 key.Domain,
 			DesiredPolicy:          desired.Policy,
 			ExpectedPolicyRevision: desired.PolicyRevision,
 		}
-	case fake.DomainTarget:
+	case DomainTarget:
 		intent, ok := desiredTarget(desired.Targets, key.Target)
 		if !ok {
-			return fake.OperationPlan{}, false, nil
+			return OperationPlan{}, false, nil
 		}
-		plan = fake.OperationPlan{
+		plan = OperationPlan{
 			Domain:                   key.Domain,
 			Target:                   key.Target,
 			DesiredTarget:            intent,
 			ExpectedTargetGeneration: intent.Generation,
 		}
 	default:
-		return fake.OperationPlan{}, false, fmt.Errorf("load current Plan: unknown domain %d", key.Domain)
+		return OperationPlan{}, false, fmt.Errorf("load current Plan: unknown domain %d", key.Domain)
 	}
-	plan.Digest = fake.PlanDigest(plan)
+	plan.Digest = PlanDigest(plan)
 	return plan, true, nil
 }
 
 func (p *DesiredPlanProvider) loadAndPublishDesired(
 	ctx context.Context,
 ) (core.DesiredFirewallSnapshot, error) {
-	revision, targets, err := p.reader.LoadDesiredTargetState(ctx, p.nodeID)
+	state, err := p.reader.LoadDesiredFirewallState(ctx, p.nodeID)
 	if err != nil {
-		return core.DesiredFirewallSnapshot{}, fmt.Errorf("load current Target Desired state: %w", err)
+		return core.DesiredFirewallSnapshot{}, fmt.Errorf("load current Firewall Desired state: %w", err)
 	}
-	desired, err := p.static.snapshot(revision, targets)
+	desired, err := p.static.snapshot(state.SnapshotRevision, state.PolicyRevision, state.Policy, state.Targets)
 	if err != nil {
 		return core.DesiredFirewallSnapshot{}, fmt.Errorf("construct current Desired snapshot: %w", err)
 	}
@@ -191,14 +189,16 @@ func (p *DesiredPlanProvider) loadAndPublishDesired(
 
 func (s StaticDesiredFirewallState) snapshot(
 	revision core.SnapshotRevision,
+	policyRevision core.PolicyRevision,
+	policy core.ManagedPolicyIntent,
 	targets []core.NormalizedTargetEnforcementIntent,
 ) (core.DesiredFirewallSnapshot, error) {
 	return core.NewDesiredFirewallSnapshot(core.DesiredFirewallSnapshot{
 		SnapshotRevision:       revision,
 		InfrastructureRevision: s.InfrastructureRevision,
-		PolicyRevision:         s.PolicyRevision,
+		PolicyRevision:         policyRevision,
 		Infrastructure:         s.Infrastructure,
-		Policy:                 s.Policy,
+		Policy:                 policy,
 		Targets:                targets,
 	})
 }
@@ -206,11 +206,11 @@ func (s StaticDesiredFirewallState) snapshot(
 func persistedReconcileKey(domain core.ReconcileDomain, target netip.Prefix) (ReconcileKey, error) {
 	switch domain {
 	case core.ReconcileDomainInfrastructure:
-		return ReconcileKey{Domain: fake.DomainInfrastructure}, nil
+		return ReconcileKey{Domain: DomainInfrastructure}, nil
 	case core.ReconcileDomainPolicy:
-		return ReconcileKey{Domain: fake.DomainPolicy}, nil
+		return ReconcileKey{Domain: DomainPolicy}, nil
 	case core.ReconcileDomainTarget:
-		key := ReconcileKey{Domain: fake.DomainTarget, Target: target}
+		key := ReconcileKey{Domain: DomainTarget, Target: target}
 		if err := validateReconcileKey(key); err != nil {
 			return ReconcileKey{}, err
 		}

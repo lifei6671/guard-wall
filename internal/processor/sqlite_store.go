@@ -15,6 +15,7 @@ import (
 // to the Phase 1 SQLite Store.
 type SQLiteStoreAdapter struct {
 	database  *store.Store
+	nodeID    core.NodeID
 	finalizer *decision.DesiredStateFinalizer
 	wake      decision.TargetWakeSink
 	commit    func(*store.UnitOfWork) error
@@ -33,11 +34,15 @@ func NewSQLiteStoreAdapter(database *store.Store) *SQLiteStoreAdapter {
 // finalizes Automatic Decision Target intents and emits confirmed-commit wakes.
 func NewEnforcingSQLiteStoreAdapter(
 	database *store.Store,
+	nodeID core.NodeID,
 	finalizer *decision.DesiredStateFinalizer,
 	wake decision.TargetWakeSink,
 ) (*SQLiteStoreAdapter, error) {
 	if database == nil {
 		return nil, fmt.Errorf("SQLite processing store is required")
+	}
+	if nodeID == "" {
+		return nil, fmt.Errorf("SQLite processing node id is required")
 	}
 	if finalizer == nil {
 		return nil, fmt.Errorf("desired state finalizer is required")
@@ -46,6 +51,7 @@ func NewEnforcingSQLiteStoreAdapter(
 		return nil, fmt.Errorf("target wake sink is required")
 	}
 	adapter := NewSQLiteStoreAdapter(database)
+	adapter.nodeID = nodeID
 	adapter.finalizer = finalizer
 	adapter.wake = wake
 	return adapter, nil
@@ -65,7 +71,7 @@ func (s *SQLiteStoreAdapter) notifyReceiptReplay(ctx context.Context) error {
 	if s.wake == nil {
 		return nil
 	}
-	changes, err := s.database.PendingTargetEnforcementChanges(ctx)
+	changes, err := s.database.PendingTargetEnforcementChanges(ctx, s.nodeID)
 	if err != nil {
 		return err
 	}

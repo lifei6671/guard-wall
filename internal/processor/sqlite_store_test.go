@@ -401,7 +401,7 @@ func TestSQLiteBaseAdapterReceiptReplayIgnoresUnrelatedPendingTarget(t *testing.
 	).Process(context.Background(), pendingDelivery); err != nil {
 		t.Fatalf("create pending Target: %v", err)
 	}
-	pending, err := database.PendingTargetEnforcementChanges(context.Background())
+	pending, err := database.PendingTargetEnforcementChanges(context.Background(), planNodeID)
 	if err != nil || len(pending) != 1 {
 		t.Fatalf("pending Target changes = %+v, %v", pending, err)
 	}
@@ -1398,6 +1398,7 @@ func newEnforcingSQLiteStoreAdapterWithWake(
 	}
 	adapter, err := NewEnforcingSQLiteStoreAdapter(
 		database,
+		planNodeID,
 		finalizer,
 		wake,
 	)

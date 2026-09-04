@@ -28,6 +28,13 @@ type DesiredStateTransaction interface {
 	AdvanceSnapshotRevision(context.Context) (core.SnapshotRevision, error)
 }
 
+// PolicyDesiredStateTransaction adds the complete Projection view needed when
+// an authoritative Policy change must re-materialize every stored Target.
+type PolicyDesiredStateTransaction interface {
+	DesiredStateTransaction
+	ListDecisionProjections(context.Context, core.NodeID) ([]core.DesiredBanProjection, error)
+}
+
 // TargetPolicyResolver returns Firewall-significant inputs from the same
 // transaction snapshot, or from immutable process configuration.
 type TargetPolicyResolver interface {
@@ -75,6 +82,29 @@ type TargetEnforcementChange struct {
 // persists only semantic changes, resets only changed Target retry state, and
 // advances the global SnapshotRevision once when any Target changed.
 func (f *DesiredStateFinalizer) FinalizeTargets(
+	ctx context.Context,
+	tx DesiredStateTransaction,
+	projections []core.DesiredBanProjection,
+	updatedAt time.Time,
+) ([]TargetEnforcementChange, error) {
+	changes, err := f.MaterializeTargets(ctx, tx, projections, updatedAt)
+	if err != nil || len(changes) == 0 {
+		return changes, err
+	}
+	revision, err := tx.AdvanceSnapshotRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for index := range changes {
+		changes[index].SnapshotRevision = revision
+	}
+	return changes, nil
+}
+
+// MaterializeTargets compares final Projections and persists only semantic
+// Target changes. The caller owns SnapshotRevision advancement so a Policy
+// replacement can commit Policy and Target changes behind one snapshot fence.
+func (f *DesiredStateFinalizer) MaterializeTargets(
 	ctx context.Context,
 	tx DesiredStateTransaction,
 	projections []core.DesiredBanProjection,
@@ -165,17 +195,27 @@ func (f *DesiredStateFinalizer) FinalizeTargets(
 			NodeID: key.nodeID, Target: key.target, Generation: intent.Generation,
 		})
 	}
-	if len(changes) == 0 {
-		return nil, nil
-	}
-	revision, err := tx.AdvanceSnapshotRevision(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for index := range changes {
-		changes[index].SnapshotRevision = revision
-	}
 	return changes, nil
+}
+
+// MaterializeNodeTargets re-materializes every stored Projection for one
+// node without advancing SnapshotRevision. It is reserved for a Policy
+// transaction, which advances the shared snapshot exactly once after Policy,
+// retry, audit, and Target writes all succeed.
+func (f *DesiredStateFinalizer) MaterializeNodeTargets(
+	ctx context.Context,
+	tx PolicyDesiredStateTransaction,
+	nodeID core.NodeID,
+	updatedAt time.Time,
+) ([]TargetEnforcementChange, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("policy desired state transaction is required")
+	}
+	projections, err := tx.ListDecisionProjections(ctx, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("list policy projections: %w", err)
+	}
+	return f.MaterializeTargets(ctx, tx, projections, updatedAt)
 }
 
 // TargetWakeSink queues one committed Target for reconciliation.

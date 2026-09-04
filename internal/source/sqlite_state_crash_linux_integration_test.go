@@ -5,6 +5,7 @@ package source
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,7 +37,7 @@ const (
 	sourceCrashNewGeneration    = "88887777666655554444333322221111"
 )
 
-func TestSQLiteSourceGenerationTransitionSIGKILLRecovery(t *testing.T) {
+func TestM0Recovery002SQLiteSourceGenerationTransitionSIGKILLRecovery(t *testing.T) {
 	migrationDir, err := filepath.Abs(filepath.Join("..", "..", "migrations"))
 	if err != nil {
 		t.Fatalf("resolve migration directory: %v", err)
@@ -79,6 +80,12 @@ func TestSQLiteSourceGenerationTransitionSIGKILLRecovery(t *testing.T) {
 				snapshot.NewEventID != marker.NewEventID {
 				t.Fatalf("stable IDs changed across SIGKILL: marker=%+v snapshot=%+v", marker, snapshot)
 			}
+			contents, err := json.Marshal(snapshot)
+			if err != nil {
+				t.Fatalf("marshal recovered source snapshot: %v", err)
+			}
+			digest := sha256.Sum256(contents)
+			t.Logf("M0_FINAL_STATE_DIGEST=%x", digest)
 		})
 	}
 }

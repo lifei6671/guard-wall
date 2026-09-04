@@ -436,7 +436,7 @@ func loadManagedPolicyIntent(
 		}
 	}
 	if !seenRevision {
-		return 0, core.ManagedPolicyIntent{}, fmt.Errorf("policy rows are missing")
+		return 0, core.ManagedPolicyIntent{}, fmt.Errorf("policy rows are missing: %w", core.ErrManagedPolicyUninitialized)
 	}
 	policy, err := core.NewManagedPolicyIntent(allowlist, protectedTargets)
 	if err != nil {

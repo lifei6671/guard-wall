@@ -41,6 +41,9 @@ jobs:
           --cap-add NET_ADMIN
           --cap-add NET_RAW
           --cap-add SYS_ADMIN
+          --cap-add SETUID
+          --cap-add SETGID
+          --cap-add CHOWN
           --read-only
           --tmpfs /run:rw,nosuid,nodev,noexec,size=16m
           --tmpfs /tmp:rw,exec,nosuid,nodev,size=1g

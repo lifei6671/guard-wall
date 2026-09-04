@@ -88,6 +88,32 @@ type ReconcileStateTransition struct {
 	DeleteOnly bool
 }
 
+// ReconcileRetryAudit is the complete identity for an administrator-created
+// retry epoch audit. It commits with the matching retry ledger transition.
+type ReconcileRetryAudit struct {
+	ID             string
+	IdempotencyKey string
+	NodeID         NodeID
+	ActorType      string
+	PreviousEpoch  RetryEpoch
+	OccurredAt     time.Time
+}
+
+// ReconcileRetryTransition atomically creates one Pending retry epoch and its
+// mandatory administrator audit. It is intentionally separate from ordinary
+// Apply/Probe/Observed transitions, which do not represent administrator Retry.
+type ReconcileRetryTransition struct {
+	State PersistedReconcileState
+	Audit ReconcileRetryAudit
+}
+
+// ReconcileRetryReadback reports whether one indeterminate retry transaction
+// durably contains both its exact ledger state and audit record.
+type ReconcileRetryReadback struct {
+	Recovery ReconcileRecoverySnapshot
+	Applied  bool
+}
+
 // ReconcileRecoverySnapshot is the flat durable state required to hydrate one
 // node's in-memory reconcile controller.
 type ReconcileRecoverySnapshot struct {

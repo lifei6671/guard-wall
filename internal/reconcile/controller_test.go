@@ -664,6 +664,25 @@ func TestDesiredSnapshotRejectsVersionAndGenerationRegression(t *testing.T) {
 	}
 }
 
+func TestSetDesiredSnapshotClonesCompletePolicyPayload(t *testing.T) {
+	controller := newTestController(t, fake.NewBackend(), newManualClock(), &memoryAudit{})
+	policy, err := core.NewManagedPolicyIntent(
+		[]netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")},
+		[]netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := desiredSnapshot()
+	desired.Policy = policy
+	setDesired(t, controller, desired)
+
+	desired.Policy.Allowlist[0] = netip.MustParsePrefix("203.0.113.0/24")
+	if got := controller.desired.Policy.Allowlist[0]; got != netip.MustParsePrefix("198.51.100.0/24") {
+		t.Fatalf("published policy changed through caller slice: %s", got)
+	}
+}
+
 type manualClock struct {
 	mu  sync.Mutex
 	now time.Time

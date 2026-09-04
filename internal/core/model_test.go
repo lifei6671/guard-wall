@@ -247,6 +247,87 @@ func TestDesiredFirewallSnapshotConstructsStableClone(t *testing.T) {
 	}
 }
 
+func TestManagedPolicyIntentBindsCanonicalPayload(t *testing.T) {
+	allowlist := []netip.Prefix{netip.MustParsePrefix("2001:db8::/64"), netip.MustParsePrefix("192.0.2.0/24")}
+	protectedTargets := []netip.Prefix{netip.MustParsePrefix("::1/128"), netip.MustParsePrefix("127.0.0.0/8")}
+	intent, err := NewManagedPolicyIntent(allowlist, protectedTargets)
+	if err != nil {
+		t.Fatalf("NewManagedPolicyIntent(): %v", err)
+	}
+	if err := intent.ValidateComplete(); err != nil {
+		t.Fatalf("ValidateComplete(): %v", err)
+	}
+	if intent.Allowlist[0] != netip.MustParsePrefix("192.0.2.0/24") {
+		t.Fatalf("allowlist was not canonicalized: %#v", intent.Allowlist)
+	}
+	allowlist[0] = netip.MustParsePrefix("2001:db8:1::/64")
+	if intent.Allowlist[1] != netip.MustParsePrefix("2001:db8::/64") {
+		t.Fatal("managed policy aliases caller allowlist")
+	}
+	intent.Allowlist[0] = netip.MustParsePrefix("198.51.100.0/24")
+	if err := intent.ValidateComplete(); err == nil {
+		t.Fatal("payload/digest mismatch was accepted")
+	}
+}
+
+func TestManagedPolicyIntentRejectsIncompleteProtectedTargets(t *testing.T) {
+	_, err := NewManagedPolicyIntent(nil, []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")})
+	if err == nil {
+		t.Fatal("policy without IPv6 loopback protected target was accepted")
+	}
+}
+
+func TestManagedPolicyIntentAllowsAnEmptyAllowlist(t *testing.T) {
+	intent, err := NewManagedPolicyIntent(nil, []netip.Prefix{
+		netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128"),
+	})
+	if err != nil {
+		t.Fatalf("NewManagedPolicyIntent(): %v", err)
+	}
+	if err := intent.ValidateComplete(); err != nil {
+		t.Fatalf("ValidateComplete(): %v", err)
+	}
+}
+
+func TestDesiredFirewallSnapshotRejectsPolicyPayloadDigestMismatch(t *testing.T) {
+	policy, err := NewManagedPolicyIntent(nil, []netip.Prefix{
+		netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.RelationDigest = "not-the-payload-digest"
+	_, err = NewDesiredFirewallSnapshot(DesiredFirewallSnapshot{
+		SnapshotRevision:       1,
+		InfrastructureRevision: 1,
+		PolicyRevision:         1,
+		Infrastructure: ManagedInfrastructureIntent{
+			Backend: "nftables", OwnerVersion: "v1", Digest: "infra-digest",
+		},
+		Policy: policy,
+	})
+	if err == nil {
+		t.Fatal("snapshot accepted a policy payload with an unrelated digest")
+	}
+}
+
+func TestDesiredFirewallSnapshotRejectsIncompletePolicyPayload(t *testing.T) {
+	_, err := NewDesiredFirewallSnapshot(DesiredFirewallSnapshot{
+		SnapshotRevision:       1,
+		InfrastructureRevision: 1,
+		PolicyRevision:         1,
+		Infrastructure: ManagedInfrastructureIntent{
+			Backend: "nftables", OwnerVersion: "v1", Digest: "infra-digest",
+		},
+		Policy: ManagedPolicyIntent{
+			RelationDigest: "unbound", Allowlist: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")},
+		},
+	})
+	if err == nil {
+		t.Fatal("snapshot accepted an allowlist without protected targets")
+	}
+}
+
 func validIntent(nodeID NodeID, target netip.Prefix, generation TargetEnforcementGeneration) NormalizedTargetEnforcementIntent {
 	family := AddressFamilyIPv6
 	if target.Addr().Is4() {

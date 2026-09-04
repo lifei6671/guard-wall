@@ -24,7 +24,7 @@ func TestRunExpirationSchedulerStartsImmediatelyAndUsesAbsoluteDeadline(t *testi
 	runner := newExpirationSchedulerRunner(clock)
 	runner.pending = pending
 	wakes := &expirationWakeRecorder{}
-	service := newExpirationSchedulerService(t, runner, wakes, clock)
+	service := newExpirationSchedulerService(t, nodeID, runner, wakes, clock)
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() { result <- service.RunExpirationScheduler(ctx) }()
@@ -33,6 +33,9 @@ func TestRunExpirationSchedulerStartsImmediatelyAndUsesAbsoluteDeadline(t *testi
 	waitForExpirationTimers(t, clock, 1)
 	if reads := runner.PendingReads(); reads != 1 {
 		t.Fatalf("pending reads = %d, want 1", reads)
+	}
+	if nodes := runner.PendingNodes(); len(nodes) != 1 || nodes[0] != nodeID {
+		t.Fatalf("pending read node ids = %v, want [%s]", nodes, nodeID)
 	}
 	if got := wakes.Changes(); len(got) != len(pending) || got[0] != pending[0] || got[1] != pending[1] {
 		t.Fatalf("startup pending wakes = %+v, want %+v", got, pending)
@@ -63,7 +66,7 @@ func TestRunExpirationSchedulerImmediatelyCatchesUpAfterSlowSweep(t *testing.T) 
 	clock := newExpirationManualClock(time.Unix(20_000, 0).UTC())
 	runner := newExpirationSchedulerRunner(clock)
 	runner.advanceOnRun[1] = expirationDetectionInterval + time.Second
-	service := newExpirationSchedulerService(t, runner, &expirationWakeRecorder{}, clock)
+	service := newExpirationSchedulerService(t, testExpirationNodeID, runner, &expirationWakeRecorder{}, clock)
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() { result <- service.RunExpirationScheduler(ctx) }()
@@ -124,7 +127,7 @@ func TestRunExpirationSchedulerFailsFast(t *testing.T) {
 			runner := newExpirationSchedulerRunner(clock)
 			wakes := &expirationWakeRecorder{}
 			test.configure(runner, wakes)
-			service := newExpirationSchedulerService(t, runner, wakes, clock)
+			service := newExpirationSchedulerService(t, nodeID, runner, wakes, clock)
 			err := service.RunExpirationScheduler(context.Background())
 			if !errors.Is(err, test.want) {
 				t.Fatalf("RunExpirationScheduler() error = %v, want %v", err, test.want)
@@ -147,7 +150,7 @@ func TestRunExpirationSchedulerRequiresPendingRecoveryCapability(t *testing.T) {
 	runner := expirationTransactionRunnerFunc(func(context.Context, func(LifecycleTransaction) error) error {
 		return nil
 	})
-	service := newExpirationSchedulerService(t, runner, &expirationWakeRecorder{}, clock)
+	service := newExpirationSchedulerService(t, testExpirationNodeID, runner, &expirationWakeRecorder{}, clock)
 	err := service.RunExpirationScheduler(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "cannot read pending target enforcement changes") {
 		t.Fatalf("RunExpirationScheduler() error = %v", err)
@@ -188,7 +191,7 @@ func TestStartupPendingRedeliveryExcludesCurrentExpirationChanges(t *testing.T) 
 func TestRunExpirationSchedulerTreatsCancellationAsNormalExit(t *testing.T) {
 	clock := newExpirationManualClock(time.Unix(50_000, 0).UTC())
 	runner := newExpirationSchedulerRunner(clock)
-	service := newExpirationSchedulerService(t, runner, &expirationWakeRecorder{}, clock)
+	service := newExpirationSchedulerService(t, testExpirationNodeID, runner, &expirationWakeRecorder{}, clock)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := service.RunExpirationScheduler(ctx); err != nil {
@@ -207,7 +210,7 @@ func TestPrepareExpirationStartupRunsOnceWithoutWakeOrPendingRead(t *testing.T) 
 		Target: netip.MustParsePrefix("192.0.2.50/32"),
 	}}
 	wakes := &expirationWakeRecorder{}
-	service := newExpirationSchedulerService(t, runner, wakes, clock)
+	service := newExpirationSchedulerService(t, testExpirationNodeID, runner, wakes, clock)
 
 	startedAt, err := service.PrepareExpirationStartup(context.Background())
 	if err != nil {
@@ -230,7 +233,7 @@ func TestPrepareExpirationStartupRunsOnceWithoutWakeOrPendingRead(t *testing.T) 
 func TestRunExpirationSchedulerAfterStartupWaitsBeforeFirstSweep(t *testing.T) {
 	clock := newExpirationManualClock(time.Unix(70_000, 0).UTC())
 	runner := newExpirationSchedulerRunner(clock)
-	service := newExpirationSchedulerService(t, runner, &expirationWakeRecorder{}, clock)
+	service := newExpirationSchedulerService(t, testExpirationNodeID, runner, &expirationWakeRecorder{}, clock)
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() {
@@ -258,7 +261,7 @@ func TestRunExpirationSchedulerAfterSlowStartupKeepsOriginalDeadline(t *testing.
 	clock := newExpirationManualClock(time.Unix(80_000, 0).UTC())
 	runner := newExpirationSchedulerRunner(clock)
 	runner.advanceOnRun[1] = 30 * time.Second
-	service := newExpirationSchedulerService(t, runner, &expirationWakeRecorder{}, clock)
+	service := newExpirationSchedulerService(t, testExpirationNodeID, runner, &expirationWakeRecorder{}, clock)
 	startupSweepStartedAt, err := service.PrepareExpirationStartup(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -304,7 +307,10 @@ type expirationSchedulerRunner struct {
 	pending      []TargetEnforcementChange
 	pendingError error
 	pendingReads int
+	pendingNodes []core.NodeID
 }
+
+const testExpirationNodeID core.NodeID = "0123456789abcdef0123456789abcdef"
 
 func newExpirationSchedulerRunner(clock *expirationManualClock) *expirationSchedulerRunner {
 	return &expirationSchedulerRunner{
@@ -333,6 +339,7 @@ func (r *expirationSchedulerRunner) RunDecisionTransaction(
 
 func (r *expirationSchedulerRunner) PendingTargetEnforcementChanges(
 	ctx context.Context,
+	nodeID core.NodeID,
 ) ([]TargetEnforcementChange, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -340,6 +347,7 @@ func (r *expirationSchedulerRunner) PendingTargetEnforcementChanges(
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.pendingReads++
+	r.pendingNodes = append(r.pendingNodes, nodeID)
 	return append([]TargetEnforcementChange(nil), r.pending...), r.pendingError
 }
 
@@ -359,6 +367,12 @@ func (r *expirationSchedulerRunner) PendingReads() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.pendingReads
+}
+
+func (r *expirationSchedulerRunner) PendingNodes() []core.NodeID {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]core.NodeID(nil), r.pendingNodes...)
 }
 
 type expirationWakeRecorder struct {
@@ -386,6 +400,7 @@ func (r *expirationWakeRecorder) Changes() []TargetEnforcementChange {
 
 func newExpirationSchedulerService(
 	t *testing.T,
+	nodeID core.NodeID,
 	runner TransactionRunner,
 	wake TargetWakeSink,
 	schedulerClock appclock.Clock,
@@ -399,7 +414,7 @@ func newExpirationSchedulerService(
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewLifecycleServiceWithClock(runner, finalizer, wake, schedulerClock)
+	service, err := NewLifecycleServiceWithClock(nodeID, runner, finalizer, wake, schedulerClock)
 	if err != nil {
 		t.Fatal(err)
 	}

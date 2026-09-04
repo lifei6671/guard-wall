@@ -5,6 +5,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -28,7 +29,7 @@ const (
 	sqliteDurabilityNodeID core.NodeID = "0123456789abcdef0123456789abcdef"
 )
 
-func TestSQLiteLinuxSIGKILLReopenDurability(t *testing.T) {
+func TestM0Recovery001SQLiteLinuxSIGKILLReopenDurability(t *testing.T) {
 	migrationDir, err := filepath.Abs(filepath.Join("..", "..", "migrations"))
 	if err != nil {
 		t.Fatalf("resolve migration directory: %v", err)
@@ -81,6 +82,8 @@ func TestSQLiteLinuxSIGKILLReopenDurability(t *testing.T) {
 			if err != nil {
 				t.Fatalf("reopen verification: %v; output: %s", err, output)
 			}
+			digest := sha256.Sum256([]byte(output))
+			t.Logf("M0_FINAL_STATE_DIGEST=%x", digest)
 		})
 	}
 }
@@ -134,8 +137,10 @@ func TestSQLiteLinuxDurabilityHelper(t *testing.T) {
 		blockUntilSIGKILL()
 	case "verify_committed":
 		verifySQLiteDurabilityStore(t, ctx, database, true)
+		fmt.Println("M0_VERIFY_STATE=committed_node_identity_readable")
 	case "verify_uncommitted":
 		verifySQLiteDurabilityStore(t, ctx, database, false)
+		fmt.Println("M0_VERIFY_STATE=uncommitted_node_identity_absent")
 	default:
 		t.Fatalf("unknown durability helper mode %q", mode)
 	}

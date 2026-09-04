@@ -13,11 +13,11 @@
 | 已完成 | `A1–A4`（`Implemented`，尚未 `Verified`） |
 | 进行中 | `B1–B4`、`C1–C2`、`D1–D4` |
 | 可启动 | `None`；当前 READY 项已进入执行 |
-| 被阻塞 | `C3`、`D5–D7`、`M1–M10` |
+| 被阻塞 | `D6–D7`、`M1–M10` |
 | M0 证据状态 | `Implemented`（worktree preliminary；尚未 `Verified`） |
 | Phase 1 发布状态 | `Not Released` |
 | 当前 Evidence | `artifacts/evidence/M0/worktree/m0-a/`、`m0-b/`、`m0-c/`、`m0-d/` |
-| 最近更新 | `2026-09-02` |
+| 最近更新 | `2026-09-04` |
 
 当前仓库已有 M0-A Contract、Crash Matrix manifest、两份 ADR、Go Core、SQLite
 migration/Store、Config Schema、安全 credential reader、single-document YAML loader、SMTP credential
@@ -108,19 +108,19 @@ Race 与两路独立终审均通过；初审两项 P1 与一项 P2 已修复，�
 | A1 | Core Model 与权威关系 | `COMPLETE` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-a/contract-review.md` | 运行级验证留给 C1/C2/D1/D2/D5 |
 | A2 | Source delivery 与事务协调 | `COMPLETE` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-a/contract-review.md` | 运行级验证留给 C1/D1/D2/D5 |
 | A3 | Decision / Enforcement / Reconcile | `COMPLETE` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-a/contract-review.md` | 运行级验证留给 C2/D1/D2/D5/D6 |
-| A4 | Crash Matrix | `COMPLETE` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-a/contract-review.md` | manifest 已审查；runner 执行留给 C3/D5 |
-| B1 | SQLite 并发、事务与 durability Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/sqlite-result.json` | Go driver/PRAGMA/migration 与 Ubuntu WSL2 cross-process SIGKILL→reopen committed/uncommitted matrix 已通过；缺 OS reboot、filesystem barrier 与 power-loss 证据 |
+| A4 | M0 Crash/Recovery Evidence | `COMPLETE` | `Implemented` | `Codex/current task` | `tests/contracts/m0-process-recovery.yaml` | manifest 已审查；D5 执行 M0 process-recovery 用例，扩展 matrix 留给 M7/M10 |
+| B1 | SQLite 并发、事务与 durability Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/sqlite-result.json` | Go driver/PRAGMA/migration 与 Ubuntu WSL2 cross-process SIGKILL→reopen committed/uncommitted matrix 已通过；OS reboot、filesystem barrier 与 power-loss 为后续验证边界 |
 | B2 | Source identity 与 replay Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/identity-result.json`、`m0-c/source-slice/result.md` | golden vectors、Ubuntu WSL2 clean restart-replay、两个 committed-boundary generation transition SIGKILL 窗口、真实 opaque Journald cursor reopen 与 processing UnitOfWork transaction-internal SIGKILL rollback/direct replay 已通过；缺真实 File/Journald reader、copytruncate、Source-state internal crash、cursor invalidation/vacuum/resume 与 replay/reprocess refs |
-| B3 | nftables Backend Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/nftables-result.json`、`artifacts/evidence/M0/worktree/m0-b/nftables-golden-state-result.json` | 隔离基线已覆盖 Provider packet path、Snapshot/Plan/ownership；仍缺 production hook/priority、目标 Linux/UFW/Docker、重启恢复与 Apply-confirm 证据 |
+| B3 | nftables Backend Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/nftables-result.json`、`artifacts/evidence/M0/worktree/m0-b/nftables-golden-state-result.json` | 隔离基线已覆盖 Provider packet path、Snapshot/Plan/ownership；production hook/priority、非 clean Linux/UFW/Docker、重启恢复与 Apply-confirm 为后续验证边界 |
 | B4 | Agent/Enforcer 权限与 IPC Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`artifacts/evidence/M0/worktree/m0-b/ipc-response-codec/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-response-frame/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-request-codec/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-request-frame/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-mutation-client/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-mutation-server/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-snapshot-managed-transport/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-enforcer-loop/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-enforcer-handlers/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-enforcer-cross-uid-runtime/result.md` | WSL2 request framing fail-closed、四操作 allowlist、mutation/Probe/Snapshot typed codec/frame、Linux fixed-socket root-peer client、authenticated single-request server、serial persistent loop、production-neutral closed handler composition 的 Docker Linux Race，以及受控 WSL fixture 的 `/run/guard` root:guard/跨 UID runtime 集成均已通过；仍缺真实 Firewall provider/owner/object-role、production executable/systemd hardening、持续 fuzz、恢复与非 WSL target Linux 证据 |
 | C1 | Source Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/source-slice/result.md` | Queue Seal fixed accepted set、单 Source runtime owner、drain/Flush/Audit/Close、timeout 不提前 Close 与 commit-unknown readback 已通过 race；缺真实 Source reader/management intake、signal executable、进程 restart 与 Linux durability |
-| C2 | Decision/Enforcement Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | Automatic/Manual/expiry generation/SnapshotRevision/Wake、retry/pending-Probe SQLite 恢复、60s scheduler、62s SQLite→Fake 闭环、完整三域 Observed 与 Dispatcher-owned Backend health lifecycle 原语已通过用户 Review；仍缺真实 Enforcer/IPC health 源、可执行进程 composition/runtime startup 与真实进程 restart |
-| C3 | 完整 Crash Matrix | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 C1、C2 Verified |
+| C2 | Decision/Enforcement Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | Automatic/Manual/expiry generation/SnapshotRevision/Wake、retry/pending-Probe SQLite 恢复、60s scheduler、62s SQLite→Fake 闭环、完整三域 Observed、Dispatcher-owned Backend health lifecycle 原语与受限 `guard-agent` startup composition 已通过用户 Review；clean target Linux 已覆盖固定 socket、手工/systemd restart、SIGKILL reopen 与 normal OS reboot 后语义 reopen；仍缺受控 Target intent→真实 mutation/native timeout、跨进程 IPC health source、non-clean Firewall compatibility、跨 reboot 稳定身份/全行连续性以及 power-loss/fsync durability |
+| C3 | 扩展 Crash Matrix | `BLOCKED` | `Specified` | `Unassigned` | `None` | 后续 M7/M10 验证项，不阻塞 M0 Gate |
 | D1 | Go 类型与接口 | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | Desired/Reconcile 端口及 Source Queue Seal/RunSourceRuntime 已通过 race/vet；缺真实 executable composition、Source reader/management intake 与 IPC health source wiring |
 | D2 | SQLite migration | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | migration 0001–0005、Target Desired/retry/probe/Observed 原子性、v4 cache 安全失效与 SQLite close/reopen 已通过；缺 replay/reprocess refs、真实进程/runtime restart 与目标 Linux durability |
 | D3 | Config Schema | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md` | Schema/default/range/ownership/drift、credential reader、YAML loader/resource cap、SMTP readiness、atomic logging owner 与 Ubuntu WSL2 native file-to-Ready library integration 已实现并通过；缺真实 SMTP worker、production packaging/systemd/parent trust、config watcher/executable wiring 和目标 Linux 安装验证 |
-| D4 | ADR | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/adr-review.md` | ADR-0001/0002 已接受；delivery/durability/firewall/retry ADR 尚未齐全 |
-| D5 | Contract Tests | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 C1–C3 可执行用例 |
+| D4 | ADR | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/adr-review.md`、`docs/adr/0011-reconcile-retry-and-unknown-result-boundary.md`、`docs/adr/0012-fixed-nftables-ownership-and-clean-target-boundary.md`、`docs/adr/0013-sqlite-durability-and-recovery-evidence-boundary.md`、`docs/adr/0014-linux-systemd-delivery-boundary.md` | Retry/Unknown、fixed nftables ownership、SQLite durability 与 systemd delivery ADR 已固化；D4 ADR Evidence 汇总与复核尚未完成 |
+| D5 | Contract Tests | `COMPLETE` | `Verified` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/contracts/process-recovery-2026-09-04.md` | 001–004 已由统一 Docker runner 非缓存重跑，逐 case final-state digest、runner/source checksum、隔离环境与未验证边界均已记录；不改变 G18 或 M0 结论 |
 | D6 | V0.4 同步 | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待新语义 Verified 后清理旧模型 |
 | D7 | M0 Evidence Manifest | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 D1–D6 Evidence 汇总 |
 
@@ -129,8 +129,8 @@ Race 与两路独立终审均通过；初审两项 P1 与一项 P2 已修复，�
 | Gate | Contract | 当前结果 | Evidence | 未通过原因 | 解锁条件 |
 |---|---|---|---|---|---|
 | G18.1 Contract 完整性 | §18.1 | `FAIL` | `artifacts/evidence/M0/worktree/` | A 与 D1/D4 部分 Implemented；B 仍 preliminary，D6 未完成 | M0-B 与 D1/D4/D6 对应证据通过 |
-| G18.2 可执行验证 | §18.2 | `FAIL` | `artifacts/evidence/M0/worktree/` | C1/C2 preliminary runtime 原语与 B1 Linux process-level SIGKILL→reopen 已运行；真实 executable/IPC health source/service restart、C3、firewall、OS reboot/filesystem barrier/power-loss durability 与完整 Contract Tests 仍未完成 | M0-C、migration、剩余 durability 域和 Contract Tests 全部通过 |
-| G18.3 产物一致性 | §18.3 | `FAIL` | `artifacts/evidence/M0/worktree/m0-d/` | migration/代码/Config Schema 已落盘；D5–D7 与 commit-bound Manifest 缺失 | M0-D 全部责任产物通过 drift/一致性检查 |
+| G18.2 可执行验证 | §18.2 | `FAIL` | `artifacts/evidence/M0/worktree/` | D5 M0 范围 Contract Tests 已具备可复核 Docker Evidence；C1/C2、migration 与其余可复核 Evidence 仍未闭合 | C1/C2、migration 与其余必测项的可执行 Evidence 全部通过 |
+| G18.3 产物一致性 | §18.3 | `FAIL` | `artifacts/evidence/M0/worktree/m0-d/` | migration/代码/Config Schema 已落盘；D1–D4、D6、D7 与 commit-bound Manifest 仍未闭合 | M0-D 全部责任产物通过 drift/一致性检查 |
 
 M0 只有在 G18.1、G18.2、G18.3 全部为 `PASS` 后，才可改为
 `COMPLETE / Frozen / GO`，并解锁 M1–M10 Entry Gate。
@@ -821,3 +821,473 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
     已在 repair round 1 闭合；目标包、工作流同构隔离 Docker runner 与全仓 test/vet/build 均在 repair 后通过，两个 fresh
     独立复审 P0-P3 均无。用户 Code Review 已通过，当前为 `DONE / Implemented`；冻结测试 SHA256
     `311001D3...C77C7E98` 未漂移，本次仅同步验收记录，不重跑代码验证。B3/G18/M0 不提升，未提交、未推送。
+75. 用户确认 B3 repeated infrastructure Apply idempotency integration test。仅在现有隔离 nftables integration test
+    新增第二次新鲜 `Probe → Snapshot → AuthorizeInfrastructureMutation → Apply`：首次 Apply 后以新 basis digest 与 revision
+    再次授权，第二次 Apply 返回 correlated `Confirmed`，Guard raw JSON、managed snapshot 与 foreign canonical/raw state 均不变。
+    该 oracle 证明隔离真实 nftables 的可观测结果与状态幂等；内部 `nft --file -` 派发计数仍需独立 scripted-runner unit scope。
+    目标包、工作流同构隔离 Docker runner 与全仓 test/vet/build 均通过；两路 fresh 独立审查 P0-P3 均无，用户 Code Review
+    已通过，当前 `DONE / Implemented`。冻结测试 SHA256 `515DB2AB...A2CE6D6C` 未漂移；不改生产逻辑、API、配置、依赖、workflow、目标环境或宿主 Firewall，
+    不处理 same-name 文档一致性、owner-version cleanup、真实 UFW/Docker、target Linux hook/priority、reload/restart 或
+    Apply-confirm。B3/G18/M0 不提升，未提交、未推送。
+76. B3 owner-version mismatch ownership-conflict integration test 是测试证据单元，不属于开发任务。仅在现有隔离 nftables integration test
+    构造完整 Guard 固定布局、但将 infrastructure marker 改为非匹配 owner/version；`Probe` 与 `Snapshot` 都返回 ownership
+    conflict，Guard raw JSON 前后不变。它补足真实 nftables 下完整布局的 owner/version fail-closed 行为，不重复空同名 table
+    或单纯授权参数拒绝。目标包、工作流同构隔离 Docker runner 与全仓 test/vet/build 均通过；两路 fresh 独立审查 P0-P3 均无，
+    当前 `REVIEW / Implemented`（test-only），等待用户 Code Review。冻结测试 SHA256 `0F886CE3...3A6EA1ED`；不改生产逻辑、API、marker、配置、依赖、workflow、
+    目标环境或宿主 Firewall；不含真实 UFW/Docker、target Linux hook/priority、reload/restart、crash recovery 或
+    Apply-confirm。B3/G18/M0 不提升，未提交、未推送。
+77. 用户确认 B3 foreign-context canonicalization repair。`parseRuleset` 现将 foreign digest 规范化：移除动态
+    `handle`，仅移除 `counter` 内的 packets/bytes 统计值，并稳定排序顶层非 rule foreign 对象及 set/map 成员；同一 foreign chain 的 rule
+    相对顺序保持为 digest 语义，避免掩盖真实 packet-path 变化。新增两条 Linux unit test，分别固定动态字段/无序对象
+    不造成 digest drift，以及同链 rule 重排仍改变 digest。独立审查发现的非 rule 输出排序与 set 成员顺序 P1 已闭合；`./scripts/test.ps1 ./internal/firewall/nftables`、同构隔离
+    Docker runner 与 `./scripts/verify.ps1` 均通过。两路 fresh CHILD_AGENT 复审最终 hash，P0-P3 均无；当前
+    `REVIEW / Implemented`，等待用户 Code Review。
+    不改公共 API、配置、依赖、固定 nftables 布局、UFW/Docker fail-closed 判定或目标环境；B3/G18/M0 不提升，未提交、未推送。
+78. 用户明确回复 `B3 foreign-context canonicalization repair Code Review 通过`。Delivery Unit 由
+    `REVIEW / Implemented` 更新为 `DONE / Implemented`；冻结 production SHA256 `AF351362...502ACD2` 与 Linux unit test
+    SHA256 `A0116CE6...B824E099` 未漂移。本次仅同步验收记录，不重跑代码验证，未提交、未推送；B3 总项保持
+    `IN_PROGRESS / Implemented`，G18/M0 保持 `NO-GO`。
+79. 用户请求继续下一步后，只读预检确认 B3 已无无需外部目标环境且包含生产代码变更的独立单元；其余 B3 缺口属于
+    target Linux/UFW/Docker、recovery 或 M6/M10 Apply-confirm 边界，纯测试不作为开发任务。下一最小生产候选为
+    C1 source intake runtime contract：新增闭合 Source reader/sink 组合契约，并使 intake 生命周期严格为
+    停止 reader → Seal 固定已接收集 → drain worker → Flush checkpoint → Audit/DB Close。它不直接实现真实
+    File/Journald reader 或 management intake。当前 `IN_PROGRESS / Specified`，实施 `NO-GO`、验证 `NOT RUN`，
+    等待用户明确 `确认 C1 source intake runtime contract`；不改 Config/Schema、数据库、IPC、依赖、真实文件路径/轮转、
+    management、executable/systemd、信号注册、目标 Linux 或上级 Gate。
+80. 用户明确确认 C1 source intake runtime contract。新增 `source.Reader` / `source.DeliverySink` 闭合组合契约，
+    `RunSourceIntakeRuntime` 以私有校验 sink 拒绝非法 Delivery，并固定执行 reader 停止 → Queue Seal → worker drain →
+    checkpoint Flush → DB Close。reader terminal error 仍保留已接收集合的 drain；受控取消不伪装为 reader 故障；reader、
+    worker 或 commit-unknown readback 超时均返回 deadline 且不提前 Close。新增回归覆盖 reader-stop/drain/close 顺序、
+    reader error、invalid delivery、active reader timeout、commit-unknown timeout、typed-nil reader 与单次 reader 调用。
+    `./scripts/test.ps1 ./internal/source`、`docker compose -f compose.codex.yml exec -T go-runner go test -race ./internal/source ./internal/processor`
+    与 `./scripts/verify.ps1` 均通过。当前 `REVIEW / Implemented`，等待独立审查和用户 Code Review；不改 Config/Schema、
+    数据库、IPC、依赖、真实 File/Journald、management、executable/systemd、信号注册、目标 Linux 或上级 Gate；C1/G18/M0 不提升，
+    未提交、未推送。
+81. C1 source intake runtime contract 的两路 fresh CHILD_AGENT Tier-3 终审均通过，覆盖生命周期、错误身份、timeout、
+    typed-nil、测试、范围和记录；P0-P3 均无。冻结 SHA256：`reader.go` `81DC0163...F9E76A`、
+    `source_intake_runtime.go` `8F88E73F...D3482A`、`source_intake_runtime_test.go` `BC036FBD...DA37B0`。当前仅等待用户
+    Code Review；C1 总项仍为 `IN_PROGRESS / Implemented`，G18/M0 保持 `NO-GO`，未提交、未推送。
+82. 用户明确回复“通过，继续下一步”。C1 source intake runtime contract 由 `REVIEW / Implemented` 更新为
+    `DONE / Implemented`；冻结 Go 文件 SHA256 未漂移。本次仅同步用户验收，不重跑验证，未提交、未推送；C1 总项仍为
+    `IN_PROGRESS / Implemented`，G18/M0 保持 `NO-GO`。
+83. C1、B4 与 M0/C2 路径的并行只读预检确认：B4 剩余项均需目标 Linux/权限/部署事实，C2 closed IPC-Reconcile bridge
+    范围更大；下一最小真实生产候选为 C1 queue backpressure observation contract。该单元仅在 `internal/source` 为既有
+    DeliveryQueue 增加只读闭合观测：capacity、depth、成功 admission 的累计背压等待、终态 rejected 总数与当前
+    accepted set 的 oldest age；不实现 Prometheus、真实 File/Journald、management 或 executable。当前 `IN_PROGRESS / Specified`，
+    实施 `NO-GO`、验证 `NOT RUN`，等待用户明确 `确认 C1 queue backpressure observation contract`；不改 Config/Schema、
+    DB/migration、IPC、依赖、Coordinator、真实文件路径/轮转、systemd、目标 Linux 或上级 Gate。
+84. 用户明确确认 C1 queue backpressure observation contract。`DeliveryQueue` 新增只读 `QueueStats` 快照：capacity、当前
+    depth、成功 admission 的累计背压等待、终态 rejected 总数与当前 accepted set 的 oldest age。内部以容量令牌保持既有
+    bounded queue、Seal、取消和 Dequeue 语义，并在入队/出队时维护 accepted set；观测只用于监控，不作为跨字段事务判断。
+    新增回归覆盖背压释放后的累计等待、sealed/context 终态 rejected、oldest/depth 收敛与并发采样有界。
+    `./scripts/test.ps1 ./internal/source`、`docker compose -f compose.codex.yml exec -T go-runner go test -race ./internal/source ./internal/processor`
+    与 `./scripts/verify.ps1` 均通过；两路 fresh CHILD_AGENT 独立终审 P0-P3 均无。当前 `REVIEW / Implemented`，等待用户
+    Code Review；不改 Config/Schema、DB/migration、IPC、依赖、Coordinator、真实 File/Journald、management、executable/systemd、
+    目标 Linux 或 Gate；C1/G18/M0 不提升，未提交、未推送。
+85. 用户明确回复 `C1 queue backpressure observation contract Code Review 通过`。Delivery Unit 由
+    `REVIEW / Implemented` 更新为 `DONE / Implemented`；冻结 `queue.go` SHA256 `C7220439...E49E6E4` 与
+    `queue_test.go` SHA256 `C92EA2CD...3D03C247E` 未漂移。本次仅同步用户验收，不重跑代码验证，未提交、未推送；C1 总项仍为
+    `IN_PROGRESS / Implemented`，G18/M0 保持 `NO-GO`。
+86. 用户继续下一步后，C1、C2 与 B4 并行只读预检确认：C1 剩余 lag/gap 观测依赖真实 File/Journald position 与
+    checkpoint；B4 剩余项依赖目标 Linux、部署或证据环境。下一最小生产候选为 C2 IPC–Reconcile production backend bridge：
+    将 `reconcile.Backend` 从 fake Snapshot/Plan/Result 迁移到 production Firewall/IPC 类型，并新增 Linux-only IPC adapter，
+    以闭合 Desired plan→Probe/Snapshot/Mutation 与 confirmed/rejected/unknown/transport failure→现有 Probe-first/retry 语义。
+    该单元需要修改跨包导出 runtime/权限边界，当前 `IN_PROGRESS / Specified`，实施 `NO-GO`、验证 `NOT RUN`，等待用户明确
+    `确认 C2 IPC–Reconcile production backend bridge`；不接真实 Firewall/executable/systemd、Config/Schema、DB/migration、
+    依赖、目标 Linux 或上级 Gate。
+87. 用户确认 C2 IPC–Reconcile production backend bridge 后，实施前的契约映射发现当前 Desired Policy 仅有
+    `RelationDigest`，而 `ipc.NewApplyPolicyRequest` 要求不可由 digest 反推的 canonical allowlist 与 protected targets；
+    production Snapshot 与现有 fake Observed comparison 也缺少安全等价映射。若直接实现会编造 Policy 或错误宣称收敛，
+    因此当前为 `BLOCKED / Specified`，代码与测试均未修改、验证 `NOT RUN`。等待用户选择：扩展 authoritative desired
+    policy payload/observation model 的边界，或重新确认仅覆盖可表达 domain 的独立 fail-closed 单元；不改 Config/Schema、
+    DB/migration、依赖、真实 Firewall/executable/systemd、目标 Linux 或上级 Gate，未提交、未推送。
+88. 用户随后确认 C2 IPC observation migration。C2 bridge 已补齐 authoritative complete Policy payload、
+    transaction-consistent Desired aggregate read、managed Snapshot limited Target evidence 与 0006 SQLite migration；
+    Policy 行的 INSERT、语义 UPDATE、DELETE 在同一事务内推进 global Snapshot fence，no-op update 不推进。
+    Reconcile 已迁移到中性 production Plan/Snapshot/Result model，fake 仅保留为测试 adapter；Linux-only IPCBackend
+    使用固定 authenticated socket 完成 capabilities/Snapshot/closed Mutation 映射。Controller 在 mutation lock 内
+    Probe 后绑定 basis digest，IPC 端再次授权；basis change 返回拒绝，transport failure 进入 Probe barrier。
+    新增 Core/Store/Controller–IPC 回归与 migration readback。`./scripts/test.ps1 ./internal/core`、
+    `./internal/store`、`./internal/reconcile`、`./internal/ipc` 及 `./scripts/verify.ps1` 均通过；两路独立
+    Tier-3 review 均无 P0-P3。当前为 `REVIEW / Implemented`，等待用户 Code Review；未提交、未推送。
+    真实 target Linux socket、executable wiring、服务重启与 Linux durability 未验证；C2/G18/M0 不提升。
+89. 用户明确回复 `C2 IPC observation migration Code Review 通过`。该 Delivery Unit 由
+    `REVIEW / Implemented` 更新为 `DONE / Implemented`；既有 targeted/full verification、两路 Tier-3
+    独立终审和 migration/readback 结论继续有效。本次仅同步用户验收状态，不重跑代码验证，未提交、未推送；
+    真实 target Linux socket、executable wiring、服务重启与 Linux durability 仍为 `NOT RUN`，C2/G18/M0 不提升。
+90. 用户继续后完成 C2 下一开发单元只读预检。IPC bridge 的 `NewIPCBackend` 尚未在 production runtime 注入，
+    guard-agent 仍只执行 IPC readiness Probe；直接接线缺少 Policy 的权威写入/变化来源、Policy wake、stable node
+    identity、Store/audit owner 与 Static Infrastructure 来源。下一最小生产候选为 **C2 authoritative Desired Policy
+    write and Policy wake contract**：新增内部 complete Policy replace/write、PolicyRevision 与 SnapshotRevision
+    原子推进、commit/readback 语义，以及 Policy domain post-commit wake；同时冻结 Policy 改变对既有 Target
+    intent 的处理策略。不接 executable、systemd、真实 socket、target Linux、配置、依赖或部署。该批新增跨包写入/
+    唤醒安全契约，实施 `NO-GO`、验证 `NOT RUN`，等待用户明确 `确认 C2 authoritative Desired Policy write and Policy wake contract`。
+    C2/G18/M0 不提升，未提交、未推送。
+91. 用户确认 C2 authoritative Desired Policy write and Policy wake contract 后，已新增内部 complete Policy
+    compare-and-swap replace：初始写入仅接受 revision 0，后续写入必须匹配当前 PolicyRevision；canonical
+    Policy 事实、PolicyRevision、Policy pending retry、Critical Audit、所有已物化 Target 的重算与仅语义变化的
+    generation/retry reset 在同一 SQLite transaction 中完成。既有 policy-row trigger 对 raw writer 仍保留；
+    authoritative replace 在事务内将其物理行计数归一为写前 SnapshotRevision+1，失败整体回滚。commit-unknown
+    仅在脱离取消的 authoritative readback 精确证明 Policy、Snapshot 和 Target generation 后才 Wake；已提交后先
+    Policy wake、再稳定 Target wakes，wake 失败返回 post-commit 分类且禁止盲目重写。新增 node-bound
+    DispatcherPolicyWakeSink；disabled legacy 行会由同一权威 replace canonicalize。`./scripts/test.ps1 ./internal/decision`、
+    `./internal/store`、`./internal/reconcile` 与 `./scripts/verify.ps1` 均通过；独立 Tier-3 审查与 fresh delta review
+    均无 P0-P3。当前为 `REVIEW / Implemented`，等待用户
+    Code Review；未提交、未推送。IPC bridge 尚未 production runtime 注入；真实 target Linux socket、executable
+    wiring、服务重启与 Linux durability 为 `NOT RUN`，C2/G18/M0 不提升。
+92. 用户明确回复 `C2 authoritative Desired Policy write and Policy wake contract Code Review 通过`。该
+    Delivery Unit 由 `REVIEW / Implemented` 更新为 `DONE / Implemented`；既有 Docker targeted/full
+    verification 与独立 Tier-3 审查结论继续有效。本次仅同步用户验收状态，不重跑代码验证，未提交、未推送；
+    IPC bridge 尚未 production runtime 注入，真实 target Linux socket、executable wiring、服务重启与 Linux
+    durability 仍为 `NOT RUN`，C2/G18/M0 不提升。
+93. 用户明确回复 `C2 persistent NodeID runtime composition Code Review 通过`。该 Delivery Unit 由
+    `REVIEW / Implemented` 更新为 `DONE / Implemented`；既有 Docker `./scripts/test.ps1 ./cmd/guard-agent`、
+    `./scripts/verify.ps1`、`go test -race ./cmd/guard-agent` 与独立 Tier-3 终审结论继续有效。本次仅同步
+    用户验收状态，不重跑代码验证；本地提交 `13d6d39` 未推送。真实 target Linux socket、服务重启与 Linux
+    durability 仍为 `NOT RUN`；C2/G18/M0 不提升。持久 NodeID bootstrap contract 仍为 `REVIEW / Implemented`。
+94. 用户继续后完成 C2 下一候选只读预检。`guard-agent` 当前仅完成持久 NodeID 与一次 readiness Probe；
+    `IPCBackend`、persistent Controller、Desired PlanProvider、Dispatcher 和 node-bound wake sink 均尚无生产 owner。
+    下一候选为注入式 **C2 Reconcile runtime composition contract**：显式接收 immutable Infrastructure、target-policy
+    resolver、clock 与 Store，组合 Controller、Provider、Dispatcher 和 wake sink，并冻结启动、失败传播及先停
+    Dispatcher 后关 Store 的顺序。Static Infrastructure revision/backend/owner/digest 与 target-policy resolver 的
+    production authority 目前缺失，禁止从 IPC Probe、配置常量或 fake adapter 推导；PolicyService 也不新增 management
+    intake。当前 `IN_PROGRESS / Specified`，实施 `NO-GO`、验证 `NOT RUN`，等待独立的 NodeID bootstrap Code Review
+    通过及用户明确确认该契约。Config/Schema、数据库 migration、依赖、`guard-agent` 接线、Enforcer/Firewall mutation、
+    systemd、部署、真实 target Linux socket 与上级 Gate 均不在本批，C2/G18/M0 不提升。
+95. 用户明确回复 `C2 persistent NodeID bootstrap contract Code Review 通过`。该 Delivery Unit 由
+    `REVIEW / Implemented` 更新为 `DONE / Implemented`；既有 Docker Core/Store、targeted Race、
+    `./scripts/verify.ps1` 与独立 Tier-3 final review 结论继续有效。本次仅同步用户验收状态，不重跑代码验证；
+    本地提交 `13d6d39` 未推送。runtime composition 已独立为 `DONE / Implemented`；注入式 C2 Reconcile runtime
+    composition contract 仍为 `IN_PROGRESS / Specified`、实施 `NO-GO`，等待用户明确确认。C2/G18/M0 不提升。
+96. 用户确认 C2 Reconcile runtime composition contract 后，新增注入式 `ReconcileRuntime`：显式接收 NodeID、
+    Backend、Store、Critical Audit writer、共享 Clock、Static Infrastructure、target-policy resolver 与 queue capacity；
+    先 hydrate durable retry/Observed，再组合 Desired PlanProvider、Dispatcher、Decision finalizer 与 node-bound
+    Policy/Target wake sink。构造期 fail-closed 且只允许恢复读取；`Run` 拒绝并发/重用，保留 Dispatcher 与 Store Close
+    双重错误身份，并保证 Dispatcher 终止后才关闭 Store。Docker targeted Race、全仓 verify、Docker vet 与 scoped
+    diff-check 均通过；独立 `CHILD_AGENT / Tier-3` 终审为 `PASSED`、P0-P3 全无。当前 `REVIEW / Implemented`，
+    等待用户 Code Review；未接入 `guard-agent`，不构成真实 Enforcer/Firewall、target Linux socket、服务重启或 Linux
+    durability 证据。Static Infrastructure 与 target-policy resolver 的生产 authority 仍未冻结；C2/G18/M0 不提升，未提交、未推送。
+97. 用户明确回复 `C2 Reconcile runtime composition contract Code Review 通过`。该 Delivery Unit 由
+    `REVIEW / Implemented` 更新为 `DONE / Implemented`；既有 Docker targeted Race、全仓 verify、Docker vet、
+    scoped diff-check 与独立 Tier-3 终审结论继续有效。本次仅同步用户验收状态，不重跑代码验证，未提交、未推送。
+    `guard-agent` 接线、Static Infrastructure/target-policy resolver 的 production authority、真实 Enforcer/Firewall、
+    target Linux socket、服务重启和 Linux durability 仍未验证；C2/G18/M0 不提升。
+98. 用户继续下一开发任务后，下一最小候选为 **C2 PolicyService runtime composition contract**：既有 Store 已实现
+    `PolicyTransactionRunner` 与 `PolicyStateReader`，已验收的 ReconcileRuntime 已持有同一 target-policy resolver
+    生成的 finalizer 及 node-bound Policy/Target wake sink。拟议仅将这些冻结端口组合为唯一 PolicyService 并只读暴露；
+    不新增 management API/CLI/Web 或自动 Policy write。RuntimeStore 将显式要求两项 Policy Store port，构造失败不得
+    启动 Dispatcher、Probe、Apply 或写 Store。当前 `IN_PROGRESS / Specified`，实施 `NO-GO`、验证 `NOT RUN`，等待
+    用户明确确认。`guard-agent`、Config/Schema、数据库 migration、依赖、IPC/Enforcer、systemd、部署、target Linux 与
+    Static Infrastructure/target-policy resolver 的 production authority 均不在本批；C2/G18/M0 不提升。
+99. 用户确认 C2 PolicyService runtime composition contract 后，ReconcileRuntime 使用同一 Store、resolver-backed
+    finalizer 和 node-bound Policy/Target wake sink 组合唯一 `decision.PolicyService`；RuntimeStore 显式要求
+    `PolicyTransactionRunner` 与 `PolicyStateReader`。运行时仅暴露 node-bound 门面，跨 NodeID Policy write 在进入事务前
+    fail-closed，回归断言该路径零 Policy transaction。构造期不启动 Dispatcher，且不发起 Policy write、Probe、Apply 或
+    Store Close。Docker `./scripts/test.ps1 ./internal/reconcile`、Docker targeted Race、`./scripts/verify.ps1`、Docker
+    `go vet ./...` 与 scoped diff-check 均通过；第二轮独立 `CHILD_AGENT / Tier-3` 终审 P0-P3 均无、gate `PASSED`。
+    当前 `REVIEW / Implemented`，等待用户 Code Review；不接入 `guard-agent`，不新增 management API/CLI/Web 或自动
+    Policy write，也不改 Config/Schema、数据库 migration、依赖、IPC/Enforcer、systemd、部署或 target Linux。
+    Static Infrastructure/target-policy resolver 的 production authority、真实 Enforcer/Firewall、target Linux socket、
+    服务重启和 Linux durability 仍未验证；C2/G18/M0 不提升，未提交、未推送。
+100. 用户明确回复 `C2 PolicyService runtime composition contract Code Review 通过`。该 Delivery Unit 由
+     `REVIEW / Implemented` 更新为 `DONE / Implemented`；已冻结 `runtime.go` SHA256
+     `15CF417F...1F81CD8` 与 `runtime_test.go` SHA256 `C5BC26A1...72E423` 未漂移。既有 Docker targeted/Race、
+     全仓 verify、Docker vet、scoped diff-check 与第二轮独立 Tier-3 终审结论继续有效。本次仅同步用户验收，
+     不重跑代码验证，未提交、未推送。`guard-agent`、Static Infrastructure/target-policy resolver 的 production authority、
+     真实 Enforcer/Firewall、target Linux socket、服务重启和 Linux durability 仍未验证；C2/G18/M0 不提升。
+101. 用户继续下一开发任务后，C2 并行只读预检确认：PolicyService 没有受控的生产 Policy 变化源，不能从 Decision、
+     IPC Probe/Snapshot、Firewall observed 或默认常量推导 Policy authority；guard-agent→ReconcileRuntime production
+     wiring 同时缺 Static Infrastructure、TargetPolicyResolver、Critical Audit identity、Store 单一关闭所有权与 readiness/
+     degraded lifecycle 决策，直接接线 `NO-GO`。下一最小候选为 **C2 fixed nftables Desired Infrastructure authority and
+     IPC intent-binding contract**：冻结 native nftables 的 versioned immutable Infrastructure intent/revision，并在 IPC
+     bridge 发起 Infrastructure request 前将其与实际 layout identity fail-closed 绑定。该候选不接入 guard-agent、不启动
+     Reconcile、不改 IPC wire protocol、DB/config/deploy 或 target Linux，但会冻结跨包 Desired-to-IPC 语义，实施
+     `NO-GO`、验证 `NOT RUN`，等待用户明确确认。`internal/firewall/nftables/backend_linux.go` 与
+     `internal/reconcile/ipc_backend_linux.go` 已属于脏工作树，实施前须保留并隔离其现有 owner 改动；C2/G18/M0 不提升。
+102. 用户确认 C2 fixed nftables Desired Infrastructure authority and IPC intent-binding contract 后，新增 native
+     nftables 固定 Infrastructure authority：revision、backend、owner 与 digest 从同一 layout version marker 派生，
+     并与 managed observation 共用身份来源。Linux IPC bridge 在发送 Infrastructure mutation 前严格校验 Desired
+     revision/identity、`nftables-native` capability 与已存在 observed Infrastructure；漂移分别 fail-closed 为
+     `invalid_plan`、`not_ready` 或 `ownership_conflict`，空 Infrastructure 仅允许 native capability 首次 ensure。
+     新增回归覆盖 revision/backend/owner/digest、observed digest 与空快照非 native capability，全部断言零 IPC mutation。
+     Docker nftables/Reconcile targeted、targeted Race、全仓 verify、Docker vet 与 scoped diff-check 均通过；第二轮独立
+     `CHILD_AGENT / Tier-3` 终审 P0-P3 均无、gate `PASSED`。当前 `REVIEW / Implemented`，等待用户 Code Review；
+     不接入 guard-agent、不启动 Reconcile、不改 IPC wire、Enforcer、DB/config/deploy 或 target Linux。真实
+     Enforcer/Firewall、target Linux socket、服务重启与 Linux durability 未验证；C2/G18/M0 不提升，未提交、未推送。
+103. 用户明确回复 `C2 fixed nftables Desired Infrastructure authority and IPC intent-binding contract Code Review 通过`。
+     该 Delivery Unit 由 `REVIEW / Implemented` 更新为 `DONE / Implemented`；已冻结 IPC bridge SHA256
+     `C2810EC6...5A1850`、fixed authority SHA256 `3C9E7495...9FD7D4` 与两项新增测试 SHA256
+     `39D186FE...C0DE45`、`B00D8302...492D8` 未漂移。既有 Docker targeted/Race、全仓 verify、Docker vet、
+     scoped diff-check 与第二轮独立 Tier-3 终审结论继续有效。本次仅同步用户验收，不重跑代码验证，未提交、未推送。
+     `guard-agent`、真实 Enforcer/Firewall、target Linux socket、服务重启和 Linux durability 仍未验证；C2/G18/M0 不提升。
+104. 用户继续下一开发任务后，C2 并行只读预检确认：Critical Audit Store adapter 缺完整审计身份且无法与 retry
+     transition 保持同事务，单独实施 `NO-GO`；node-scoped expiry/lifecycle 当前有全库到期与 pending 读取，接入单节点
+     ReconcileRuntime 需新增 NodeID-filtered Store/Decision port 并重构 Dispatcher/Store 生命周期，也不宜作为最小单元。
+     下一候选为 **C2 fixed nftables TargetPolicy resolver authority contract**：新增 Linux-only factory，固定 input/forward
+     scope、native timeout 支持和从同一 native layout version marker 派生的 backend attributes digest，构造既有
+     `ManagedPolicyTargetResolver`，不读取 Probe/Snapshot/observed 状态、不接入 ReconcileRuntime 或 guard-agent。该单元会
+     新增跨包导出 factory 并冻结 TargetPolicy Desired 语义，实施 `NO-GO`、验证 `NOT RUN`，等待用户明确确认；不改
+     IPC、Enforcer、DB/config/deploy、target Linux 或上级 Gate。C2/G18/M0 不提升。
+105. 用户确认并通过 `C2 fixed nftables TargetPolicy resolver authority contract Code Review`。新增 Linux-only
+     factory，固定 input/forward scope、native timeout 与同一 nftables layout version marker 派生的 backend attributes
+     digest，构造既有 `ManagedPolicyTargetResolver`；不读取 Probe/Snapshot/observed，不接入 ReconcileRuntime 或
+     guard-agent。Docker nftables targeted/Race、全仓 verify、Docker vet 与 scoped diff-check 均通过；独立
+     `CHILD_AGENT / Tier-3` 终审 P0-P3 均无、gate `PASSED`。Delivery Unit 为 `DONE / Implemented`；真实
+     Enforcer/Firewall、target Linux socket、服务重启和 Linux durability 未验证，C2/G18/M0 不提升，未提交、未推送。
+106. 用户确认后，C2 审计化 retry transition 事务契约已实现：Infrastructure、Policy、Target 的管理员 Retry
+     通过专用 SQLite 端口，将 clean Pending ledger、完整 `reconcile_retry` Critical Audit 与连续 epoch 同事务提交。
+     commit outcome 不明时，只有同一只读快照中的精确 ledger 与 audit（含 `critical` 和四个 NULL 列）均匹配，才发布
+     新 epoch；单侧或字段漂移 fail-closed。Docker Store/Reconcile targeted、全仓 `./scripts/verify.ps1` 与 scoped
+     diff-check 均通过；两路 `CHILD_AGENT / Tier-3` fresh review P0-P3 均无。用户已明确 Code Review 通过，Delivery Unit
+     更新为 `DONE / Implemented`；本次仅同步验收记录，代码验证未重跑。未改 migration、Config、IPC、Enforcer、真实 Firewall、guard-agent、systemd、部署或目标 Linux；
+     C2/G18/M0 不提升，未提交、未推送。
+107. 用户确认接管 node-scoped expiry/lifecycle 脏改动后，LifecycleService、expiration scheduler、Pending Target
+     read 与 SQLite 到期事务均以同一 NodeID 过滤；ReconcileRuntime 组合 node-local lifecycle、ExpirationRuntime、
+     Dispatcher 与 Store，并在两个循环停止后才 Close Store。Manual 路径同时在 service/request 与同一 SQLite
+     transaction 的持久 NodeID 写围栏处 fail-closed，跨节点请求零事务，持久 NodeID mismatch 零 Decision/Audit/
+     Projection/Intent 写入且零 wake。Docker `./scripts/test.ps1 ./internal/decision`、`./scripts/test.ps1 ./internal/store`、
+     `./scripts/test.ps1 ./internal/reconcile` 与全仓 `./scripts/verify.ps1` 均通过；两路 fresh `CHILD_AGENT / Tier-3` 终审 P0-P3
+     均无。当前 `REVIEW / Implemented`，等待用户 Code Review；不接入 guard-agent，不新增 Config/Schema、migration、
+    IPC/Enforcer、依赖、systemd、部署、目标 Linux 或上级 Gate。C2/G18/M0 不提升，未提交、未推送。
+108. 用户确认 Store 全量业务数据读写迁移到 GORM 后，Source、Decision、Desired/Policy、Observed、Reconcile 与
+     Node identity 的业务查询和写入均改为 GORM model/query/clause API，并继续绑定到 Store 唯一拥有的
+     `*sql.Tx`。新增源码边界测试，禁止业务文件使用 `.Raw()`、`ExecContext`、`QueryContext` 或
+     `QueryRowContext`。checksummed migration、migration ledger、SQLite driver/DSN、逐连接 PRAGMA read-back、
+     GORM ConnPool 适配以及测试 Schema/trigger 交叉验证仍为受控基础设施例外；不改 Schema、migration、依赖、
+     IPC、Enforcer、部署或上级 Gate。Docker Store、Decision、Reconcile targeted、受影响包 Race 与全仓
+     `./scripts/verify.ps1` 通过，scoped diff-check 通过。用户 Code Review 已通过，当前 `DONE / Implemented`；
+     本次仅同步验收状态，未重跑验证、未提交、未推送，C2/G18/M0 不提升。
+109. 用户继续后完成 C1、C2、B4 并行只读预检。C1 的 lag/gap/data-loss 观测必须先建立真实 File/Journald reader
+     的 position/high-water authority；C2 guard-agent→ReconcileRuntime 接线缺完整初始 Desired Policy authority、
+     ready/degraded 语义、审计契约与队列容量 authority，均为 `NO-GO`。唯一独立候选为 **B4 IPC 持续 fuzz CI**：
+     仅在现有 GitHub Actions 新增受时限、最小权限的既有 IPC fuzz target job，不改 Go、协议、Firewall、systemd 或部署。
+     它属于 CI 配置变更，实施 `NO-GO`、验证 `NOT RUN`，等待用户明确确认；B4/G18/M0 不提升。
+110. 用户要求 Store 表字段不得在运行时硬编码后，按表新增 package-level `*Columns` struct，覆盖 Source、
+     Desired/Policy、Observed、Reconcile、UnitOfWork、Decision 生命周期与 Node identity。所有运行时
+     Select、Where map、Update(s)、Order、clause Column、AssignmentColumns 均引用对应映射；GORM struct tag
+     保留为不可变量化的编译期模型元数据。AST 源码边界测试要求列承载调用使用 Columns selector、映射列表或
+     可追溯封闭 helper，校验所有 `column:` tag 均有映射，并覆盖 alias、拼接列名与 terminal inline condition
+     绕过。Docker Store、Decision、Reconcile targeted、全仓 `./scripts/verify.ps1` 与守卫相关 race 通过；边界、
+     覆盖、语义独立增量复审均为 `APPROVED`、P0-P3 为零。当前 `REVIEW / Implemented`，等待用户 Code Review；
+     未提交、未推送，C2/G18/M0 不提升。
+111. Store 全局 Columns 映射批次已获用户 Code Review 通过，状态转为 `DONE / Implemented`。已接受按表
+     映射、GORM tag 完整性校验、列承载调用结构守卫及验证/独立审查证据；本地提交
+     `c465c15 refactor(store): migrate business persistence to gorm`，未推送，C2/G18/M0 不提升。
+112. 用户确认 B4 IPC 持续 Fuzz CI 后，`verify.yml` 新增独立 `ipc-fuzz` job：继承既有触发与
+     `contents: read`，使用 10 分钟 job 上限、权威 Docker Go runner，并运行既有
+     `FuzzDecodeFrameClosedUnion` 30 秒、单并发 fuzz；无论结果均清理容器、卷和 orphan。Docker 同入口
+     10 秒 fuzz smoke、全仓 `./scripts/verify.ps1` 与 compose config 检查通过；独立 workflow 审查
+     `APPROVED`、P0-P3 为零。远端 GitHub Actions 尚未触发，当前 `REVIEW / Implemented`，等待用户
+     Code Review；未提交、未推送，B4/G18/M0 不提升。
+113. 用户已明确通过 B4 IPC 持续 Fuzz CI 的 Code Review，Delivery Unit 转为 `DONE / Implemented`。
+     本次仅同步用户验收；远端 GitHub Actions 尚未触发，保持 `NOT RUN`，未提交、未推送，B4/G18/M0 不提升。
+114. B4 fuzz 验收后再次只读选择下一开发项：C1 lag/gap/data-loss observation 需要真实 File/Journald
+     reader high-water、inode/cursor gap 与 Data Loss/Health authority；现有 Position、checkpoint 和 QueueStats
+     不足以推导，当前 `NO-GO`。C2 guard-agent→ReconcileRuntime production wiring 同样 `NO-GO`：新数据库
+     缺完整初始 Desired Policy，Ready/Degraded/退出、Audit identity 与 Store Close ownership 未冻结，且相关
+     C1/C2/B3 脏工作树不能自动纳入。等待用户确认 C2 runtime 接线契约及初始 Policy 唯一来源，或先授权
+     C1 reader observation 的跨包/数据边界；B4/G18/M0 不提升。
+115. C2 guard-agent→ReconcileRuntime production wiring 已获用户 Code Review 通过，Delivery Unit 更新为
+     `DONE / Implemented`。既有 Docker guard-agent、Store、Reconcile targeted、全仓 verify、targeted race
+     与三路独立 Tier-3 审查结论继续有效；本次仅同步验收，未重跑验证、未暂存、未提交、未推送。C2/G18/M0
+     不提升，真实 target Linux IPC/Enforcer E2E 为 `NOT RUN`。
+116. guard-agent 接线验收后的并行只读预检确认：C2 node-scoped expiry/lifecycle runtime ownership 是下一
+     顺序验收门；C1/C2/B3 当前混合工作树没有可安全继续实施的独立候选。验收后直接 C2 缺口为 target Linux
+     IPC/Enforcer E2E，需要用户指定 Disposable Linux VM 并确认可能创建或收敛 Guard 管理 nftables 对象的
+     真实验证范围。
+117. C2 node-scoped expiry/lifecycle runtime ownership 已获用户 Code Review 通过，Delivery Unit 更新为
+     `DONE / Implemented`。既有 Docker Decision、Store、Reconcile targeted、全仓 verify、scoped diff-check
+     与两路独立 Tier-3 审查结论继续有效；本次仅同步验收，未重跑验证、未暂存、未提交、未推送。C2/G18/M0
+     不提升；target Linux IPC/Enforcer E2E 仍为 `NOT RUN`。
+118. 用户授权当前混合工作树在 clean Disposable Linux VM 执行 C2 target Linux IPC/Enforcer E2E。
+     non-privileged guard-agent 通过 root guard-enforcer 的固定 Unix socket 创建并读回 Guard-owned
+     `inet guard` 初始 Infrastructure/Policy；SIGTERM 后进程和 socket 退出，且本次创建的 table、临时目录、
+     guard 用户/组均已读回 absent。该 VM 级证据不覆盖 service restart、durability、Target mutation 或
+     non-clean Firewall compatibility，C2 仍为 `IN_PROGRESS / Implemented`，G18/M0 不提升。
+119. C2 target Linux IPC/Enforcer E2E Evidence 经独立 `CHILD_AGENT / fresh / Evidence-only` final review
+     `PASSED`，P0-P3 均无。当前 Delivery Unit 为 `REVIEW / Implemented`，等待用户 Code Review；该结论仅覆盖
+     clean-VM 初始 reconcile 和 Guard-owned cleanup，不覆盖 service/process restart、durability/crash、Target
+     mutation/native timeout、IPC health source 或 non-clean Firewall compatibility。C2/G18/M0 不提升。
+120. 用户明确回复 `C2 target Linux IPC/Enforcer E2E Code Review 通过`，该 Delivery Unit 更新为
+     `DONE / Implemented`。clean-VM 初始 reconcile、Guard-owned cleanup 与独立 Evidence-only final review
+     结论继续有效；本次仅同步验收，未重跑验证、未暂存、未提交、未推送。本机临时 private/public key、build
+     directory 与 known-hosts 清理仍为 `UNAVAILABLE`，待用户手动完成。C2 总项仍为 `IN_PROGRESS / Implemented`，
+     G18/M0 不提升；service/process restart、durability/crash、Target mutation/native timeout、IPC health source
+     与 non-clean Firewall compatibility 仍未验证。
+121. 用户确认 C2 clean target-Linux manual process restart/reopen E2E，并要求保留共享 SSH 公钥。current mixed
+     worktree 的 Linux amd64 二进制 hash 与初始 E2E binding 一致；clean VM 上 root Enforcer→guard agent 首启、
+     SIGTERM 后保留 SQLite/Guard table、同顺序重开，以及最终 identity-guarded cleanup 均完成。只读 SQLite
+     logical inventory 在停前与重开后逐字节一致，socket owner/mode、Guard table identity 与唯一性均已读回。独立
+     `CHILD_AGENT / fresh / Evidence-only` final review `PASSED`，P0-P3 均无；当前 Delivery Unit 为
+     `REVIEW / Implemented`，等待用户 Code Review。C2 总项仍为 `IN_PROGRESS / Implemented`，G18/M0 不提升；
+     systemd-managed restart、crash/durability、Target mutation/native timeout、real IPC health source 与 non-clean
+     Firewall compatibility 仍未验证。未暂存、未提交、未推送。
+122. 用户明确回复 `C2 target Linux manual process restart/reopen E2E Code Review 通过`，该 Delivery Unit 更新为
+     `DONE / Implemented`。clean-VM 手工重开、SQLite logical inventory、Guard table/socket readback、identity-guarded
+     cleanup 与独立 Evidence-only final review 结论继续有效；本次仅同步验收，未重跑验证、未暂存、未提交、未推送。
+     共享 SSH 私钥、公钥与 known-hosts 继续保留。C2 总项仍为 `IN_PROGRESS / Implemented`，G18/M0 不提升；
+     systemd-managed restart、crash/durability、Target mutation/native timeout、real IPC health source、non-clean
+     Firewall compatibility 与 C3 crash matrix 仍未验证。
+123. C2 manual restart/reopen E2E 验收后的并行只读预检选择 clean target-Linux SIGKILL crash/reopen E2E 为
+     下一最短候选：分别强杀 agent 与 Enforcer 后读回 SQLite/Guard table/socket/process，再重开并比对 SQLite
+     logical inventory 与 nftables 唯一性，最后 identity-guarded cleanup。真实进程强杀、临时 guard 身份、`/run/guard`、
+     SQLite、socket 与 Guard-managed nftables 的运行需要用户单独确认；共享 SSH 访问材料保持保留。该候选不证明
+     OS/power-loss/fsync durability。systemd-managed restart、Target mutation/native timeout、real IPC health source、
+     non-clean Firewall compatibility 与 C3 crash matrix 仍需更宽授权；C2/G18/M0 不提升，实施 `NO-GO`、验证 `NOT RUN`。
+124. 用户确认 C2 clean target-Linux SIGKILL crash/reopen E2E。Agent SIGKILL 后 Enforcer/socket 保持并以 replacement
+     Agent 恢复；Enforcer SIGKILL 后实际读回 stale socket，并以 root Enforcer→guard Agent 顺序恢复。两次重开均通过
+     SQLite mode=ro logical inventory 比对，socket owner/mode、Guard table identity 与 nftables 唯一性均已读回；最终
+     identity-guarded cleanup 通过，SSH 访问材料保留。独立 `CHILD_AGENT / fresh / Evidence-only` final review
+     `PASSED`，P0-P3 均无；当前 Delivery Unit 为 `REVIEW / Implemented`，等待用户 Code Review。C2 总项仍为
+     `IN_PROGRESS / Implemented`，G18/M0 不提升；不覆盖 systemd-managed restart、OS reboot/power-loss/fsync
+     durability、Target mutation/native timeout、real IPC health source、non-clean Firewall compatibility 或 C3 crash matrix。
+125. 用户明确回复 `C2 target Linux SIGKILL crash/reopen E2E Code Review 通过`，该 Delivery Unit 更新为
+     `DONE / Implemented`。双 SIGKILL 分支、stale-socket recovery、SQLite logical inventory、nftables/socket
+     readback、identity-guarded cleanup 与独立 Evidence-only final review 结论继续有效；本次仅同步验收，未重跑验证、
+     未暂存、未提交、未推送。共享 SSH 私钥、公钥与 known-hosts 继续保留。C2 总项仍为 `IN_PROGRESS / Implemented`，
+     G18/M0 不提升；systemd-managed restart、OS reboot/power-loss/fsync durability、Target mutation/native timeout、
+     real IPC health source、non-clean Firewall compatibility 与 C3 crash matrix 仍未验证。
+126. 用户提出部署命名期望：Enforcer 为 `guard-wall-core`、Agent 为 `guard-wall-agent`、未来 Server 为
+     `guard-wall-server`。只读预检确认前两项可通过发布二进制和 systemd `ExecStart` 名称实现，保持源目录、`guard`
+     身份及 `/run/guard/enforcer.sock` 不变；但现有 Agent unit 缺少必需 config 参数和数据目录写权限，不能只重命名。
+     当前无 Server 入口或 service，且 M0 Phase 1 不含 Server 实现；`guard-wall-server` 仅可保留为未来名称。该项涉及
+     systemd、安装路径、配置/数据权限和旧 unit 迁移，实施 `NO-GO`，等待用户确认最小部署范围；未改代码或目标 VM。
+127. 用户确认 core/agent 最小部署命名范围后，发布工件与 systemd units 分别更新为
+     `guard-wall-core`/`guard-wall-core.service` 和 `guard-wall-agent`/`guard-wall-agent.service`，旧 unit 不保留别名。
+     Core 保持 root UID、`guard` group、`/run/guard` 与仅 `CAP_NET_ADMIN`；Agent 依赖 Core、以 `guard`
+     无 capability 运行、使用绝对 `/etc/guard/guard-wall.yaml` 配置，且仅以 `StateDirectory=guard`、
+     `ReadWritePaths=/var/lib/guard` 写入 SQLite。新增 sysusers、无 secret 配置样例、静态 packaging verifier 与部署文档；
+     Docker `./scripts/verify.ps1`（含 Linux amd64 命名工件构建）及 scoped diff-check 通过。独立 `CHILD_AGENT /
+     FULL_SCOPE` 审查发现并修复 Agent StateDirectory 默认 mode 风险：新增 `StateDirectoryMode=0750`，同步 verifier
+     和部署文档，重跑验证后 P0-P3 均无、gate `PASSED`、Coverage `COMPLETE`、Freshness `FRESH`。`guard-wall-server`
+     仅保留为未来名称，未实现 binary 或 service。当前 `REVIEW / Implemented`，等待用户 Code Review；target Linux
+     systemd 安装、`systemd-analyze verify`、daemon-reload 和 service lifecycle E2E 均为 `NOT RUN`，需要单独授权。
+     未提交、未推送。
+128. 用户回复“继续下一步”后，仅完成 core/agent target Linux systemd E2E 的只读预检，不视为 Code Review 通过或
+     目标机写入授权。共享 SSH 可连接指定 Disposable VM；systemd 249、`systemd-analyze`、`systemd-sysusers` 与
+     `sudo -n` 均可用，新旧 GuardWall unit、binary、config、sysusers、guard identity、state/runtime path 均 absent，
+     可作为 clean fixture。实际 E2E 仍须用户明确授权安装/覆盖本轮 binary、unit、config、sysusers，运行
+     systemd-sysusers、daemon-reload、enable/start/restart，及创建/清理本轮 SQLite、socket 与 Guard-owned nftables。
+     共享 SSH 私钥、公钥与 known-hosts 保留。当前未上传、未安装、未启动、未写目标机，Delivery Unit 仍为
+     `REVIEW / Implemented`；target Linux systemd E2E 为 `NOT RUN`，未提交、未推送。
+129. 用户明确通过 core/agent 部署命名 Code Review 并授权 clean target Linux systemd E2E。命名 Linux amd64
+     artifacts 与 unit/config/sysusers SHA256 readback 一致；首启暴露 `ReadWritePaths=/run/guard` 在 systemd sandbox
+     建立前要求路径存在，Core 以 `226/NAMESPACE` 失败。最小修复为 `RuntimeDirectory=guard`、
+     `RuntimeDirectoryMode=0750`、`Group=guard`，使 systemd 预建 `root:guard 0750` runtime directory；静态 verifier、
+     部署文档和 Evidence 同步。修复后 remote `systemd-analyze verify`、daemon-reload、enable/start、Core/Agent
+     identity/capability/path/socket/SQLite/nftables readback、Agent restart 与 Core→Agent reopen、SQLite inventory
+     byte comparison、identity-guarded cleanup 均通过。共享 SSH 私钥、公钥与 known-hosts 保留；本轮 target VM 已读回
+     unit、binary、config、sysusers、guard identity、SQLite/state、runtime/socket 与 `inet guard` 全部 absent。Docker
+     `./scripts/verify.ps1` 与 scoped diff-check 通过。独立 `CHILD_AGENT / FULL_SCOPE` 审查覆盖部署名、unit、
+     sysusers、config、包装验证、部署文档、E2E Evidence、STATUS 和旧 unit 删除，P0-P3 均无、gate `PASSED`、
+     Coverage `COMPLETE`、Freshness `FRESH`。当前 `REVIEW / Implemented`，等待用户复核修复后的交付面；不证明 OS
+     reboot/power-loss/fsync durability、Target mutation/native timeout、real IPC health source、non-clean Firewall
+     compatibility 或 C3 crash matrix，C2/G18/M0 不提升，未提交、未推送。
+130. 用户明确回复 `C2 target Linux core/agent systemd E2E Code Review 通过`，该 Delivery Unit 更新为
+     `DONE / Implemented`。target Linux systemd 安装、`systemd-analyze verify`、受管 restart/reopen、SQLite
+     inventory、nftables/socket readback、identity-guarded cleanup 与独立 `CHILD_AGENT / FULL_SCOPE` 审查结论继续
+     有效；本次仅同步验收，未重跑验证、未暂存、未提交、未推送。共享 SSH 私钥、公钥与 known-hosts 继续保留。
+     C2 总项仍为 `IN_PROGRESS / Implemented`，G18/M0 不提升；OS reboot/power-loss/fsync durability、Target
+     mutation/native timeout、real IPC health source、non-clean Firewall compatibility 与 C3 crash matrix 仍未验证。
+131. systemd E2E 验收后完成 C2 并行只读预检，选择 **C2 target Linux normal OS reboot/reopen E2E** 为下一最小
+     Evidence Delivery Unit：复用已通过的安装、systemd 自启、restart/reopen 和 Guard-owned cleanup，仅增加一次受控
+     reboot，验证 boot ID 变化、Core→Agent 开机顺序、`/run/guard` socket 重建、SQLite logical inventory、唯一
+     `inet guard` identity 及最终 cleanup。目标 Disposable VM 当前保持 clean fixture，根文件系统为 ext4，systemd 249、
+     `sudo -n` 与 SSH 均可用，新 unit、guard identity 与 `inet guard` 均 absent。普通 reboot 只证明受控开机重开，
+     不证明 power-loss/fsync durability、commit acknowledgement loss、Target mutation/native timeout、real IPC health
+     source、non-clean Firewall compatibility 或 C3 crash matrix；实施 `NO-GO`、验证 `NOT RUN`，等待用户明确授权 VM
+     reboot 及本轮安装/cleanup 范围。C2/G18/M0 不提升，未提交、未推送。
+132. 用户授权后在 clean target Linux 执行一次 `systemctl reboot`；boot ID 从
+     `37e6dfbb-9344-4661-a1a9-df0340e9565d` 变为 `2b5aaaa8-71b9-4add-bcc0-4aefecad3519`。两项 enabled unit 以
+     Core→Agent 顺序恢复 active，新的进程 PID、完整命令行、UID/GID、Core-only `CAP_NET_ADMIN`、重建后的
+     `/run/guard` socket 与唯一 Guard table identity 均通过读回。SQLite migration、Desired、protected target、
+     Observed 与 Reconcile 的 post-reboot 语义不变量通过；但完整全行 snapshot hash 由
+     `4472467c4cd70f5790abaf52d6ab4e9621d667ce1f36c68cf9e7fbb6cc6c2aca` 变为
+     `e699819266d09c828eb6b4f61882caaa24f880272571c274dbe7b5b007bab852`，且详细 pre-reboot projection 位于
+     易失 `/tmp`，字段级归因与跨 reboot stable identity/full-row continuity 为 `UNAVAILABLE`。identity-guarded
+     cleanup 已读回所有本轮目标 absent，SSH 材料保留。独立 `CHILD_AGENT / Evidence-only` 增量复审已通过，P0-P3
+     均无；Delivery Unit 为 `REVIEW / Implemented`，等待用户 Code Review。不证明 power-loss/fsync durability、Target mutation/native timeout、
+     real IPC health source、non-clean Firewall compatibility 或 C3 crash matrix，C2/G18/M0 不提升，未提交、未推送。
+133. 用户明确回复 `C2 target Linux normal OS reboot/reopen E2E Code Review 通过`，该 Delivery Unit 更新为
+     `DONE / Implemented`。normal reboot 后 systemd 自启、Core→Agent 顺序、socket/nftables、SQLite post-boot
+     语义不变量、identity-guarded cleanup 与独立 Evidence-only 审查结论继续有效；本次仅同步验收，未重跑验证、未暂存、
+     未提交、未推送。共享 SSH 私钥、公钥与 known-hosts 继续保留。跨 reboot stable identity/full-row continuity
+     仍为 `UNAVAILABLE`，且不证明 power-loss/fsync durability、Target mutation/native timeout、real IPC health source、
+     non-clean Firewall compatibility 或 C3 crash matrix；C2 总项仍为 `IN_PROGRESS / Implemented`，G18/M0 不提升。
+134. reboot/reopen E2E 验收后的只读预检选择 **C2 target Linux reboot continuity evidence E2E** 为最小补强候选：
+     不改业务代码、不引入接口；reboot 前将归一化的 SQLite stable projection（NodeID、migration ledger、Desired、
+     protected targets、Observed 的非时间字段与 Reconcile status/retry epoch）通过 SSH 读回保存到本机临时目录，
+     reboot 后生成同一 projection 并在本机比较，以消除易失 `/tmp` 造成的 `UNAVAILABLE`。该候选仍须用户明确授权
+     一次 VM reboot、限定安装/cleanup 与本机临时证据保存；不得将其表述为 power-loss/fsync durability。Target mutation/
+     native timeout 仍缺受控 intent 输入，IPC health 仍缺跨进程可观测性契约，non-clean Firewall 仍需指定 topology，
+     C3 仍依赖更宽完成条件。Agent Web 当前无前端、HTTP 或 OpenAPI 实现，属于 `M10-WP1 Web / BLOCKED / Specified`，
+     需 M1-M9 Exit、API/Auth 与前端技术栈批准后才能实施。C2/G18/M0 不提升，未提交、未推送。
+135. 用户已授权 C2 target Linux reboot continuity evidence E2E；本机启动 Docker Go runner 时 Docker Desktop
+     Linux engine 的 named pipe `dockerDesktopLinuxEngine` 不存在，当前 Linux amd64 build 为 `BLOCKED`。项目规则
+     禁止以 WSL、宿主缓存或旧工件替代 Docker Linux 构建，因此未上传任何 artifact、未安装/重启目标 VM、未创建
+     target-side Guard 资源；共享 SSH 私钥、公钥与 known-hosts 未触及。等待 Docker Desktop Linux engine 恢复后从
+     当前混合工作树重新构建并继续已授权 E2E；C2/G18/M0 不提升，未提交、未推送。
+136. Docker Linux engine 恢复后，用户已授权的 C2 reboot continuity evidence E2E 完成：boot ID 从
+     `2b5aaaa8-71b9-4add-bcc0-4aefecad3519` 变为 `c5b78905-ae82-499e-a542-0df72632cdf7`，enabled Core→Agent
+     systemd reopen、runtime socket 与唯一 Guard table identity 均通过。reboot 前将 normalized stable SQLite
+     projection 回传到本机临时目录，reboot 后以同口径比较，SHA256 均为
+     `be6cd05413a2aa32f97f2110a1b8ba55a61b9e1cc349495b3b79c74e143a4873`，验证 NodeID、migration、Desired、
+     protected targets、Observed 非时间字段和 Reconcile status/retry continuity。identity-guarded cleanup 读回全部
+     本轮目标 absent，SSH 材料保留。独立 `CHILD_AGENT / Evidence-only` 复审已通过，P0-P3 均无；Delivery Unit 为
+     `REVIEW / Implemented`，等待用户 Code Review。不证明 full-row byte continuity、power-loss/fsync durability、Target mutation/native timeout、
+     real IPC health source、non-clean Firewall compatibility 或 C3 crash matrix，C2/G18/M0 不提升，未提交、未推送。
+137. 用户明确回复 `C2 target Linux reboot continuity evidence E2E Code Review 通过`，该 Delivery Unit 更新为
+     `DONE / Implemented`。normal reboot 后 normalized stable SQLite projection continuity、systemd Core→Agent
+     reopen、socket/nftables、identity-guarded cleanup 与独立 Evidence-only 审查结论继续有效；本次仅同步验收，未重跑
+     验证、未暂存、未提交、未推送。共享 SSH 私钥、公钥与 known-hosts 继续保留。该证据不包含 full-row byte
+     continuity、power-loss/fsync durability、Target mutation/native timeout、real IPC health source、non-clean Firewall
+     compatibility 或 C3 crash matrix；C2 总项仍为 `IN_PROGRESS / Implemented`，G18/M0 不提升。
+138. 用户确认 M0 采用进程级 Crash/Recovery 验收边界：已提交与未提交边界的
+     `SIGKILL → reopen` 和 clean target Linux Guard-owned E2E 是 M0 的故障恢复输入；
+     OS reboot、power-loss、filesystem barrier/fsync、non-clean Firewall topology 与完整 C3
+     Crash Matrix 转入 M7/M10 和 Release Evidence。该范围变更已由 ADR-0010 与 D-008 固化，
+     不改变最小权限、IPC 身份校验、Firewall 所有权、Probe-first Unknown、背压或事务顺序；
+     G18.1–G18.3 仍为 `FAIL`，M0 仍为 `NO-GO`。
+139. M0 process-recovery manifest guard 已实现并通过 Docker 定向测试与完整 `verify.ps1`：
+     它锁定 Contract path、M0 四项 case 的 scope、`SIGKILL → reopen`、精确注入点、预期状态与
+     final-state 字段，并保证扩展 Crash Matrix 保持在 M0 Gate 外。带 `integration` 标签的 001–003
+     定向重跑通过；合并 source 包执行因 Docker runner 缺少 `journalctl` 使无关 Journald 用例失败，
+     不影响三个精确目标的通过结论。004 clean-target Agent/Enforcer SIGKILL/reopen 尚无仓内自动化
+     runner，静态 guard 不构成 D5 完成、clean-target E2E 或 G18/M0 Gate 证据。
+140. M0-RECOVERY-004 clean-target binary runner 已在 disposable Docker network namespace 通过：真实
+     root Enforcer 与 guard Agent 的两次 `SIGKILL → reopen`、root:guard socket stale/inode replacement、
+     唯一 Guard table、guard 身份 production Store reopen/readback、replacement Agent 触发的 fresh
+     Observed/retry signature 与 identity-guarded cleanup 均已执行。runner 同时要求命名
+     `M0-RECOVERY-004` 子测试通过，避免入口函数缺失该用例。Docker E2E、完整 `verify.ps1` 与 scoped
+     diff-check 均通过；D5 仍为 `IN_PROGRESS / Implemented`，G18.1–G18.3 仍 `FAIL`，M0 仍 `NO-GO`。
+141. M0-RECOVERY-001–004 manifest→runner 映射已固化：001–003 使用可筛选的 case-ID test name，
+     004 保持命名子测试；manifest 为每项记录 package、build tag、精确 command、source path、隔离环境、
+     重开次数和读回范围。Contract guard 使用 Go AST 校验所有顶层 Test 函数，004 额外校验子测试与
+     nftables runner 的 required PASS token；002 注入点统一为 `after_rotation_before_receipt`。001–003 Docker
+     定向测试、contracts、完整 `verify.ps1`、scoped diff-check 与两路独立 delta review 均通过。该映射只增强
+     M0 process-recovery 子集的可追溯性，D5 仍为 `IN_PROGRESS / Implemented`，G18/M0 状态不变。
+142. M0 process-recovery 已提供统一 Docker 入口 `scripts/test-m0-process-recovery.ps1`：依次执行
+     001/003 Store 定向 SIGKILL→reopen、002 Source 定向 SIGKILL→reopen、Contract guard，以及使用既有
+     disposable nftables 参数的 004 clean-target E2E；执行结束移除本地临时镜像。manifest 记录该入口及其
+     隔离环境，Contract guard 校验实际编排、004 Dockerfile→runner 链路与隔离参数。完整入口重跑通过；D5 仍为 `IN_PROGRESS / Implemented`，
+     G18.1–G18.3 仍 `FAIL`，M0 仍 `NO-GO`。
+143. ADR-0011 固化已实现的 Reconcile Retry 与 Unknown-result 边界：三条 failure domain、revision/generation
+     retry key、一次首次调用加五次自动重试、固定退避、durable attempt、Unknown 后 Probe-first、管理员
+     RetryEpoch 与 Critical Audit 同事务。它不改变 public API、SQLite schema 或 retry 参数；D4 仍为
+     `IN_PROGRESS / Implemented`，G18.1–G18.3 仍 `FAIL`，M0 仍 `NO-GO`。
+144. ADR-0012 固化固定 native nftables 的 Guard-owned layout、ownership proof、foreign digest、写后
+     Snapshot 与 clean-target 验证边界；UFW、Docker 与未知 packet path 仍 fail-closed。它不改变
+     Firewall API、物理 layout 或 capability 参数；D4 仍为 `IN_PROGRESS / Implemented`，G18.1–G18.3
+     仍 `FAIL`，M0 仍 `NO-GO`。
+145. ADR-0013 固化 SQLite PRAGMA、短事务、process-level SIGKILL/reopen 与 durability failure-domain
+     边界；WAL checkpoint 不等于 Source checkpoint，OS reboot/power-loss/filesystem barrier/fsync 仍为
+     `NOT VERIFIED`。它不改变 driver、PRAGMA、schema 或 transaction API；D4 仍为
+     `IN_PROGRESS / Implemented`，G18.1–G18.3 仍 `FAIL`，M0 仍 `NO-GO`。
+146. ADR-0014 固化 Linux systemd 的 Core/Agent service name、身份、目录、capability 与安装顺序；
+     packaging/static check 仅证明交付工件，不证明目标 Linux installation、service lifecycle 或生产
+     hardening。D4 ADR 覆盖现已具备，仍等待 Evidence 汇总与复核；G18.1–G18.3 仍 `FAIL`，M0 仍 `NO-GO`。
+147. D5 M0 process-recovery Contract Tests 已由统一 Docker runner 非缓存、详细重跑：001–003 的
+     process-level `SIGKILL → reopen` 与 004 disposable clean-target Agent/Enforcer E2E 均通过。每项
+     运行时读回均记录 final-state digest，Evidence 同时冻结 runner、manifest、测试入口、004 runner/Dockerfile
+     checksum 与容器 image manifest。D5 更新为 `COMPLETE / Verified`；D6/D7、其余 G18 输入与 commit-bound
+     Evidence Manifest 仍未完成，G18.1–G18.3 保持 `FAIL`，M0 保持 `NO-GO`。

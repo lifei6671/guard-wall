@@ -107,6 +107,60 @@ func TestSnapshotRejectsForeignOrDriftedGuardTable(t *testing.T) {
 	}
 }
 
+func TestParseRulesetCanonicalizesForeignDynamicFieldsAndOrder(t *testing.T) {
+	first := []byte(`{"nftables":[
+{"metainfo":{"version":"1.0.2"}},
+{"table":{"family":"inet","name":"ambient","handle":11}},
+{"chain":{"family":"inet","table":"ambient","name":"audit","handle":12}},
+{"set":{"family":"inet","table":"ambient","name":"allow","type":"ipv4_addr","handle":14,"elem":["198.51.100.1","198.51.100.2"]}},
+{"flowtable":{"family":"inet","table":"ambient","name":"ft","handle":15}},
+{"quota":{"family":"inet","table":"ambient","name":"quota","handle":16}},
+{"rule":{"family":"inet","table":"ambient","chain":"audit","handle":13,"expr":[{"counter":{"packets":1,"bytes":2}},{"accept":null}]}}]}`)
+	second := []byte(`{"nftables":[
+{"rule":{"chain":"audit","table":"ambient","family":"inet","handle":99,"expr":[{"counter":{"bytes":888,"packets":777}},{"accept":null}]}},
+{"quota":{"name":"quota","table":"ambient","family":"inet","handle":94}},
+{"flowtable":{"name":"ft","table":"ambient","family":"inet","handle":96}},
+{"set":{"name":"allow","table":"ambient","family":"inet","handle":95,"type":"ipv4_addr","elem":["198.51.100.2","198.51.100.1"]}},
+{"chain":{"name":"audit","table":"ambient","family":"inet","handle":98}},
+{"table":{"name":"ambient","family":"inet","handle":97}},
+{"metainfo":{"version":"1.0.2"}}]}`)
+	left, err := parseRuleset(first, time.Now())
+	if err != nil || left.ownershipConflict || left.hasUnknownPacketPath {
+		t.Fatalf("first parse = (%#v, %v)", left, err)
+	}
+	right, err := parseRuleset(second, time.Now())
+	if err != nil || right.ownershipConflict || right.hasUnknownPacketPath {
+		t.Fatalf("second parse = (%#v, %v)", right, err)
+	}
+	if left.foreignDigest != right.foreignDigest {
+		t.Fatalf("foreign digest changed for dynamic fields and output order: %s != %s", left.foreignDigest, right.foreignDigest)
+	}
+}
+
+func TestParseRulesetForeignDigestPreservesRuleOrder(t *testing.T) {
+	first := []byte(`{"nftables":[
+{"table":{"family":"inet","name":"ambient"}},
+{"chain":{"family":"inet","table":"ambient","name":"audit"}},
+{"rule":{"family":"inet","table":"ambient","chain":"audit","expr":[{"counter":{"packets":1,"bytes":2}},{"accept":null}]}},
+{"rule":{"family":"inet","table":"ambient","chain":"audit","expr":[{"counter":{"packets":3,"bytes":4}},{"drop":null}]}}]}`)
+	second := []byte(`{"nftables":[
+{"table":{"family":"inet","name":"ambient"}},
+{"chain":{"family":"inet","table":"ambient","name":"audit"}},
+{"rule":{"family":"inet","table":"ambient","chain":"audit","expr":[{"counter":{"packets":30,"bytes":40}},{"drop":null}]}},
+{"rule":{"family":"inet","table":"ambient","chain":"audit","expr":[{"counter":{"packets":10,"bytes":20}},{"accept":null}]}}]}`)
+	left, err := parseRuleset(first, time.Now())
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	right, err := parseRuleset(second, time.Now())
+	if err != nil {
+		t.Fatalf("second parse: %v", err)
+	}
+	if left.foreignDigest == right.foreignDigest {
+		t.Fatal("foreign digest did not preserve rule order")
+	}
+}
+
 func TestApplyInfrastructureUsesOneInternalBatch(t *testing.T) {
 	parsed, err := parseRuleset([]byte(managedInfrastructureRuleset()), time.Now())
 	if err != nil || parsed.ownershipConflict || !parsed.managed {

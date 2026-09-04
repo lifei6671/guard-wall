@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
 )
@@ -171,6 +172,128 @@ func TestDeliveryQueueZeroValueFailsWithoutBlocking(t *testing.T) {
 		t.Fatal("zero-value Dequeue() error = nil")
 	}
 	queue.Seal()
+	if stats := queue.Stats(); stats != (QueueStats{}) {
+		t.Fatalf("Stats() = %+v, want zero value", stats)
+	}
+}
+
+func TestDeliveryQueueStatsTracksAcceptedBackpressureAndOldestItem(t *testing.T) {
+	queue, err := NewDeliveryQueue(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := core.Delivery{ID: "first"}
+	second := core.Delivery{ID: "second"}
+	if err := queue.Enqueue(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	observed := make(chan struct{})
+	producerContext := &doneObservedContext{Context: context.Background(), observed: observed}
+	producerResult := make(chan error, 1)
+	go func() {
+		producerResult <- queue.Enqueue(producerContext, second)
+	}()
+	<-observed
+	time.Sleep(time.Millisecond)
+
+	stats := queue.Stats()
+	if stats.Capacity != 1 || stats.Depth != 1 {
+		t.Fatalf("Stats() = %+v, want capacity=1 depth=1", stats)
+	}
+	if stats.OldestItemAge <= 0 {
+		t.Fatalf("OldestItemAge = %s, want positive", stats.OldestItemAge)
+	}
+	if stats.RejectedTotal != 0 {
+		t.Fatalf("Stats() before blocked admission succeeds = %+v", stats)
+	}
+	backpressureBefore := stats.BackpressureDuration
+
+	if _, err := queue.Dequeue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-producerResult; err != nil {
+		t.Fatalf("blocked Enqueue() error = %v", err)
+	}
+	stats = queue.Stats()
+	if stats.Depth != 1 || stats.BackpressureDuration <= backpressureBefore || stats.RejectedTotal != 0 {
+		t.Fatalf("Stats() after blocked admission = %+v", stats)
+	}
+	if _, err := queue.Dequeue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stats = queue.Stats()
+	if stats.Depth != 0 || stats.OldestItemAge != 0 {
+		t.Fatalf("Stats() after drain = %+v", stats)
+	}
+}
+
+func TestDeliveryQueueStatsCountsTerminalRejections(t *testing.T) {
+	queue, err := NewDeliveryQueue(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := queue.Enqueue(cancelled, core.Delivery{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled Enqueue() error = %v, want context.Canceled", err)
+	}
+	queue.Seal()
+	if err := queue.Enqueue(context.Background(), core.Delivery{}); !errors.Is(err, ErrDeliveryQueueSealed) {
+		t.Fatalf("sealed Enqueue() error = %v, want ErrDeliveryQueueSealed", err)
+	}
+	stats := queue.Stats()
+	if stats.RejectedTotal != 2 || stats.Depth != 0 || stats.OldestItemAge != 0 {
+		t.Fatalf("Stats() = %+v, want two terminal rejections and empty queue", stats)
+	}
+}
+
+func TestDeliveryQueueStatsRemainsBoundedDuringConcurrentUse(t *testing.T) {
+	queue, err := NewDeliveryQueue(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	producerDone := make(chan struct{})
+	consumerDone := make(chan struct{})
+	observed := make(chan error, 1)
+	go func() {
+		defer close(producerDone)
+		for index := 0; index < 100; index++ {
+			if err := queue.Enqueue(context.Background(), core.Delivery{ID: core.DeliveryID("delivery")}); err != nil {
+				observed <- err
+				return
+			}
+		}
+		queue.Seal()
+	}()
+	go func() {
+		defer close(consumerDone)
+		for {
+			if _, err := queue.Dequeue(context.Background()); errors.Is(err, ErrDeliveryQueueSealed) {
+				return
+			} else if err != nil {
+				observed <- err
+				return
+			}
+		}
+	}()
+
+	for index := 0; index < 100; index++ {
+		stats := queue.Stats()
+		if stats.Depth < 0 || stats.Depth > stats.Capacity || stats.OldestItemAge < 0 {
+			t.Fatalf("Stats() = %+v, want bounded concurrent observation", stats)
+		}
+	}
+	<-producerDone
+	<-consumerDone
+	select {
+	case err := <-observed:
+		t.Fatalf("concurrent queue operation: %v", err)
+	default:
+	}
+	if stats := queue.Stats(); stats.Depth != 0 || stats.OldestItemAge != 0 {
+		t.Fatalf("Stats() after concurrent drain = %+v", stats)
+	}
 }
 
 type doneObservedContext struct {

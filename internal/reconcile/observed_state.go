@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/lifei6671/guard-wall/internal/core"
-	"github.com/lifei6671/guard-wall/internal/firewall/fake"
 )
 
 const probeFailureErrorCode = "backend_probe_failed"
@@ -47,7 +46,7 @@ func (c *Controller) nextObservedAtLocked() time.Time {
 	return now
 }
 
-func (c *Controller) observedUpdateForSnapshotLocked(snapshot fake.Snapshot) (*core.ObservedFirewallUpdate, error) {
+func (c *Controller) observedUpdateForSnapshotLocked(snapshot Snapshot) (*core.ObservedFirewallUpdate, error) {
 	if c.store == nil || !c.hasDesired {
 		return nil, nil
 	}
@@ -65,7 +64,7 @@ func (c *Controller) observedUpdateForSnapshotLocked(snapshot fake.Snapshot) (*c
 			OwnerVersion: snapshot.Infrastructure.OwnerVersion,
 			Digest:       snapshot.Infrastructure.Digest,
 		}
-		if c.snapshotMatchesCurrentDesiredLocked(snapshot, fake.DomainInfrastructure, netip.Prefix{}) {
+		if c.snapshotMatchesCurrentDesiredLocked(snapshot, DomainInfrastructure, netip.Prefix{}) {
 			update.Infrastructure.ConfirmedRevision = c.desired.InfrastructureRevision
 		}
 	}
@@ -79,7 +78,7 @@ func (c *Controller) observedUpdateForSnapshotLocked(snapshot fake.Snapshot) (*c
 			ObservedAt:     observedAt,
 			RelationDigest: snapshot.Policy.RelationDigest,
 		}
-		if c.snapshotMatchesCurrentDesiredLocked(snapshot, fake.DomainPolicy, netip.Prefix{}) {
+		if c.snapshotMatchesCurrentDesiredLocked(snapshot, DomainPolicy, netip.Prefix{}) {
 			update.Policy.ConfirmedRevision = c.desired.PolicyRevision
 		}
 	}
@@ -105,7 +104,7 @@ func (c *Controller) observedUpdateForSnapshotLocked(snapshot fake.Snapshot) (*c
 		}
 		physical.ObservedAt = observedAt
 		observed := core.TargetObservedState{PhysicalTargetObserved: physical}
-		if c.snapshotMatchesCurrentDesiredLocked(snapshot, fake.DomainTarget, target) {
+		if c.snapshotMatchesCurrentDesiredLocked(snapshot, DomainTarget, target) {
 			observed.ConfirmedGeneration = c.desiredTargets[target].Generation
 		}
 		update.Targets = append(update.Targets, observed)
@@ -116,7 +115,7 @@ func (c *Controller) observedUpdateForSnapshotLocked(snapshot fake.Snapshot) (*c
 	return &update, nil
 }
 
-func (c *Controller) unknownObservedUpdateLocked(domain fake.Domain, target netip.Prefix, code string) (*core.ObservedFirewallUpdate, error) {
+func (c *Controller) unknownObservedUpdateLocked(domain Domain, target netip.Prefix, code string) (*core.ObservedFirewallUpdate, error) {
 	if c.store == nil || !c.hasDesired {
 		return nil, nil
 	}
@@ -126,15 +125,15 @@ func (c *Controller) unknownObservedUpdateLocked(domain fake.Domain, target neti
 	observedAt := c.nextObservedAtLocked()
 	update := core.ObservedFirewallUpdate{NodeID: c.nodeID}
 	switch domain {
-	case fake.DomainInfrastructure:
+	case DomainInfrastructure:
 		update.Infrastructure = &core.InfrastructureObservedState{
 			Presence: core.ObservedPresenceUnknown, ObservedAt: observedAt, LastErrorCode: code,
 		}
-	case fake.DomainPolicy:
+	case DomainPolicy:
 		update.Policy = &core.PolicyObservedState{
 			Presence: core.ObservedPresenceUnknown, ObservedAt: observedAt, LastErrorCode: code,
 		}
-	case fake.DomainTarget:
+	case DomainTarget:
 		if _, exists := c.desiredTargets[target]; !exists {
 			return nil, fmt.Errorf("construct Target Observed failure: target %s is not Desired", target)
 		}

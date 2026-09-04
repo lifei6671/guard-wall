@@ -37,3 +37,29 @@ func TestDispatcherTargetWakeSinkRoutesOnlyBoundNodeTarget(t *testing.T) {
 		t.Fatal("cross-node wake error = nil")
 	}
 }
+
+func TestDispatcherPolicyWakeSinkRoutesOnlyBoundNodePolicy(t *testing.T) {
+	nodeID := core.NodeID("0123456789abcdef0123456789abcdef")
+	dispatcher := &Dispatcher{
+		queue: make(chan ReconcileKey, 1), done: make(chan struct{}),
+		queued: make(map[ReconcileKey]*wakeReservation),
+	}
+	sink, err := NewDispatcherPolicyWakeSink(nodeID, dispatcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.WakePolicy(context.Background(), nodeID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case key := <-dispatcher.queue:
+		if key != (ReconcileKey{Domain: fake.DomainPolicy}) {
+			t.Fatalf("queued key = %+v", key)
+		}
+	default:
+		t.Fatal("policy wake was not queued")
+	}
+	if err := sink.WakePolicy(context.Background(), core.NodeID("fedcba9876543210fedcba9876543210")); err == nil {
+		t.Fatal("cross-node wake error = nil")
+	}
+}
