@@ -359,6 +359,11 @@ func (s *Store) LoadDesiredFirewallState(
 	}
 
 	if err := transaction.tx.Commit(); err != nil {
+		// database/sql 可能先因取消自动回滚，再让 Commit 返回 ErrTxDone。
+		// 仅为该结果补回取消身份，其他数据库错误继续原样传播。
+		if errors.Is(err, sql.ErrTxDone) && ctx.Err() != nil {
+			err = errors.Join(err, ctx.Err())
+		}
 		return DesiredFirewallState{}, fmt.Errorf("load desired firewall state: commit read transaction: %w", err)
 	}
 	committed = true

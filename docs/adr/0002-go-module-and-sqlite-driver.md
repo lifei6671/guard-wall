@@ -6,6 +6,7 @@
 Decision: Accepted
 Validation maturity: Implemented / not Verified
 Date: 2026-08-30
+Maintenance policy updated: 2026-09-04
 ```
 
 `Accepted` 只表示 Phase 1 已冻结本文的 module、Go 版本策略和 SQLite driver 选择。
@@ -83,26 +84,35 @@ Go 官方发布记录说明 Go 1.27.0 于 2026-08-19 发布；官方支持策略
 
 ### 3. SQLite Driver
 
-Phase 1 唯一 SQLite driver 为：
+Phase 1 唯一 SQLite driver 为 `modernc.org/sqlite` 的稳定 v1 系列；当前精确版本以根
+`go.mod` 为唯一权威。用户于 2026-09-04 明确授权同一 major 内更新到最新稳定 minor/patch，
+跨 major 升级必须先确认。该维护策略取代本节最初对 v1.57.0 的固定要求。
 
 ```text
-modernc.org/sqlite v1.57.0
 database/sql driver name: sqlite
 ```
 
 必须满足：
 
-1. `go.mod` 必须精确要求 `modernc.org/sqlite v1.57.0`；禁止使用 `@latest`、伪版本或
-   浮动 branch 形成可发布产物。
+1. 当前任务涉及的同 major minor/patch 可以直接选择最新稳定 tag，不再为每次小版本更新
+   单独创建 ADR 或请求确认。`go.mod`/`go.sum` 必须记录解析后的精确版本；发布构建不得使用
+   浮动 branch 或未固定版本。跨 major、替换 driver 实现或改变已接受运行边界仍须先确认。
 2. 禁止同时编译第二个 SQLite driver，也不提供运行时 driver selector、CGO fallback
    或 system `libsqlite3` fallback。
 3. release 构建使用 driver 自带的 CGo-free SQLite port，不链接目标机的
    `libsqlite3.so`。
-4. `modernc.org/sqlite` 的 `go.mod` 对 `modernc.org/libc` 存在生成代码 ABI 约束；不得
-   单独 `replace`、强制升级或降级 `modernc.org/libc`。依赖更新若改变解析出的 libc
-   版本，必须作为 driver 更新一并审查和验证。
+4. `modernc.org/sqlite` 当前上游建议使用与其 `go.mod` 相同版本的 `modernc.org/libc`，
+   此建议及对应版本必须作为兼容性输入记录。用户已明确选择 driver 与 libc 各自当前 major
+   的最新稳定 minor/patch；本项目按该实际组合执行相关回归，不采用 `replace` 修改上游代码。
+   选择独立最新版本不代表上游担保兼容，未经实际组合验证不得宣称已兼容。
 5. driver、其传递依赖和内置 SQLite 版本必须进入 SBOM/依赖清单；driver 升级必须重跑
    migration、并发唯一约束、事务回滚、PRAGMA、crash/reopen 和 Linux release 测试。
+
+2026-09-04 维护快照：本项目选择最新稳定 driver v1.58.0 与最新稳定 libc v1.75.7。
+driver 的上游 `go.mod` 指定 libc v1.75.6，精确配套建议继续作为已知事实保留。
+该快照不是未来升级的固定 pin；后续按实际查询结果、上游 metadata 和实际组合验证记录更新。
+依据：[driver 文档](https://pkg.go.dev/modernc.org/sqlite@v1.58.0#hdr-Fragile_modernc_org_libc_dependency)、
+[v1.58.0 go.mod](https://gitlab.com/cznic/sqlite/-/raw/v1.58.0/go.mod)。
 
 选择理由：
 
@@ -313,8 +323,9 @@ Evidence 必须记录 commit、dirty 状态、精确命令、Go/driver/SQLite/li
   Contract violation。
 - 只有 Not Verified 和 Validation Plan 中对应必测项产生证据后，相关 Gate 才能申请
   `Verified`。
-- 改变 module path、Go minor、CGO 边界、SQLite driver、内置/系统 SQLite 选择或 PRAGMA
-  基线，必须以新 ADR 明确取代本文并重跑相关回归。
+- 改变 module path、Go minor、CGO 边界、更换 SQLite driver 实现或跨其 major 升级、
+  内置/系统 SQLite 选择或 PRAGMA 基线，必须先确认并以新 ADR 明确取代相应决定。
+  同一 driver major 内的 minor/patch 维护遵循本节已授权的更新策略和相关回归要求。
 
 ## 一手来源
 

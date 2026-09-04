@@ -2,6 +2,12 @@
 
 ## 1. 文档定位
 
+本文承担产品范围和总体架构基线。开发期的规范性实现目标见
+[Phase 1 技术规格](contracts/guard-phase-1-m0-contract-freeze-v0.3.md)，
+其中明确修正本文的语义按其 §1.1 权威关系执行。实时完成度、验证证据与 Gate 结论见
+[Phase 1 开发状态](development/phase-1/STATUS.md)。本文中的功能、CLI 和 Metrics
+描述为交付目标；实现与发布状态由对应证据和 Gate 判定。
+
 Guard 是一个基于日志分析、规则检测与主机防火墙执行的轻量级主动防护系统。
 
 系统采用：
@@ -250,7 +256,11 @@ Target Enforcement State
 
 # 5. Target Enforcement State
 
-内部模型：
+以下为聚合安全意图的概念模型。可编译类型、Projection 与最终 Firewall Intent 的职责
+见 [Core Model](contracts/core-model.md) 和
+[Decision / Enforcement Contract](contracts/decision-enforcement.md)。
+
+概念模型：
 
 ```go
 type EnforcementState struct {
@@ -299,6 +309,9 @@ DesiredBanned = false
 ---
 
 # 6. Decision 数据模型
+
+下列字段展示业务概念；身份、合法状态、终止原因及持久化约束以
+[Decision Contract](contracts/decision-enforcement.md#3-decision-contract) 为准。
 
 ```go
 type Decision struct {
@@ -2406,6 +2419,8 @@ source_type
 parser
 rule
 backend
+domain
+result
 state
 status
 ```
@@ -2471,7 +2486,7 @@ process_resident_memory_bytes
 ```
 
 Reconcile Metrics 的 `domain` 只能是 `infrastructure|policy|target`；`result` 和
-`backend` 必须是有限枚举。CanonicalTarget、DecisionID、错误文本和 Retry key 禁止进入 label。
+`backend` 必须使用 Schema 中的有限枚举。CanonicalTarget、DecisionID、错误文本和 Retry key 禁止进入 label。
 
 ---
 
@@ -3296,6 +3311,9 @@ Phase 1 完成后单独编写 Cluster Technical Design。
 
 # 118. 正式 ADR
 
+本节 ADR-001–ADR-024 是本文内的架构决策摘要编号。具体实现决策、接受状态与验证边界
+记录在 [ADR 目录](adr/)；引用实现决策时使用对应文件的四位编号与标题。
+
 ## ADR-001
 
 Agent 从 Phase 1 即为最终运行单元。
@@ -3366,6 +3384,9 @@ Firewall Native Timeout 是 failsafe，不是 Source of Truth。
 
 Reconcile Retry 不属于 Decision；耗尽预算的 domain 保持 Degraded，直到 revision/generation
 前进或管理员显式创建新的 RetryEpoch。
+
+实现决策与验证边界见
+[ADR-0011：Reconcile Retry 与结果不确定性边界](adr/0011-reconcile-retry-and-unknown-result-boundary.md)。
 
 ## ADR-018
 

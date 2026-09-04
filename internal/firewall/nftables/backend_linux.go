@@ -508,7 +508,11 @@ func parseRuleset(raw []byte, now time.Time) (rulesetState, error) {
 				state.rules[head.chain]++
 				if state.strictLayout && (head.chain == "input" || head.chain == "forward") {
 					set, verdict, ok := expectedRule(head.chain, body)
-					if !ok { state.ownershipConflict = true } else { state.ruleSequence[head.chain] = append(state.ruleSequence[head.chain], set+":"+verdict) }
+					if !ok {
+						state.ownershipConflict = true
+					} else {
+						state.ruleSequence[head.chain] = append(state.ruleSequence[head.chain], set+":"+verdict)
+					}
 				}
 				if head.chain == "guard_policy" {
 					state.markers[head.comment]++
@@ -676,9 +680,9 @@ func contains(values []string, wanted string) bool {
 
 type nftHeader struct {
 	family, table, name, chain, comment string
-	chainType, hook, policy               string
-	priority                              int
-	handle                                int
+	chainType, hook, policy             string
+	priority                            int
+	handle                              int
 }
 
 func nftObject(entry map[string]json.RawMessage) (string, json.RawMessage, bool) {
@@ -711,27 +715,39 @@ func nftHead(body json.RawMessage) nftHeader {
 func validManagedSet(head nftHeader, body json.RawMessage) bool {
 	wantsTimeout := strings.HasPrefix(head.name, "ban_")
 	wantsV4 := strings.HasSuffix(head.name, "_v4")
-	var value struct { Type string `json:"type"`; Flags []string `json:"flags"` }
+	var value struct {
+		Type  string   `json:"type"`
+		Flags []string `json:"flags"`
+	}
 	if json.Unmarshal(body, &value) != nil || value.Type != map[bool]string{true: "ipv4_addr", false: "ipv6_addr"}[wantsV4] {
 		return false
 	}
 	wanted := []string{"interval"}
-	if wantsTimeout { wanted = append(wanted, "timeout") }
+	if wantsTimeout {
+		wanted = append(wanted, "timeout")
+	}
 	return reflect.DeepEqual(value.Flags, wanted)
 }
 
 func validManagedChain(head nftHeader) bool {
 	switch head.name {
-	case "guard_policy": return head.chainType == "" && head.hook == "" && head.policy == ""
-	case "input", "forward": return head.chainType == "filter" && head.hook == head.name && head.priority == 0 && head.policy == "accept"
-	default: return false
+	case "guard_policy":
+		return head.chainType == "" && head.hook == "" && head.policy == ""
+	case "input", "forward":
+		return head.chainType == "filter" && head.hook == head.name && head.priority == 0 && head.policy == "accept"
+	default:
+		return false
 	}
 }
 
 func validManagedRule(head nftHeader, body json.RawMessage) bool {
 	if head.chain == "guard_policy" {
-		if head.comment != infrastructureComment && head.comment != policyComment { return false }
-		var value struct { Expr []map[string]json.RawMessage `json:"expr"` }
+		if head.comment != infrastructureComment && head.comment != policyComment {
+			return false
+		}
+		var value struct {
+			Expr []map[string]json.RawMessage `json:"expr"`
+		}
 		return json.Unmarshal(body, &value) == nil && len(value.Expr) == 1 && value.Expr[0]["counter"] != nil
 	}
 	set, verdict, ok := expectedRule(head.chain, body)
@@ -739,21 +755,50 @@ func validManagedRule(head nftHeader, body json.RawMessage) bool {
 }
 
 func expectedRule(chain string, body json.RawMessage) (string, string, bool) {
-	var value struct { Expr []json.RawMessage `json:"expr"` }
-	if json.Unmarshal(body, &value) != nil || len(value.Expr) != 2 { return "", "", false }
-	var first struct { Match *struct { Op string `json:"op"`; Left struct { Payload struct { Protocol string `json:"protocol"`; Field string `json:"field"` } `json:"payload"` } `json:"left"`; Right string `json:"right"` } `json:"match"` }
-	if json.Unmarshal(value.Expr[0], &first) != nil || first.Match == nil { return "", "", false }
+	var value struct {
+		Expr []json.RawMessage `json:"expr"`
+	}
+	if json.Unmarshal(body, &value) != nil || len(value.Expr) != 2 {
+		return "", "", false
+	}
+	var first struct {
+		Match *struct {
+			Op   string `json:"op"`
+			Left struct {
+				Payload struct {
+					Protocol string `json:"protocol"`
+					Field    string `json:"field"`
+				} `json:"payload"`
+			} `json:"left"`
+			Right string `json:"right"`
+		} `json:"match"`
+	}
+	if json.Unmarshal(value.Expr[0], &first) != nil || first.Match == nil {
+		return "", "", false
+	}
 	m := first.Match
-	if m.Op != "==" || m.Left.Payload.Field != "saddr" || (m.Left.Payload.Protocol != "ip" && m.Left.Payload.Protocol != "ip6") || !strings.HasPrefix(m.Right, "@") { return "", "", false }
+	if m.Op != "==" || m.Left.Payload.Field != "saddr" || (m.Left.Payload.Protocol != "ip" && m.Left.Payload.Protocol != "ip6") || !strings.HasPrefix(m.Right, "@") {
+		return "", "", false
+	}
 	verdict := ""
 	var second map[string]json.RawMessage
-	if json.Unmarshal(value.Expr[1], &second) != nil { return "", "", false }
-	if _, ok := second["return"]; ok { verdict = "return" }
-	if _, ok := second["drop"]; ok { verdict = "drop" }
+	if json.Unmarshal(value.Expr[1], &second) != nil {
+		return "", "", false
+	}
+	if _, ok := second["return"]; ok {
+		verdict = "return"
+	}
+	if _, ok := second["drop"]; ok {
+		verdict = "drop"
+	}
 	name := strings.TrimPrefix(m.Right, "@")
-	if (strings.HasSuffix(name, "_v4") && m.Left.Payload.Protocol != "ip") || (strings.HasSuffix(name, "_v6") && m.Left.Payload.Protocol != "ip6") { return "", "", false }
-	expected := map[string]string{"allow_v4":"return", "allow_v6":"return", "protected_v4":"return", "protected_v6":"return", "ban_input_v4":"drop", "ban_input_v6":"drop", "ban_forward_v4":"drop", "ban_forward_v6":"drop"}
-	if expected[name] != verdict || (chain == "input" && strings.HasPrefix(name, "ban_forward")) || (chain == "forward" && strings.HasPrefix(name, "ban_input")) { return "", "", false }
+	if (strings.HasSuffix(name, "_v4") && m.Left.Payload.Protocol != "ip") || (strings.HasSuffix(name, "_v6") && m.Left.Payload.Protocol != "ip6") {
+		return "", "", false
+	}
+	expected := map[string]string{"allow_v4": "return", "allow_v6": "return", "protected_v4": "return", "protected_v6": "return", "ban_input_v4": "drop", "ban_input_v6": "drop", "ban_forward_v4": "drop", "ban_forward_v6": "drop"}
+	if expected[name] != verdict || (chain == "input" && strings.HasPrefix(name, "ban_forward")) || (chain == "forward" && strings.HasPrefix(name, "ban_input")) {
+		return "", "", false
+	}
 	return name, verdict, true
 }
 

@@ -39,3 +39,9 @@ Do not construct ad-hoc Docker runners.
 Do not mount host Go module/build caches into containers.
 
 If Docker validation is unavailable, report the environment problem instead of switching to WSL.
+
+## Dependency Updates
+
+用户已授权：当前任务涉及的依赖可以在同一 major 内更新到最新稳定 minor/patch，无需逐次确认；跨 major 升级必须先确认。
+版本选择以当前 major 的最新稳定 minor/patch 为目标；当前 SQLite driver 与 libc 分别采用最新稳定版 v1.58.0 与 v1.75.7。上游建议的精确配套版本另行记录，本项目选择独立最新版本须以该实际组合完成相关回归，不将版本选择表述为上游兼容性担保。
+依赖和锁文件通过包管理器更新，保留精确版本，并执行与变更相关的仓库验证；不因维护单个依赖批量升级无关依赖。

@@ -10,10 +10,10 @@
 |---|---|
 | 当前阶段 | `M0 Contract Freeze` |
 | 当前结论 | `NO-GO` |
-| 已完成 | `A1–A4`（`Implemented`，尚未 `Verified`） |
-| 进行中 | `B1–B4`、`C1–C2`、`D1–D4` |
+| 已完成 | `A1–A4`、`D4`（`Implemented`）；`D1`、`D5`、`D6`（`Verified`） |
+| 进行中 | `B1–B4`、`C1–C2`、`D2–D3`、`D7` |
 | 可启动 | `None`；当前 READY 项已进入执行 |
-| 被阻塞 | `D6–D7`、`M1–M10` |
+| 被阻塞 | `M1–M10` |
 | M0 证据状态 | `Implemented`（worktree preliminary；尚未 `Verified`） |
 | Phase 1 发布状态 | `Not Released` |
 | 当前 Evidence | `artifacts/evidence/M0/worktree/m0-a/`、`m0-b/`、`m0-c/`、`m0-d/` |
@@ -114,24 +114,24 @@ Race 与两路独立终审均通过；初审两项 P1 与一项 P2 已修复，�
 | B2 | Source identity 与 replay Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/identity-result.json`、`m0-c/source-slice/result.md` | golden vectors、Ubuntu WSL2 clean restart-replay、两个 committed-boundary generation transition SIGKILL 窗口、真实 opaque Journald cursor reopen 与 processing UnitOfWork transaction-internal SIGKILL rollback/direct replay 已通过；缺真实 File/Journald reader、copytruncate、Source-state internal crash、cursor invalidation/vacuum/resume 与 replay/reprocess refs |
 | B3 | nftables Backend Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/nftables-result.json`、`artifacts/evidence/M0/worktree/m0-b/nftables-golden-state-result.json` | 隔离基线已覆盖 Provider packet path、Snapshot/Plan/ownership；production hook/priority、非 clean Linux/UFW/Docker、重启恢复与 Apply-confirm 为后续验证边界 |
 | B4 | Agent/Enforcer 权限与 IPC Spike | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-b/ipc-result.json`、`artifacts/evidence/M0/worktree/m0-b/ipc-response-codec/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-response-frame/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-request-codec/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-request-frame/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-mutation-client/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-mutation-server/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-snapshot-managed-transport/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-enforcer-loop/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-enforcer-handlers/result.md`、`artifacts/evidence/M0/worktree/m0-b/ipc-enforcer-cross-uid-runtime/result.md` | WSL2 request framing fail-closed、四操作 allowlist、mutation/Probe/Snapshot typed codec/frame、Linux fixed-socket root-peer client、authenticated single-request server、serial persistent loop、production-neutral closed handler composition 的 Docker Linux Race，以及受控 WSL fixture 的 `/run/guard` root:guard/跨 UID runtime 集成均已通过；仍缺真实 Firewall provider/owner/object-role、production executable/systemd hardening、持续 fuzz、恢复与非 WSL target Linux 证据 |
-| C1 | Source Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/source-slice/result.md` | Queue Seal fixed accepted set、单 Source runtime owner、drain/Flush/Audit/Close、timeout 不提前 Close 与 commit-unknown readback 已通过 race；缺真实 Source reader/management intake、signal executable、进程 restart 与 Linux durability |
-| C2 | Decision/Enforcement Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | Automatic/Manual/expiry generation/SnapshotRevision/Wake、retry/pending-Probe SQLite 恢复、60s scheduler、62s SQLite→Fake 闭环、完整三域 Observed、Dispatcher-owned Backend health lifecycle、IPCBackend 认证 Probe health source/runtime owner 与受限 `guard-agent` startup composition 已通过用户 Review；clean Docker 与 target Linux 已覆盖有限期 Target intent→真实 mutation/native timeout，且 target Linux natural kernel-timeout E2E 已 `DONE / Implemented`；target Linux 已覆盖固定 socket、手工/systemd restart、SIGKILL reopen 与 normal OS reboot 后语义 reopen；test-only systemd drop-in 已覆盖 Agent 持续运行的跨进程 IPC health source 恢复；仍缺默认 packaged systemd 拓扑、non-clean Firewall compatibility、流量阻断、跨 reboot 稳定身份/全行连续性以及 power-loss/fsync durability |
+| C1 | Source Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/source-contract-mapping/current.md` | 第178项session/checkpoint最小包已实现：三包Race238项、integration Race247项、session10轮80项及verify通过；原生Journald UNAVAILABLE。17条原语COVERED、1条PARTIAL、1条GAP保持；本批及第2/5/8/9/10/13/14/18待验收，第7条历史验收保留；下一候选generation恢复范围与完成证明契约 |
+| C2 | Decision/Enforcement Fake Slice | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/result.md` | Automatic/Manual/expiry generation/SnapshotRevision/Wake、retry/pending-Probe SQLite 恢复、60s scheduler、62s SQLite→Fake 闭环、完整三域 Observed、Dispatcher-owned Backend health lifecycle、IPCBackend 认证 Probe health source/runtime owner 与受限 `guard-agent` startup composition 已通过用户 Review；clean Docker 与 target Linux 已覆盖有限期 Target intent→真实 mutation/native timeout，且 target Linux natural kernel-timeout E2E 已 `DONE / Implemented`；target Linux 已覆盖固定 socket、手工/systemd restart、SIGKILL reopen 与 normal OS reboot 后语义 reopen；test-only systemd drop-in 已覆盖 Agent 持续运行的跨进程 IPC health source 恢复；默认 packaged unit Core crash/recovery 已获用户验收；仍缺 non-clean Firewall compatibility、流量阻断、跨 reboot 稳定身份/全行连续性以及 power-loss/fsync durability |
 | C3 | 扩展 Crash Matrix | `BLOCKED` | `Specified` | `Unassigned` | `None` | 后续 M7/M10 验证项，不阻塞 M0 Gate |
-| D1 | Go 类型与接口 | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | Desired/Reconcile 端口及 Source Queue Seal/RunSourceRuntime 已通过 race/vet；缺真实 executable composition、Source reader/management intake 与 IPC health source wiring |
-| D2 | SQLite migration | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/code-migration/result.md` | migration 0001–0005、Target Desired/retry/probe/Observed 原子性、v4 cache 安全失效与 SQLite close/reopen 已通过；缺 replay/reprocess refs、真实进程/runtime restart 与目标 Linux durability |
-| D3 | Config Schema | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/config-schema/result.md` | Schema/default/range/ownership/drift、credential reader、YAML loader/resource cap、SMTP readiness、atomic logging owner 与 Ubuntu WSL2 native file-to-Ready library integration 已实现并通过；缺真实 SMTP worker、production packaging/systemd/parent trust、config watcher/executable wiring 和目标 Linux 安装验证 |
-| D4 | ADR | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/adr-review.md`、`docs/adr/0011-reconcile-retry-and-unknown-result-boundary.md`、`docs/adr/0012-fixed-nftables-ownership-and-clean-target-boundary.md`、`docs/adr/0013-sqlite-durability-and-recovery-evidence-boundary.md`、`docs/adr/0014-linux-systemd-delivery-boundary.md` | Retry/Unknown、fixed nftables ownership、SQLite durability 与 systemd delivery ADR 已固化；D4 ADR Evidence 汇总与复核尚未完成 |
+| D1 | Go 类型与接口 | `COMPLETE` | `Verified` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/interface-verification/README.md` | 当前接口映射、五分区及processor Race、verify/format已验证，用户Code Review通过；验收见v0.4-sync/README.md |
+| D2 | SQLite migration | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-c/source-session-checkpoint/README.md` | 第178项新增0007 session字段，v6→v7完整旧业务行保持/NULL归属/字段约束回归与verify通过；0001–0006历史证据见m0-d/migration-closure。各批仍待用户验收，生产升级未执行；其他故障域单独推进 |
+| D3 | Config Schema | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/config-closure/README.md` | 当前ownership/default/range/unknown/derived-path五项Docker测试与Race/vet/format通过，YAML资源限制和logging reload一并验证；本批待用户验收，后续SMTP/watcher/安装运行链单独推进 |
+| D4 | ADR | `COMPLETE` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/adr-closure/README.md` | 必需决策已批准，14 份 ADR 与 Source delivery 覆盖完整，SQLite 维护已获用户验收；对应运行/升级验证矩阵及 aggregate Gate 单独推进 |
 | D5 | Contract Tests | `COMPLETE` | `Verified` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/contracts/process-recovery-2026-09-04.md` | 001–004 已由统一 Docker runner 非缓存重跑，逐 case final-state digest、runner/source checksum、隔离环境与未验证边界均已记录；不改变 G18 或 M0 结论 |
-| D6 | V0.4 同步 | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待新语义 Verified 后清理旧模型 |
-| D7 | M0 Evidence Manifest | `BLOCKED` | `Specified` | `Unassigned` | `None` | 等待 D1–D6 Evidence 汇总 |
+| D6 | V0.4 同步 | `COMPLETE` | `Verified` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/v0.4-sync/README.md` | 文档同步与一致性检查已获用户Code Review通过；验收记录见evidence-manifest/README.md |
+| D7 | M0 Evidence Manifest | `IN_PROGRESS` | `Implemented` | `Codex/current task` | `artifacts/evidence/M0/worktree/m0-d/evidence-manifest/README.md` | 已预汇总223份文件及16份主要报告；D2/D3依赖、D5输入需刷新，C1缺当前19条映射；等待完整证据及实际commit绑定 |
 
 ## 4. M0 Gate 状态
 
 | Gate | Contract | 当前结果 | Evidence | 未通过原因 | 解锁条件 |
 |---|---|---|---|---|---|
-| G18.1 Contract 完整性 | §18.1 | `FAIL` | `artifacts/evidence/M0/worktree/` | A 与 D1/D4 部分 Implemented；B 仍 preliminary，D6 未完成 | M0-B 与 D1/D4/D6 对应证据通过 |
-| G18.2 可执行验证 | §18.2 | `FAIL` | `artifacts/evidence/M0/worktree/` | D5 M0 范围 Contract Tests 已具备可复核 Docker Evidence；C1/C2、migration 与其余可复核 Evidence 仍未闭合 | C1/C2、migration 与其余必测项的可执行 Evidence 全部通过 |
-| G18.3 产物一致性 | §18.3 | `FAIL` | `artifacts/evidence/M0/worktree/m0-d/` | migration/代码/Config Schema 已落盘；D1–D4、D6、D7 与 commit-bound Manifest 仍未闭合 | M0-D 全部责任产物通过 drift/一致性检查 |
+| G18.1 Contract 完整性 | §18.1 | `FAIL` | `artifacts/evidence/M0/worktree/` | A 仍待验证；D1 已验证并验收，D4 已完成批准覆盖，B 仍 preliminary，D6 同步已验证并验收 | M0-B 与 D1/D4/D6 对应证据通过 |
+| G18.2 可执行验证 | §18.2 | `FAIL` | `artifacts/evidence/M0/worktree/` | D5原Docker证据的三项输入已变化；D2/D3旧依赖证据需刷新，C1/C2当前必测映射仍未闭合 | C1/C2、migration 与其余必测项的可执行 Evidence 全部通过 |
+| G18.3 产物一致性 | §18.3 | `FAIL` | `artifacts/evidence/M0/worktree/m0-d/` | migration/代码/Config Schema 已落盘；D4 批准覆盖已闭合，D2–D3、D5当前输入与D7 commit-bound Manifest仍未闭合 | M0-D 全部责任产物通过 drift/一致性检查 |
 
 M0 只有在 G18.1、G18.2、G18.3 全部为 `PASS` 后，才可改为
 `COMPLETE / Frozen / GO`，并解锁 M1–M10 Entry Gate。
@@ -1350,6 +1350,100 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
      独立 post-cleanup readback 均 PASS；两路 fresh Evidence-only/semantic review 均 P0-P3 无。该项不证明流量阻断、non-clean Firewall、运行中 scheduler expiry、
      默认 packaged systemd topology、reboot/crash、power-loss/fsync durability、production release 或
      C2/G18/M0 aggregate；未暂存、未提交、未推送。
+154. 用户授权后完成 **C2 默认 packaged systemd Core crash/recovery E2E**：基于干净提交
+     `1cf8e8534246181cec2e0a2b464dc4191ec5e5b0` 的 normal Linux amd64 Core/Agent，在 clean Disposable VM
+     `192.168.31.125` 使用原样 unit/config/sysusers。Core 单次 SIGKILL 后 systemd 自动重启 Core 并停止/重启
+     Agent；约第 6 秒采样两者均 active，Core PID `38482→38765`、Agent PID `38489→38774`。runtime/socket
+     被重建且仍为 root:guard 0750/0660；Guard nftables JSON 与表身份保持一致。SQLite 仅两域 Observed
+     时间戳及 reconcile updated_at 更新，其余字段精确一致，两域仍 present/converged。Docker `verify.ps1`、
+     记录断言与独立清理读回通过，Evidence 见
+     `artifacts/evidence/M0/worktree/m0-c/enforcement-slice/packaged-systemd-recovery/README.md`。
+     最终 CHILD_AGENT 全范围独立审查 `COMPLETE / FRESH / PASSED`，P0-P3 为零；用户已明确通过 Code Review，
+     当前 `DONE / Implemented`。该证据覆盖默认部署的进程重启恢复，
+     不证明同一 Agent PID 持续运行、精确 IPC operation 顺序、Source 连续性、Target/流量、non-clean Firewall、
+     OS/power-loss/fsync durability 或 Release；C2/G18/M0 不提升。产品资源与临时上传目录已清理，SSH 材料保留；
+     未暂存、未提交、未推送。
+
+155. C2 默认 packaged systemd E2E 用户验收后，完成 D4 当前 ADR/工件一致性复核：14 份 ADR 的 Accepted
+     与 inventory 检查通过，Source delivery 映射至 Contract §5.1/§8；但 ADR-0002:89/95 要求 sqlite
+     `v1.57.0`，当前 go.mod 与 Docker module readback 为 `v1.58.0` / libc `v1.75.7`。版本分别来自
+     既有 `aaecb64` / `320b034` 提交，尚未定位替代 driver 决策；`D4_CONSISTENCY=FAIL`。
+     详细证据见 `artifacts/evidence/M0/worktree/m0-d/adr-review.md`。本轮未修改依赖、ADR、代码、配置或 VM，
+     升级成套回归 `NOT_RUN`。下一批建议确认现有 driver/libc 组合的替代 ADR 与验证映射；D4 保持
+     `IN_PROGRESS / Implemented`，C2/G18/M0 不提升，未暂存、未提交、未推送。
+
+156. 用户明确授权同一 major 内更新到最新稳定 minor/patch，跨 major 升级需先确认。ADR-0002 与
+     AGENTS.md 已同步维护策略；SQLite 保持最新稳定 v1.58.0，libc 经 Go 工具从 v1.75.7 对齐到
+     上游精确配套 v1.75.6。Docker 全仓 verify、module verify、Store/Source/Processor/Decision/Reconcile
+     Race、M0-RECOVERY-001–004 与 Linux arm64 CGo-free build 均通过，原 driver pin 冲突已解决。
+     证据见 `artifacts/evidence/M0/worktree/m0-d/sqlite-maintenance/README.md`。维护批次为
+     `DONE / Implemented`，用户 Code Review 已通过；D4 保持 `IN_PROGRESS / Implemented`，G18/M0 不提升。
+
+
+157. 用户通过 SQLite 维护 Code Review，维护单元记为 DONE / Implemented。随后完成 D4 已批准决策
+     覆盖与当前工件复核：14 份 ADR 全部 Accepted，Source delivery 映射完整，D4-DEP-001 已解决。
+     D4 更新为 `COMPLETE / Implemented`，证据见 `artifacts/evidence/M0/worktree/m0-d/adr-closure/README.md`。
+     ADR-0003 升级矩阵中的其余供应链与产物检查等待逐项证据汇总；D4 完成不代表运行验证已 Verified。
+     G18.1–G18.3 保持 FAIL，M0 保持 NO-GO。
+
+158. 完成 ADR-0003 当前依赖与构建产物检查：32 个外部 selected 模块、产品与普通测试闭包、
+     runtime driver boundary、Linux amd64/arm64 四个 CGo-free binary metadata/大小/hash，以及13模块20份
+     许可证文本已归档。govulncheck 源码与四个二进制无已知漏洞命中；OSV 完整 selected graph 发现
+     x/mod v0.38.0 的 GO-2026-6179/6180，未进入当前产品/测试闭包，实际Go1.27.1已修复工具链问题。
+     保留配套依赖并记录graph-only供应链暴露；证据见 `artifacts/evidence/M0/worktree/m0-d/dependency-artifacts/README.md`。
+     本批 `DONE / Implemented`，用户Code Review已通过，D4仍 COMPLETE / Implemented，G18/M0不提升；Release处置及最终notices单独推进。
+
+159. 用户通过依赖产物检查Code Review，该批DONE / Implemented。随后完成D2当前migration五项验收验证：
+     六份migration空库及重复启动、失败DDL回滚、8路Automatic/Manual唯一约束、SIGKILL committed/uncommitted
+     reopen及处理事务replay均PASS，另有legacy升级/Observed证据保留及PRAGMA读回。定向Race及恢复测试均非缓存。
+     证据见 `artifacts/evidence/M0/worktree/m0-d/migration-closure/README.md`；本批REVIEW / Implemented，
+     D2等待用户Code Review；G18/M0不提升。下一候选为D3 Config Schema当前Docker证据闭环。
+
+160. 按用户“继续”推进D3，D2验收状态保持。完成当前Config Schema五项Docker证据：ownership、
+     固定默认值、六项资源min/max与越界、根/嵌套未知字段拒绝、typed Config/Schema叶路径一致；
+     YAML资源限制、secret边界、logging原子reload及restart字段拒绝一并通过Race，vet/format通过。
+     无Go/Schema/依赖变更，证据见 `artifacts/evidence/M0/worktree/m0-d/config-closure/README.md`。
+     本批REVIEW / Implemented，D2/D3均待用户验收；G18/M0不提升。下一候选为D1接口/已验证语义映射。
+
+161. D1核对主要接口与已验证语义，初始全仓verify及五分区Race通过；修正nftables一文件gofmt，字节比对
+     确认仅标准格式输出。最终verify在Store过期回收测试shutdown阶段失败，count30定向运行再现ErrTxDone。
+     D1-SHUTDOWN-001已记录，D1为BLOCKED / Implemented；下一步需确定性回归与只读事务取消身份修复。
+     证据见 `artifacts/evidence/M0/worktree/m0-d/interface-closure/README.md`。D2/D3仍待验收，G18/M0不提升。
+     本批结束又发现go.mod/go.sum恢复HEAD的libc v1.75.7，来源和发生时点UNAVAILABLE；本轮未执行依赖修改。
+     当前验证不能绑定单一libc组合，D1-DEPENDENCY-DRIFT-001已记录，保留现场并等待确认期望组合。
+
+162. 用户明确要求“大版本的最新小版本”，确认采用最新稳定sqlite v1.58.0/libc v1.75.7；同major更新策略
+     及D010记录已同步。既有Docker go get精确版本完成，本轮依赖文件无新增差异。固定输入前后hash一致，
+     count30定向测试仍复现D1-SHUTDOWN-001，错误不再受依赖归属不明影响；不据此推断libc是根因。
+     证据见 `artifacts/evidence/M0/worktree/m0-d/latest-minor/README.md`；D1仍BLOCKED，D2/D3待验收，G18/M0不提升。
+
+163. D1-SHUTDOWN-001只读快照取消身份修复：LoadDesiredFirewallState仅在Commit返回ErrTxDone且上下文
+     已终止时保留原错误并补入context错误；查询故障及其他Commit错误保持原样。新增真实SQLite确定性
+     回归等待自动回滚释放连接后提交，覆盖取消、deadline、未取消的ErrTxDone、取消时查询故障。
+     原版回归明确失败；修复后与过期回收测试各重复30次通过，全仓verify通过。证据见
+     `artifacts/evidence/M0/worktree/m0-d/shutdown-cancellation/README.md`。本批REVIEW / Implemented，
+     独立审查与验证明细见证据；D1/D2/D3等待用户Code Review，G18 FAIL、M0 NO-GO。
+
+164. 用户通过D1-SHUTDOWN-001关闭错误修复，该单元DONE / Implemented。随后完成D1当前接口证据核验：
+     固定依赖与相关源码前后hash一致，Core/Source/Store/Firewall/Reconcile全部非缓存Race通过；
+     Source Reader/DeliverySink的停止读取与排空关闭消费侧位于processor，已补入映射并通过该包Race。
+     全仓verify、format与diff检查通过；证据见`artifacts/evidence/M0/worktree/m0-d/interface-verification/README.md`。
+     D1为IN_PROGRESS / Verified，等待本批用户Code Review；D2/D3仍待验收，G18 FAIL、M0 NO-GO。
+     下一候选为D6 V0.4同步核对，未暂存、未提交、未推送。
+
+165. 用户通过D1接口验证，D1 COMPLETE / Verified。随后依据主规格§1.1与D1语义证据推进D6：
+     核对V0.4 Decision状态、三domain Retry/CLI、Metrics及ADR-017，补充权威入口与正式ADR引用，
+     补齐domain/result指标标签、Schema枚举限定以及SourcePosition建立后的内部投递边界。
+     相对链接、状态/CLI/指标一致性及diff检查通过；本轮纯文档，Go验证NOT_RUN。
+     证据见`artifacts/evidence/M0/worktree/m0-d/v0.4-sync/README.md`；D6 IN_PROGRESS / Verified待用户验收。
+     D2/D3仍待验收，G18 FAIL、M0 NO-GO。下一候选D7 worktree Evidence Manifest预汇总。
+
+166. 用户通过D6技术方案同步，D6 COMPLETE / Verified。推进D7工作树证据预汇总：223文件SHA256及
+     16主要报告入口已记录；D1共129项输入匹配，D2/D3的go.mod/go.sum不同，D4旧ADR-0002上下文已变，
+     D5十项记录输入中三项不同。保留旧PASS所属快照，不据此宣称当前组合通过或原测试失败。
+     A/B/C只读核对发现C1主契约§17.1的19条尚缺当前完整映射；M7/M10故障域不追加为M0 blocker。
+     证据见`artifacts/evidence/M0/worktree/m0-d/evidence-manifest/README.md`。D7 IN_PROGRESS / Implemented，
+     正式commit-bound清单未建立；D2/D3仍待验收，G18 FAIL、M0 NO-GO。下一项C1条款与测试证据映射。
 
 167. 按用户“继续”推进C1 §17.1条款映射：19条均列出对应测试、实际断言与缺口；当前Docker非缓存
      source/processor/detection Race、4项Store generation Race、1项Audit回滚Race及3项SIGKILL恢复通过，
