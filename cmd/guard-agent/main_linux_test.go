@@ -70,7 +70,7 @@ func TestRunGuardAgent(t *testing.T) {
 		err := runGuardAgent(context.Background(), identityLookup, func() int { return 0 }, configPath, func(context.Context, string) (config.Config, error) {
 			called = true
 			return loadedConfig, nil
-		}, func(context.Context, string, fs.FS) (agentStore, error) {
+		}, acquireAgentInstanceLock, func(context.Context, string, fs.FS) (agentStore, error) {
 			t.Fatal("store must not open before identity validation")
 			return nil, nil
 		}, migrationFS, func(context.Context, core.NodeID, agentStore, config.Config) (guardAgentRuntime, error) {
@@ -86,7 +86,7 @@ func TestRunGuardAgent(t *testing.T) {
 		database := &testAgentStore{}
 		want := errors.New("runtime construction failed")
 		err := runGuardAgent(context.Background(), identityLookup, func() int { return 1001 }, configPath,
-			func(context.Context, string) (config.Config, error) { return loadedConfig, nil }, openTestAgentStore(database), migrationFS,
+			func(context.Context, string) (config.Config, error) { return loadedConfig, nil }, acquireAgentInstanceLock, openTestAgentStore(database), migrationFS,
 			func(context.Context, core.NodeID, agentStore, config.Config) (guardAgentRuntime, error) {
 				return nil, want
 			})
@@ -100,14 +100,14 @@ func TestRunGuardAgent(t *testing.T) {
 		want := errors.New("bootstrap failed")
 		runtime := &testGuardAgentRuntime{bootstrap: func(context.Context, time.Time) (decision.PolicyChange, error) { return decision.PolicyChange{}, want }}
 		err := runGuardAgent(context.Background(), identityLookup, func() int { return 1001 }, configPath,
-			func(context.Context, string) (config.Config, error) { return loadedConfig, nil }, openTestAgentStore(database), migrationFS,
+			func(context.Context, string) (config.Config, error) { return loadedConfig, nil }, acquireAgentInstanceLock, openTestAgentStore(database), migrationFS,
 			testGuardAgentRuntimeFactory(runtime))
 		if !errors.Is(err, want) || runtime.runCalls != 0 || database.closeCalls != 1 {
 			t.Fatalf("runGuardAgent() = %v, runtime runs = %d, close calls = %d", err, runtime.runCalls, database.closeCalls)
 		}
 	})
 
-	t.Run("runtime takes store ownership after bootstrap", func(t *testing.T) {
+	t.Run("agent closes store after runtime returns", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		database := &testAgentStore{}
@@ -115,12 +115,15 @@ func TestRunGuardAgent(t *testing.T) {
 		runtime := &testGuardAgentRuntime{run: func(ctx context.Context) error {
 			close(started)
 			<-ctx.Done()
-			return database.Close()
+			if database.closeCalls != 0 {
+				t.Error("Agent closed Store while runtime was using it")
+			}
+			return nil
 		}}
 		done := make(chan error, 1)
 		go func() {
 			done <- runGuardAgent(ctx, identityLookup, func() int { return 1001 }, configPath,
-				func(context.Context, string) (config.Config, error) { return loadedConfig, nil }, openTestAgentStore(database), migrationFS,
+				func(context.Context, string) (config.Config, error) { return loadedConfig, nil }, acquireAgentInstanceLock, openTestAgentStore(database), migrationFS,
 				testGuardAgentRuntimeFactory(runtime))
 		}()
 		select {
@@ -216,6 +219,8 @@ func TestRunGuardAgentLoadsConfiguredStoreAndPersistsNodeID(t *testing.T) {
 
 	runtimeStarted := make(chan struct{})
 	done := make(chan error, 1)
+	var usedDatabase agentStore
+	var runtimeNodeID core.NodeID
 	go func() {
 		done <- runGuardAgent(
 			ctx,
@@ -223,13 +228,20 @@ func TestRunGuardAgentLoadsConfiguredStoreAndPersistsNodeID(t *testing.T) {
 			func() int { return 1001 },
 			configPath,
 			loadGuardAgentConfig,
+			acquireAgentInstanceLock,
 			openGuardAgentStore,
 			migrations.FS,
-			func(_ context.Context, _ core.NodeID, database agentStore, _ config.Config) (guardAgentRuntime, error) {
+			func(_ context.Context, nodeID core.NodeID, database agentStore, _ config.Config) (guardAgentRuntime, error) {
+				usedDatabase, runtimeNodeID = database, nodeID
 				return &testGuardAgentRuntime{run: func(ctx context.Context) error {
 					close(runtimeStarted)
 					<-ctx.Done()
-					return database.Close()
+					// 真实数据库在runtime返回前仍可使用，Agent随后负责关闭。
+					got, found, err := database.LoadNodeIdentity(context.Background())
+					if err == nil && (!found || got != nodeID) {
+						t.Errorf("runtime read NodeID = %q, found=%t, want %q", got, found, nodeID)
+					}
+					return err
 				}}, nil
 			},
 		)
@@ -249,13 +261,16 @@ func TestRunGuardAgentLoadsConfiguredStoreAndPersistsNodeID(t *testing.T) {
 		t.Fatal("guard-agent did not stop after cancellation")
 	}
 
+	if _, _, err := usedDatabase.LoadNodeIdentity(context.Background()); err == nil {
+		t.Fatal("Agent returned with its SQLite Store still open")
+	}
 	database, err := store.Open(context.Background(), databasePath, migrations.FS)
 	if err != nil {
 		t.Fatalf("reopen configured store: %v", err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
 	nodeID, found, err := database.LoadNodeIdentity(context.Background())
-	if err != nil || !found || nodeID == "" {
+	if err != nil || !found || nodeID == "" || nodeID != runtimeNodeID {
 		t.Fatalf("LoadNodeIdentity() = (%q, %t, %v), want persisted NodeID", nodeID, found, err)
 	}
 }

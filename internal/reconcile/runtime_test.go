@@ -85,7 +85,7 @@ func TestNewReconcileRuntimeComposesOneNodeBoundGraph(t *testing.T) {
 	}
 }
 
-func TestReconcileRuntimeStartupFailureStopsDispatcherBeforeClosingStore(t *testing.T) {
+func TestReconcileRuntimeStartupFailureStopsDispatcherBeforeOwnerClosesStore(t *testing.T) {
 	dependencies, store := newRuntimeDependencies()
 	want := errors.New("load desired failed")
 	store.desiredErr = want
@@ -105,8 +105,14 @@ func TestReconcileRuntimeStartupFailureStopsDispatcherBeforeClosingStore(t *test
 	if err := runtime.Run(context.Background()); !errors.Is(err, want) {
 		t.Fatalf("Run() = %v, want startup failure", err)
 	}
+	if store.closeCalls != 0 {
+		t.Fatalf("Run closed borrowed Store %d times, want 0", store.closeCalls)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("owner Close: %v", err)
+	}
 	if store.closeCalls != 1 {
-		t.Fatalf("Store Close calls = %d, want 1", store.closeCalls)
+		t.Fatalf("owner Store Close calls = %d, want 1", store.closeCalls)
 	}
 	if store.lifecycleTransactions != 1 {
 		t.Fatalf("startup expiration transactions = %d, want 1", store.lifecycleTransactions)
@@ -117,7 +123,7 @@ func TestReconcileRuntimeStartupFailureStopsDispatcherBeforeClosingStore(t *test
 	}
 }
 
-func TestReconcileRuntimeCancellationStopsDispatcherBeforeClosingStore(t *testing.T) {
+func TestReconcileRuntimeCancellationStopsDispatcherBeforeOwnerClosesStore(t *testing.T) {
 	dependencies, store := newRuntimeDependencies()
 	runtime, err := NewReconcileRuntime(context.Background(), dependencies)
 	if err != nil {
@@ -137,6 +143,12 @@ func TestReconcileRuntimeCancellationStopsDispatcherBeforeClosingStore(t *testin
 	case <-time.After(time.Second):
 		t.Fatal("Dispatcher did not finish startup")
 	}
+	if err := runtime.Run(context.Background()); !errors.Is(err, ErrReconcileRuntimeRunning) {
+		t.Fatalf("concurrent Run() = %v, want running", err)
+	}
+	if store.closeCalls != 0 {
+		t.Fatalf("concurrent Run closed borrowed Store %d times, want 0", store.closeCalls)
+	}
 	cancel()
 	select {
 	case err := <-done:
@@ -146,8 +158,17 @@ func TestReconcileRuntimeCancellationStopsDispatcherBeforeClosingStore(t *testin
 	case <-time.After(time.Second):
 		t.Fatal("runtime did not stop after cancellation")
 	}
+	if err := runtime.Run(context.Background()); !errors.Is(err, ErrReconcileRuntimeStopped) {
+		t.Fatalf("Run() after stop with Store still open = %v, want stopped", err)
+	}
+	if store.closeCalls != 0 {
+		t.Fatalf("Run closed borrowed Store %d times, want 0", store.closeCalls)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("owner Close: %v", err)
+	}
 	if store.closeCalls != 1 {
-		t.Fatalf("Store Close calls = %d, want 1", store.closeCalls)
+		t.Fatalf("owner Store Close calls = %d, want 1", store.closeCalls)
 	}
 	if store.lifecycleTransactions != 1 {
 		t.Fatalf("startup expiration transactions = %d, want 1", store.lifecycleTransactions)
@@ -155,9 +176,6 @@ func TestReconcileRuntimeCancellationStopsDispatcherBeforeClosingStore(t *testin
 	probes, _ := store.backend.Counts()
 	if probes == 0 {
 		t.Fatal("canceled runtime did not perform its authoritative startup Probe")
-	}
-	if err := runtime.Run(context.Background()); !errors.Is(err, ErrReconcileRuntimeStopped) {
-		t.Fatalf("second Run() = %v, want stopped", err)
 	}
 }
 
@@ -208,12 +226,18 @@ func TestReconcileRuntimeWiresIPCHealthRecoveryWithoutMutation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("runtime did not stop after cancellation")
 	}
+	if store.closeCalls != 0 {
+		t.Fatalf("Run closed borrowed Store %d times, want 0", store.closeCalls)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("owner Close: %v", err)
+	}
 	if store.closeCalls != 1 {
-		t.Fatalf("Store Close calls = %d, want 1", store.closeCalls)
+		t.Fatalf("owner Store Close calls = %d, want 1", store.closeCalls)
 	}
 }
 
-func TestReconcileRuntimeStopsHealthSourceBeforeClosingStore(t *testing.T) {
+func TestReconcileRuntimeStopsHealthSourceBeforeOwnerClosesStore(t *testing.T) {
 	dependencies, store := newRuntimeDependencies()
 	backend := &blockingRuntimeHealthBackend{
 		Backend: fake.NewBackend(), entered: make(chan struct{}), exited: make(chan struct{}),
@@ -249,14 +273,21 @@ func TestReconcileRuntimeStopsHealthSourceBeforeClosingStore(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("runtime did not stop after cancellation")
 	}
+	if store.closeCalls != 0 {
+		t.Fatalf("Run closed borrowed Store %d times, want 0", store.closeCalls)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("owner Close: %v", err)
+	}
 	if store.closeCalls != 1 {
-		t.Fatalf("Store Close calls = %d, want 1", store.closeCalls)
+		t.Fatalf("owner Store Close calls = %d, want 1", store.closeCalls)
 	}
 }
 
 func TestReconcileRuntimeFailsOnHealthRecoveryObservedPersistenceError(t *testing.T) {
 	ctx := context.Background()
-	database := openRestartStore(t, ctx, filepath.Join(t.TempDir(), "runtime-health-recovery.db"), time.Now().UTC())
+	databasePath := filepath.Join(t.TempDir(), "runtime-health-recovery.db")
+	database := openRestartStore(t, ctx, databasePath, time.Now().UTC())
 	closed := false
 	defer func() {
 		if !closed {
@@ -327,8 +358,34 @@ func TestReconcileRuntimeFailsOnHealthRecoveryObservedPersistenceError(t *testin
 	if probes != probesBefore+1 || applies != appliesBefore {
 		t.Fatalf("recovery failure Backend calls = probes %d/%d applies %d/%d, want one authoritative Probe and no mutation", probes, probesBefore, applies, appliesBefore)
 	}
+	if store.closeCalls != 0 {
+		t.Fatalf("Run closed borrowed Store %d times, want 0", store.closeCalls)
+	}
+	observed, err := database.LoadObservedFirewallSnapshot(ctx, dependencies.NodeID)
+	if err != nil {
+		t.Fatalf("read borrowed Store after Run returned: %v", err)
+	}
+	if observed.Infrastructure == nil {
+		t.Fatal("borrowed Store lost startup Observed infrastructure")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("owner Close: %v", err)
+	}
 	if store.closeCalls != 1 {
-		t.Fatalf("Store Close calls = %d, want 1", store.closeCalls)
+		t.Fatalf("owner Store Close calls = %d, want 1", store.closeCalls)
+	}
+	reopened := openRestartStore(t, ctx, databasePath, time.Now().UTC())
+	defer func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("close reopened Store: %v", err)
+		}
+	}()
+	recovered, err := reopened.LoadObservedFirewallSnapshot(ctx, dependencies.NodeID)
+	if err != nil {
+		t.Fatalf("read reopened Store: %v", err)
+	}
+	if recovered.Infrastructure == nil || *recovered.Infrastructure != *observed.Infrastructure {
+		t.Fatalf("reopened infrastructure = %+v, want %+v", recovered.Infrastructure, observed.Infrastructure)
 	}
 }
 
@@ -350,13 +407,10 @@ func (s *failingRuntimeObservedStore) ApplyObservedFirewallUpdate(ctx context.Co
 
 func (s *failingRuntimeObservedStore) Close() error {
 	s.closeCalls++
-	if s.close == nil {
-		return s.RuntimeStore.Close()
-	}
 	return s.close()
 }
 
-func TestReconcileRuntimeJoinsRunAndCloseFailures(t *testing.T) {
+func TestReconcileRuntimeLeavesCloseFailureToOwner(t *testing.T) {
 	dependencies, store := newRuntimeDependencies()
 	runFailure := errors.New("startup failure")
 	closeFailure := errors.New("close failure")
@@ -367,8 +421,17 @@ func TestReconcileRuntimeJoinsRunAndCloseFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = runtime.Run(context.Background())
-	if !errors.Is(err, runFailure) || !errors.Is(err, closeFailure) {
-		t.Fatalf("Run() = %v, want joined failures", err)
+	if !errors.Is(err, runFailure) || errors.Is(err, closeFailure) {
+		t.Fatalf("Run() = %v, want startup failure only", err)
+	}
+	if store.closeCalls != 0 {
+		t.Fatalf("Run closed borrowed Store %d times, want 0", store.closeCalls)
+	}
+	if err := store.Close(); !errors.Is(err, closeFailure) {
+		t.Fatalf("owner Close() = %v, want close failure", err)
+	}
+	if store.closeCalls != 1 {
+		t.Fatalf("owner Store Close calls = %d, want 1", store.closeCalls)
 	}
 }
 

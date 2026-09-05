@@ -1579,3 +1579,33 @@ M1–M10 共 43 个 Work Package。所有 WP 都在本节逐项标记，不创�
      证据及独立审查见m0-c/source-maintenance/；本批验收单独记录，不接删除或生产清理。
      回调须协作取消并结束自身数据库使用；同库跨运行排他、File重启发现及第16条物理清理仍未证明。
      D-015及C1/G18/M0保持；未新增schema、配置或依赖，未暂存、未提交、未推送。
+185. 用户授权Agent目录级单实例锁：runGuardAgent配置加载后、Open Store前取得数据库父目录的非阻塞flock，
+     同目录不同数据库互斥；竞争者返回可识别错误，不进入migration或NodeID初始化。
+     目录句柄覆盖bootstrap与Reconcile运行，Store结束后关闭句柄释放锁；启动/运行/清理错误保持可识别。
+     Agent包、Agent/Reconcile Race和全仓verify通过；真实子进程验证主动Close、正常退出及SIGKILL后接替。
+     设计见source-ownership-recovery-design.md，证据与独立审查见m0-c/agent-instance-lock/。
+     用户已明确通过本批Code Review，当前DONE / Implemented。范围为现有Agent启动与进程锁，不授予Source共享Store或物理清理完成。
+     目录身份稳定与使用同一Agent准入路径是运行前提；同库跨目录硬链接及绕过Agent的写入不在本锁保证内。
+     未新增依赖、schema、配置字段或systemd变更；C1/G18/M0保持。
+186. 用户确认Reconcile借用Store、Agent最终关闭：RuntimeStore移除Close要求，Run等待内部组件结束并返回运行结果，
+     保持并发Run拒绝与停止后复用拒绝。Agent从Open成功起持续持有Store，最终Close一次，再释放目录锁。
+     运行、取消、Store.Close与锁Close错误组合保留各自身份；调用方测试同步迁移关闭责任。
+     真实SQLite验证Run返回后仍可读取、owner关闭后重新打开保持Observed字段；Agent关闭后原连接不可读且重新打开NodeID保持。
+     Agent/Reconcile定向测试和Race、全仓verify、格式与diff检查通过；证据与独立审查见m0-c/agent-store-ownership/。
+     本批REVIEW / Implemented，用户验收待完成；Source runtime接口与生产Reader/维护/物理清理另按后续组合范围推进。
+     无新增配置、依赖或schema；第185项验收保持，C1/G18/M0保持。
+187. 用户确认Source借用Store与关闭超时交接：RunSourceIntakeRuntime移除database关闭参数及内部Close，
+     保留Reader停止、队列Seal、worker排空、Flush与同步维护；调用者持有最终关闭责任。
+     关闭预算耗尽返回ErrSourceIntakeShutdownTimeout与DeadlineExceeded并保留已取得错误，调用者跳过Close且持锁至进程退出。
+     普通Reader/worker/维护Deadline不附专用标识，正常收尾由调用者Close一次并合并错误；参数失败也由原所有者清理。
+     真实SQLite验证runtime返回后可读，owner关闭重开后checkpoint与receipt保持；排空/维护顺序及失败跳过断言保持。
+     Processor定向测试、Processor integration Race、Source排除原生Journald后的integration Race及全仓verify通过。
+     原生Journald因容器缺journalctl为UNAVAILABLE；普通Flush独立Deadline来源未注入，真实Flush IO预算耗尽路径已验证。
+     证据见m0-c/source-store-ownership/README.md、review.md及acceptance.md。用户已明确通过本批，当前DONE / Implemented。
+     生产Source接线、共享组件统一退出及物理清理留在后续组合范围；第185项DONE、第186项REVIEW及C1/G18/M0保持。
+188. 用户通过第187项Source借用Store交付，六个冻结目标在验收同步前SHA-256一致，当前DONE / Implemented。
+     下一步完成共享关闭预算预检：Source内部创建并取消预算，外层无法在错误跳过maintenance后复用剩余时间。
+     提案由调用者以一次性beginShutdown闭包持有带deadline的context，Source借用；范围见source-shared-shutdown-design.md。
+     独立只读方案核对/root/shared_shutdown_design_review认为最小闭包足够；需保持首次可观测停止事件、同步维护协作取消和唯一结果接收边界。
+     当前Proposed，导出函数参数及跨模块关闭契约待确认；生产Source组合与Reconcile内部失败通知另批。
+     本轮仅验收同步与接口预检，Go/Race/integration NOT_RUN，既有代码hash保持；第186项仍REVIEW，各Gate保持。

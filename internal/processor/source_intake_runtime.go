@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"reflect"
 	"time"
 
@@ -12,12 +11,17 @@ import (
 	"github.com/lifei6671/guard-wall/internal/source"
 )
 
+// ErrSourceIntakeShutdownTimeout 表示本次关闭预算耗尽；调用者须保留 Store 和进程锁直至退出。
+// 此标识由 runtime 产生；传入组件不得用它表示自身超时。
+var ErrSourceIntakeShutdownTimeout = errors.New("run source intake runtime: shutdown timeout")
+
 // RunSourceIntakeRuntime composes one Source reader with the processing
 // runtime. Shutdown always stops the reader before sealing the accepted queue,
-// then drains the worker, flushes checkpoints, and closes the database.
+// then drains the worker and flushes checkpoints. The caller owns the Store.
 // maintenance 在成功排空并保存 checkpoint 后、关闭数据库前同步执行；nil 跳过。
 // 它共享剩余 shutdown deadline，须配合取消并在返回前结束自身数据库使用。
-// 超时返回时不关闭数据库，进程所有者必须退出且不得复用；本回调不证明跨运行排他。
+// 返回 ErrSourceIntakeShutdownTimeout 时，所有者须跳过 Close 并退出进程，不得复用 Store。
+// 其他返回路径由所有者等待全部共享组件结束后 Close；本回调不证明跨运行排他。
 func RunSourceIntakeRuntime(
 	ctx context.Context,
 	shutdownTimeout time.Duration,
@@ -25,7 +29,6 @@ func RunSourceIntakeRuntime(
 	queue *source.DeliveryQueue,
 	coordinator *Coordinator,
 	checkpoints *source.CheckpointManager,
-	database io.Closer,
 	maintenance func(context.Context) error,
 ) error {
 	if ctx == nil {
@@ -37,8 +40,8 @@ func RunSourceIntakeRuntime(
 	if sourceReaderIsNil(reader) {
 		return fmt.Errorf("run source intake runtime: reader is required")
 	}
-	if queue == nil || coordinator == nil || checkpoints == nil || database == nil {
-		return fmt.Errorf("run source intake runtime: queue, coordinator, checkpoints, and database are required")
+	if queue == nil || coordinator == nil || checkpoints == nil {
+		return fmt.Errorf("run source intake runtime: queue, coordinator, and checkpoints are required")
 	}
 
 	readerCtx, cancelReader := context.WithCancel(context.WithoutCancel(ctx))
@@ -63,7 +66,6 @@ func RunSourceIntakeRuntime(
 			shutdownCtx,
 			queue,
 			checkpoints,
-			database,
 			workerResult,
 			readerErr,
 			maintenance,
@@ -76,7 +78,6 @@ func RunSourceIntakeRuntime(
 			readerResult,
 			queue,
 			checkpoints,
-			database,
 			nil,
 			workerErr,
 			maintenance,
@@ -89,7 +90,6 @@ func RunSourceIntakeRuntime(
 			readerResult,
 			queue,
 			checkpoints,
-			database,
 			workerResult,
 			nil,
 			maintenance,
@@ -104,7 +104,6 @@ func stopReaderAndFinishSourceIntakeRuntime(
 	readerResult <-chan error,
 	queue *source.DeliveryQueue,
 	checkpoints *source.CheckpointManager,
-	database io.Closer,
 	workerResult <-chan error,
 	workerErr error,
 	maintenance func(context.Context) error,
@@ -122,7 +121,6 @@ func stopReaderAndFinishSourceIntakeRuntime(
 			shutdownCtx,
 			queue,
 			checkpoints,
-			database,
 			workerResult,
 			errors.Join(workerErr, readerErr),
 			maintenance,
@@ -136,7 +134,6 @@ func drainSourceIntakeRuntime(
 	ctx context.Context,
 	queue *source.DeliveryQueue,
 	checkpoints *source.CheckpointManager,
-	database io.Closer,
 	workerResult <-chan error,
 	initialErr error,
 	maintenance func(context.Context) error,
@@ -150,13 +147,12 @@ func drainSourceIntakeRuntime(
 			return sourceIntakeShutdownTimeout(initialErr)
 		}
 	}
-	return finishSourceIntakeRuntime(ctx, checkpoints, database, initialErr, maintenance)
+	return finishSourceIntakeRuntime(ctx, checkpoints, initialErr, maintenance)
 }
 
 func finishSourceIntakeRuntime(
 	ctx context.Context,
 	checkpoints *source.CheckpointManager,
-	database io.Closer,
 	initialErr error,
 	maintenance func(context.Context) error,
 ) error {
@@ -174,19 +170,17 @@ func finishSourceIntakeRuntime(
 			return sourceIntakeShutdownTimeout(wrapSourceRuntimeError("maintenance", maintenanceErr))
 		}
 	}
-	closeErr := database.Close()
 	return errors.Join(
 		initialErr,
 		wrapSourceRuntimeError("flush checkpoint", flushErr),
 		wrapSourceRuntimeError("maintenance", maintenanceErr),
-		wrapSourceRuntimeError("close database", closeErr),
 	)
 }
 
 func sourceIntakeShutdownTimeout(err error) error {
 	return errors.Join(
 		err,
-		fmt.Errorf("run source intake runtime: shutdown timeout: %w", context.DeadlineExceeded),
+		fmt.Errorf("%w: %w", ErrSourceIntakeShutdownTimeout, context.DeadlineExceeded),
 	)
 }
 

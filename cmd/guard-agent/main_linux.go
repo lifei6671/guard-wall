@@ -54,12 +54,13 @@ func main() {
 			os.Geteuid,
 			configPath,
 			loadGuardAgentConfig,
+			acquireAgentInstanceLock,
 			openGuardAgentStore,
 			migrations.FS,
 			newGuardAgentRuntime,
 		)
 	}
-	if err == nil || errors.Is(err, context.Canceled) {
+	if err == nil || err == context.Canceled {
 		return
 	}
 	// Process logs intentionally do not include peer, socket, or backend details.
@@ -74,10 +75,12 @@ type agentStore interface {
 
 type configLoader func(context.Context, string) (config.Config, error)
 
+type instanceLockAcquirer func(string) (io.Closer, error)
+
 type storeOpener func(context.Context, string, fs.FS) (agentStore, error)
 
-// guardAgentRuntime owns the post-bootstrap Reconcile lifecycle and assumes
-// Store ownership when Run is called.
+// guardAgentRuntime负责Reconcile生命周期，Run返回前须结束其全部数据库使用。
+// Store始终由Agent持有并最终关闭。
 type guardAgentRuntime interface {
 	BootstrapInitialManagedPolicy(context.Context, time.Time) (decision.PolicyChange, error)
 	Run(context.Context) error
@@ -90,14 +93,15 @@ func openGuardAgentStore(ctx context.Context, databasePath string, migrationFS f
 }
 
 // runGuardAgent verifies the fixed non-privileged identity, loads the explicit
-// configuration, opens SQLite, then persists the NodeID and initial managed
-// Policy before transferring Store ownership to the Reconcile runtime.
+// configuration, locks its database directory, opens SQLite, then persists the
+// NodeID and initial managed Policy. It closes Store after Reconcile returns.
 func runGuardAgent(
 	ctx context.Context,
 	lookup func(string) (*user.User, error),
 	euid func() int,
 	configPath string,
 	loadConfig configLoader,
+	acquireLock instanceLockAcquirer,
 	openStore storeOpener,
 	migrationFS fs.FS,
 	newRuntime guardAgentRuntimeFactory,
@@ -105,7 +109,7 @@ func runGuardAgent(
 	if ctx == nil {
 		return errGuardAgentContext
 	}
-	if !filepath.IsAbs(configPath) || loadConfig == nil || openStore == nil || migrationFS == nil || newRuntime == nil {
+	if !filepath.IsAbs(configPath) || loadConfig == nil || acquireLock == nil || openStore == nil || migrationFS == nil || newRuntime == nil {
 		return errGuardAgentConfig
 	}
 	identity, err := lookupGuardIdentity(lookup)
@@ -119,6 +123,22 @@ func runGuardAgent(
 	if err != nil {
 		return fmt.Errorf("load guard-agent configuration: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	instanceLock, err := acquireLock(loaded.Store.DatabasePath)
+	if err != nil {
+		return fmt.Errorf("lock guard-agent instance: %w", err)
+	}
+	// 后注册的Store清理先执行，目录锁覆盖数据库最终关闭。
+	defer func() {
+		if err := instanceLock.Close(); err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("close guard-agent instance lock: %w", err))
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	database, err := openStore(ctx, loaded.Store.DatabasePath, migrationFS)
 	if err != nil {
 		return fmt.Errorf("open guard-agent store: %w", err)
@@ -126,16 +146,8 @@ func runGuardAgent(
 	if database == nil {
 		return errGuardAgentStore
 	}
-	storeOwned := true
 	defer func() {
-		if !storeOwned {
-			return
-		}
 		if err := database.Close(); err != nil {
-			if returnErr == nil || errors.Is(returnErr, context.Canceled) {
-				returnErr = fmt.Errorf("close guard-agent store: %w", err)
-				return
-			}
 			returnErr = errors.Join(returnErr, fmt.Errorf("close guard-agent store: %w", err))
 		}
 	}()
@@ -150,9 +162,7 @@ func runGuardAgent(
 	if _, err := runtime.BootstrapInitialManagedPolicy(ctx, time.Now().UTC()); err != nil {
 		return fmt.Errorf("bootstrap guard-agent managed policy: %w", err)
 	}
-	// Runtime.Run closes Store after its Dispatcher and expiration scheduler
-	// return. The caller must not retain a second close path after this point.
-	storeOwned = false
+	// Run等待内部组件结束，随后由本层按Store、目录锁的顺序清理。
 	return runtime.Run(ctx)
 }
 

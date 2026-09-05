@@ -15,19 +15,17 @@ import (
 var (
 	// ErrReconcileRuntimeRunning reports a concurrent attempt to own the same runtime.
 	ErrReconcileRuntimeRunning = errors.New("reconcile runtime is already running")
-	// ErrReconcileRuntimeStopped reports an attempt to reuse a runtime after Store closure.
+	// ErrReconcileRuntimeStopped reports an attempt to reuse a stopped runtime.
 	ErrReconcileRuntimeStopped = errors.New("reconcile runtime is stopped")
 )
 
-// RuntimeStore is the complete SQLite boundary owned by one ReconcileRuntime.
-// Run closes it only after the expiration scheduler and Dispatcher have returned.
+// RuntimeStore是Reconcile借用的SQLite边界，最终关闭由调用者负责。
 type RuntimeStore interface {
 	PersistentStateStore
 	DesiredStateReader
 	decision.TransactionRunner
 	decision.PolicyTransactionRunner
 	decision.PolicyStateReader
-	Close() error
 }
 
 // RuntimeDependencies contains every authority required to compose Reconcile.
@@ -100,7 +98,7 @@ type ReconcileRuntime struct {
 
 // NewReconcileRuntime constructs the complete node-local Reconcile graph. It
 // performs durable recovery reads but starts no goroutine or Firewall operation.
-// The caller retains Store ownership until Run begins successfully.
+// The caller retains Store ownership throughout the runtime lifecycle.
 func NewReconcileRuntime(ctx context.Context, dependencies RuntimeDependencies) (*ReconcileRuntime, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("reconcile runtime context is required")
@@ -263,7 +261,7 @@ func (r *ReconcileRuntime) PolicyWakeSink() decision.PolicyWakeSink {
 }
 
 // BootstrapInitialManagedPolicy initializes only a missing complete Policy
-// before Run transfers Store ownership. It never wakes the not-yet-running
+// before Run starts the components. It never wakes the not-yet-running
 // Dispatcher; Run always loads all current Desired keys for initial reconcile.
 func (r *ReconcileRuntime) BootstrapInitialManagedPolicy(
 	ctx context.Context,
@@ -280,9 +278,8 @@ func (r *ReconcileRuntime) BootstrapInitialManagedPolicy(
 	return r.policyService.BootstrapInitialManagedPolicy(ctx, updatedAt)
 }
 
-// Run transfers Store ownership to the runtime, runs the expiration scheduler
-// with Dispatcher, then closes Store after both have fully stopped. It
-// preserves both terminal errors.
+// Run运行并等待全部内部组件结束；返回后Store仍由调用者持有和关闭。
+// 运行状态只允许一次使用，组件错误原样保留。
 func (r *ReconcileRuntime) Run(ctx context.Context) error {
 	if r == nil || r.expiration == nil || r.store == nil {
 		return fmt.Errorf("reconcile runtime is not initialized")
@@ -303,12 +300,11 @@ func (r *ReconcileRuntime) Run(ctx context.Context) error {
 	r.runMu.Unlock()
 
 	runErr := r.runComponents(ctx)
-	closeErr := r.store.Close()
 	r.runMu.Lock()
 	r.running = false
 	r.stopped = true
 	r.runMu.Unlock()
-	return errors.Join(runErr, closeErr)
+	return runErr
 }
 
 func (r *ReconcileRuntime) runComponents(ctx context.Context) error {

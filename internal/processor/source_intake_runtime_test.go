@@ -54,7 +54,7 @@ func TestRunSourceIntakeRuntimeStopsReaderBeforeDrainAndClose(t *testing.T) {
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() {
-		result <- RunSourceIntakeRuntime(runCtx, time.Second, reader, queue, coordinator, checkpoints, closer, nil)
+		result <- RunSourceIntakeRuntime(runCtx, time.Second, reader, queue, coordinator, checkpoints, nil)
 	}()
 
 	waitForSourceRuntimeSignal(t, reader.started, "reader start")
@@ -67,6 +67,23 @@ func TestRunSourceIntakeRuntimeStopsReaderBeforeDrainAndClose(t *testing.T) {
 	close(runner.release)
 	if err := waitForSourceRuntimeResult(t, result); err != nil {
 		t.Fatalf("RunSourceIntakeRuntime(): %v", err)
+	}
+	if closer.Calls() != 0 {
+		t.Fatal("runtime closed borrowed Store")
+	}
+	if err := closer.validate(context.Background()); err != nil {
+		t.Fatalf("read borrowed Store after runtime returned: %v", err)
+	}
+	if err := finishSourceIntakeTestOwner(t, nil, closer); err != nil {
+		t.Fatal(err)
+	}
+	reopened := openSourceRuntimeStoreAt(t, path)
+	checkpoint, found, err := reopened.LoadSourceCheckpoint(context.Background(), "source-1")
+	if err != nil || !found || checkpoint.DeliverySequence != delivery.Sequence || checkpoint.Position != delivery.Record.Position {
+		t.Fatalf("reopened checkpoint=%+v found=%v err=%v", checkpoint, found, err)
+	}
+	if receipt, found, err := reopened.FindProcessingReceipt(context.Background(), delivery.ID); err != nil || !found || receipt.DeliveryID != delivery.ID {
+		t.Fatalf("reopened receipt=%+v found=%v err=%v", receipt, found, err)
 	}
 	if reader.Calls() != 1 {
 		t.Fatalf("Reader.Read() calls = %d, want 1", reader.Calls())
@@ -121,7 +138,7 @@ func TestRunSourceIntakeRuntimeReaderErrorDrainsAcceptedSet(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() {
-		result <- RunSourceIntakeRuntime(context.Background(), time.Second, reader, queue, coordinator, checkpoints, closer, nil)
+		result <- RunSourceIntakeRuntime(context.Background(), time.Second, reader, queue, coordinator, checkpoints, nil)
 	}()
 	waitForSourceRuntimeSignal(t, runner.started, "worker start")
 	if closer.Calls() != 0 {
@@ -129,6 +146,10 @@ func TestRunSourceIntakeRuntimeReaderErrorDrainsAcceptedSet(t *testing.T) {
 	}
 	close(runner.release)
 	err = waitForSourceRuntimeResult(t, result)
+	if errors.Is(err, closeErr) {
+		t.Fatalf("runtime returned owner close error: %v", err)
+	}
+	err = finishSourceIntakeTestOwner(t, err, closer)
 	if !errors.Is(err, readerErr) || !errors.Is(err, closeErr) {
 		t.Fatalf("RunSourceIntakeRuntime() error = %v, want reader and close errors", err)
 	}
@@ -163,7 +184,6 @@ func TestRunSourceIntakeRuntimePreservesReaderFailureJoinedWithCancellation(t *t
 			queue,
 			NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), &sourceRuntimeErrorRunner{}),
 			checkpoints,
-			closer,
 			nil,
 		)
 	}()
@@ -171,6 +191,7 @@ func TestRunSourceIntakeRuntimePreservesReaderFailureJoinedWithCancellation(t *t
 	cancelRun()
 	waitForSourceRuntimeSignal(t, readerStopped, "reader stop")
 	err = waitForSourceRuntimeResult(t, result)
+	err = finishSourceIntakeTestOwner(t, err, closer)
 	if !errors.Is(err, readerFailure) {
 		t.Fatalf("RunSourceIntakeRuntime() error = %v, want reader failure", err)
 	}
@@ -198,7 +219,6 @@ func TestRunSourceIntakeRuntimeRejectsInvalidDeliveryAtSink(t *testing.T) {
 		queue,
 		NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), &sourceRuntimeErrorRunner{}),
 		newSourceRuntimeCheckpoints(t, database),
-		closer,
 		nil,
 	)
 	if err == nil || !containsErrorText(err, "delivery id is not canonical") {
@@ -207,6 +227,7 @@ func TestRunSourceIntakeRuntimeRejectsInvalidDeliveryAtSink(t *testing.T) {
 	if queue.Len() != 0 {
 		t.Fatalf("queue length = %d, want 0", queue.Len())
 	}
+	err = finishSourceIntakeTestOwner(t, err, closer)
 	if closer.Calls() != 1 {
 		t.Fatalf("Close() calls = %d, want 1", closer.Calls())
 	}
@@ -236,7 +257,6 @@ func TestRunSourceIntakeRuntimeTimeoutDoesNotCloseWhileReaderIsActive(t *testing
 			queue,
 			NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), &sourceRuntimeErrorRunner{}),
 			checkpoints,
-			closer,
 			nil,
 		)
 	}()
@@ -244,7 +264,8 @@ func TestRunSourceIntakeRuntimeTimeoutDoesNotCloseWhileReaderIsActive(t *testing
 	waitForSourceRuntimeSignal(t, reader.started, "reader start")
 	cancelRun()
 	err = waitForSourceRuntimeResult(t, result)
-	if !errors.Is(err, context.DeadlineExceeded) {
+	err = finishSourceIntakeTestOwner(t, err, closer)
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrSourceIntakeShutdownTimeout) {
 		t.Fatalf("RunSourceIntakeRuntime() error = %v, want deadline", err)
 	}
 	if closer.Calls() != 0 {
@@ -285,14 +306,14 @@ func TestRunSourceIntakeRuntimePreservesWorkerFailureWhenReaderStopTimesOut(t *t
 			queue,
 			NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), &sourceRuntimeErrorRunner{err: workerErr}),
 			newSourceRuntimeCheckpoints(t, database),
-			closer,
 			nil,
 		)
 	}()
 
 	waitForSourceRuntimeSignal(t, readerStarted, "reader start")
 	err = waitForSourceRuntimeResult(t, result)
-	if !errors.Is(err, workerErr) || !errors.Is(err, context.DeadlineExceeded) {
+	err = finishSourceIntakeTestOwner(t, err, closer)
+	if !errors.Is(err, workerErr) || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrSourceIntakeShutdownTimeout) {
 		t.Fatalf("RunSourceIntakeRuntime() error = %v, want worker error and deadline", err)
 	}
 	if closer.Calls() != 0 {
@@ -332,14 +353,14 @@ func TestRunSourceIntakeRuntimeTimeoutDoesNotCloseDuringCommitUnknownReadback(t 
 			queue,
 			NewCoordinator(readbackStore, &zeroOutcomeRunner{}),
 			checkpoints,
-			closer,
 			nil,
 		)
 	}()
 
 	waitForSourceRuntimeSignal(t, readbackStore.started, "commit-unknown readback")
 	err = waitForSourceRuntimeResult(t, result)
-	if !errors.Is(err, context.DeadlineExceeded) {
+	err = finishSourceIntakeTestOwner(t, err, closer)
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrSourceIntakeShutdownTimeout) {
 		t.Fatalf("RunSourceIntakeRuntime() error = %v, want deadline", err)
 	}
 	if closer.Calls() != 0 {
@@ -350,6 +371,9 @@ func TestRunSourceIntakeRuntimeTimeoutDoesNotCloseDuringCommitUnknownReadback(t 
 }
 
 func TestRunSourceIntakeRuntimeRejectsNilReaderBeforeStartingRuntime(t *testing.T) {
+	database, _ := openSourceRuntimeStore(t)
+	seedShutdownSource(t, database)
+	closer := &sourceRuntimeValidatingCloser{database: database}
 	var reader *sourceIntakeBlockingReader
 	err := RunSourceIntakeRuntime(
 		context.Background(),
@@ -359,10 +383,66 @@ func TestRunSourceIntakeRuntimeRejectsNilReaderBeforeStartingRuntime(t *testing.
 		nil,
 		nil,
 		nil,
-		nil,
 	)
 	if err == nil || !containsErrorText(err, "reader is required") {
 		t.Fatalf("RunSourceIntakeRuntime() error = %v, want reader validation", err)
+	}
+	if _, _, readErr := database.LoadSourceCheckpoint(context.Background(), "source-1"); readErr != nil {
+		t.Fatalf("read Store after validation failure: %v", readErr)
+	}
+	err = finishSourceIntakeTestOwner(t, err, closer)
+	if !containsErrorText(err, "reader is required") || closer.Calls() != 1 {
+		t.Fatalf("owner error=%v close=%d", err, closer.Calls())
+	}
+}
+
+func TestRunSourceIntakeRuntimeComponentDeadlineReturnsCloseOwnership(t *testing.T) {
+	for _, component := range []string{"reader", "worker", "maintenance"} {
+		t.Run(component, func(t *testing.T) {
+			database, _ := openSourceRuntimeStore(t)
+			seedShutdownSource(t, database)
+			queue, err := source.NewDeliveryQueue(1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader := sourceIntakeReaderFunc(func(ctx context.Context, sink source.DeliverySink) error {
+				if component == "reader" {
+					return context.DeadlineExceeded
+				}
+				if component == "worker" {
+					return sink.Deliver(ctx, shutdownDelivery(t, 1, 0, 10))
+				}
+				return nil
+			})
+			maintenanceCalls := 0
+			closer := &sourceRuntimeValidatingCloser{database: database}
+			err = RunSourceIntakeRuntime(context.Background(), time.Second, reader, queue,
+				NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), &sourceRuntimeErrorRunner{err: context.DeadlineExceeded}),
+				newSourceRuntimeCheckpoints(t, database), func(context.Context) error {
+					maintenanceCalls++
+					return context.DeadlineExceeded
+				})
+			if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrSourceIntakeShutdownTimeout) {
+				t.Fatalf("component error=%v, want ordinary deadline", err)
+			}
+			if closer.Calls() != 0 {
+				t.Fatal("runtime closed borrowed Store")
+			}
+			if _, _, readErr := database.LoadSourceCheckpoint(context.Background(), "source-1"); readErr != nil {
+				t.Fatalf("read borrowed Store: %v", readErr)
+			}
+			wantMaintenance := 0
+			if component == "maintenance" {
+				wantMaintenance = 1
+			}
+			if maintenanceCalls != wantMaintenance {
+				t.Fatalf("maintenance calls=%d, want %d", maintenanceCalls, wantMaintenance)
+			}
+			err = finishSourceIntakeTestOwner(t, err, closer)
+			if !errors.Is(err, context.DeadlineExceeded) || closer.Calls() != 1 {
+				t.Fatalf("owner error=%v close=%d", err, closer.Calls())
+			}
+		})
 	}
 }
 
@@ -415,4 +495,19 @@ func (r *sourceIntakeIgnoringCancelReader) Read(context.Context, source.Delivery
 
 func containsErrorText(err error, want string) bool {
 	return err != nil && strings.Contains(err.Error(), want)
+}
+
+// 测试调用者只在 runtime 已交回安全关闭责任后关闭 Store。
+func finishSourceIntakeTestOwner(t *testing.T, runErr error, closer interface {
+	Close() error
+	Calls() int
+}) error {
+	t.Helper()
+	if closer.Calls() != 0 {
+		t.Fatalf("runtime closed borrowed Store %d times", closer.Calls())
+	}
+	if errors.Is(runErr, ErrSourceIntakeShutdownTimeout) {
+		return runErr
+	}
+	return errors.Join(runErr, closer.Close())
 }

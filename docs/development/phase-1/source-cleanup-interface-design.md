@@ -26,8 +26,9 @@
 
 独立核对确认`internal/processor/source_intake_runtime.go:93-164`已有Reader结束、Seal队列、
 等待worker、Flush checkpoint、Close数据库顺序；`internal/source/reader.go:14-18`要求返回前结束sink调用。
-可复用这些所有权与排空能力，但当前返回时数据库已关闭，尚无保持Store开放的清理接入点，
-也未证明其与下一次File发现/恢复共同满足删除前提；不是从头建设一套排空机制。
+第184项已实现D-016维护接入点：正常排空和Flush成功后、Close之前同步运行maintenance。
+接入点共享剩余shutdown deadline；实现及验证入口为source-maintenance-integration-design.md。
+它提供本次运行的维护窗口，跨运行所有权与下一次File发现/恢复的删除前提仍待证明。
 
 ## 候选接口形状
 
@@ -81,6 +82,44 @@ receipt清理成功不自动把generation退休；随后复用现有退休资格
 单目标事务传递取消与数据库失败；不做后台重试。提交结果不确定时返回错误，不推断删除成功。
 
 ## 建议推进顺序与复杂度
+
+具体接口与行为方案见[File Source运行所有权与重启恢复](source-ownership-recovery-design.md)。
+首个可独立实施单元为Agent单实例准入；共享Store关闭所有权与生产Reader恢复另按该方案衔接。
+
+### 生命周期衔接预检（2026-09-05）
+
+本次核对基线为提交ab71d7e，工作区起始干净。以下为设计建议，未授予实施或删除资格。
+
+当前实现依据：
+
+- `internal/processor/source_intake_runtime.go`：finishSourceIntakeRuntime仅在读取与处理无错误、Flush成功时运行维护。
+- `internal/processor/coordinator.go`：Process的flight串行范围属于单个Coordinator实例及Delivery ID。
+- `internal/store/source_state.go`：RegisterFileGeneration允许登记不存在的generation；恢复查询只返回非Retired行。
+- `internal/source/sqlite_state.go`：恢复适配器调用上述查询；此查询不承担文件系统发现策略。
+
+下一最小设计单元为File Source运行所有权与重启发现契约，按以下顺序形成可实施方案：
+
+1. 明确唯一组合所有者：列出同库、同Source的读取者、投递入口和Coordinator；说明第二个运行实例的准入与退出规则。
+   同一运行的维护窗口只能排除其拥有的工作；Source session的checkpoint CAS不能替代整个处理生命周期的排他证明。
+2. 明确文件发现规则：区分登记代际恢复与新文件发现，规定旧路径再次出现、rename、inode复用及身份不明时的行为。
+   随机生成新generation只能避免ID重复，不能单独证明同一旧日志不会被再次处理。
+3. 明确删除后的证据来源：逐项说明剩余持久状态或可验证的文件生命周期如何区分旧日志与新日志。
+   若某类发现无法区分，保留该类目标并记录限制；不能以数据库查无记录作为新文件证明。
+4. 用真实临时文件和SQLite构造受控交错与新进程恢复测试；先证明准入、排空和发现规则，再接两个清理事务。
+
+拟议验收矩阵：
+
+| 场景 | 必须直接验证的结果 |
+|---|---|
+| 本次停读与维护交错 | 最后一次sink返回、worker排空、Flush、维护严格有序；维护中无本次新处理 |
+| 第二个运行实例进入 | 在修改session或处理状态前按明确所有权规则拒绝或等待；退出后可正常接替 |
+| 已处理旧文件在重启后仍存在 | 使用剩余权威识别并保持原有处理副作用，不从零重新贡献Window |
+| 新文件、rename及inode复用 | 新日志可正常处理；身份不明确时执行已确认策略，不静默当作旧日志跳过 |
+| 清理事务提交前后进程退出 | 新进程核对完整剩余行及恢复集合，保留旧投递幂等与新投递处理能力 |
+
+物理清理会改变恢复与处理准入契约；实施请求必须列明具体接口、所有权机制、文件发现语义和受影响调用者。
+该请求按项目AGENTS的跨模块契约确认规则取得授权后实施；现有D-015期限和D-016维护授权保持各自范围。
+本次文档预检不选择锁实现或新增持久模型，Go/Race/integration为NOT_RUN。
 
 下一最小设计单元先闭合“处理准入—停读排空—重启发现”边界，再冻结上述删除接口。
 优先复用现有SourceRuntime/Coordinator所有权；若现有保证不足，单独列出必要的跨模块变更请求。

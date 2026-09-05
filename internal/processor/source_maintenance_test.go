@@ -60,7 +60,7 @@ func TestSourceMaintenanceRunsAfterDurableDrainBeforeClose(t *testing.T) {
 				if _, found, err := database.FindProcessingReceipt(ctx, delivery.ID); err != nil || !found {
 					return fmt.Errorf("receipt before maintenance: found=%v err=%v", found, err)
 				}
-				// 通知测试观察同步维护期间数据库仍归本次运行所有。
+				// 通知测试观察同步维护期间仍在借用数据库。
 				close(release)
 				<-callbackRelease
 				return nil
@@ -69,7 +69,7 @@ func TestSourceMaintenanceRunsAfterDurableDrainBeforeClose(t *testing.T) {
 			defer cancel()
 			result := make(chan error, 1)
 			go func() {
-				result <- RunSourceIntakeRuntime(runCtx, 5*time.Second, reader, queue, NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), runner), newSourceRuntimeCheckpoints(t, database), closer, maintenance)
+				result <- RunSourceIntakeRuntime(runCtx, 5*time.Second, reader, queue, NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), runner), newSourceRuntimeCheckpoints(t, database), maintenance)
 			}()
 			waitForSourceRuntimeSignal(t, runner.started, "worker start")
 			if stop {
@@ -93,6 +93,24 @@ func TestSourceMaintenanceRunsAfterDurableDrainBeforeClose(t *testing.T) {
 			close(callbackRelease)
 			if err := waitForSourceRuntimeResult(t, result); err != nil {
 				t.Fatal(err)
+			}
+			checkpoint, found, err := database.LoadSourceCheckpoint(context.Background(), "source-1")
+			if err != nil || !found || checkpoint.DeliverySequence != delivery.Sequence || checkpoint.Position != delivery.Record.Position {
+				t.Fatalf("borrowed checkpoint=%+v found=%v err=%v", checkpoint, found, err)
+			}
+			if receipt, found, err := database.FindProcessingReceipt(context.Background(), delivery.ID); err != nil || !found || receipt.DeliveryID != delivery.ID {
+				t.Fatalf("borrowed receipt=%+v found=%v err=%v", receipt, found, err)
+			}
+			if err := finishSourceIntakeTestOwner(t, nil, closer); err != nil {
+				t.Fatal(err)
+			}
+			reopened := openSourceRuntimeStoreAt(t, path)
+			recovered, found, err := reopened.LoadSourceCheckpoint(context.Background(), "source-1")
+			if err != nil || !found || recovered != checkpoint {
+				t.Fatalf("reopened checkpoint=%+v want=%+v found=%v err=%v", recovered, checkpoint, found, err)
+			}
+			if receipt, found, err := reopened.FindProcessingReceipt(context.Background(), delivery.ID); err != nil || !found || receipt.DeliveryID != delivery.ID {
+				t.Fatalf("reopened receipt=%+v found=%v err=%v", receipt, found, err)
 			}
 			if calls.Load() != 1 || closer.Calls() != 1 {
 				t.Fatalf("maintenance=%d close=%d", calls.Load(), closer.Calls())
@@ -133,7 +151,8 @@ func TestSourceMaintenanceSkipsReaderAndWorkerFailures(t *testing.T) {
 			})
 			closer := &sourceRuntimeCountingCloser{}
 			calls := 0
-			err = RunSourceIntakeRuntime(runCtx, time.Second, reader, queue, NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), &sourceMaintenanceErrorRunner{accepted: accepted, err: failure}), newSourceRuntimeCheckpoints(t, database), closer, func(context.Context) error { calls++; return nil })
+			err = RunSourceIntakeRuntime(runCtx, time.Second, reader, queue, NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), &sourceMaintenanceErrorRunner{accepted: accepted, err: failure}), newSourceRuntimeCheckpoints(t, database), func(context.Context) error { calls++; return nil })
+			err = finishSourceIntakeTestOwner(t, err, closer)
 			if !errors.Is(err, failure) || calls != 0 || closer.Calls() != 1 {
 				t.Fatalf("error=%v maintenance=%d close=%d", err, calls, closer.Calls())
 			}
@@ -180,7 +199,7 @@ func TestSourceMaintenanceFinishFailureAndDeadline(t *testing.T) {
 			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
 			calls := 0
-			err := finishSourceIntakeRuntime(ctx, checkpoints, closer, nil, func(callbackCtx context.Context) error {
+			err := finishSourceIntakeRuntime(ctx, checkpoints, nil, func(callbackCtx context.Context) error {
 				calls++
 				got, ok := callbackCtx.Deadline()
 				if !ok || !got.Equal(deadline) {
@@ -194,12 +213,13 @@ func TestSourceMaintenanceFinishFailureAndDeadline(t *testing.T) {
 				}
 				return maintenanceErr
 			})
+			err = finishSourceIntakeTestOwner(t, err, closer)
 			if mode == "flush-error" {
 				if !errors.Is(err, flushErr) || !errors.Is(err, closeErr) || calls != 0 || closer.Calls() != 1 {
 					t.Fatalf("error=%v maintenance=%d close=%d", err, calls, closer.Calls())
 				}
 			} else if mode == "deadline" {
-				if !errors.Is(err, maintenanceErr) || !errors.Is(err, context.DeadlineExceeded) || calls != 1 || closer.Calls() != 0 {
+				if !errors.Is(err, maintenanceErr) || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrSourceIntakeShutdownTimeout) || calls != 1 || closer.Calls() != 0 {
 					t.Fatalf("error=%v maintenance=%d close=%d", err, calls, closer.Calls())
 				}
 			} else if !errors.Is(err, maintenanceErr) || !errors.Is(err, closeErr) || calls != 1 || closer.Calls() != 1 {
@@ -223,14 +243,15 @@ func TestSourceMaintenanceSkipsReaderTimeout(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	go func() {
-		result <- RunSourceIntakeRuntime(runCtx, 20*time.Millisecond, reader, queue, NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), &sourceRuntimeErrorRunner{}), newSourceRuntimeCheckpoints(t, database), closer, func(context.Context) error { calls.Add(1); return nil })
+		result <- RunSourceIntakeRuntime(runCtx, 20*time.Millisecond, reader, queue, NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), &sourceRuntimeErrorRunner{}), newSourceRuntimeCheckpoints(t, database), func(context.Context) error { calls.Add(1); return nil })
 	}()
 	waitForSourceRuntimeSignal(t, reader.started, "reader start")
 	cancel()
 	err = waitForSourceRuntimeResult(t, result)
+	err = finishSourceIntakeTestOwner(t, err, closer)
 	close(reader.release)
 	waitForSourceRuntimeSignal(t, reader.stopped, "reader return")
-	if !errors.Is(err, context.DeadlineExceeded) || calls.Load() != 0 || closer.Calls() != 0 {
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrSourceIntakeShutdownTimeout) || calls.Load() != 0 || closer.Calls() != 0 {
 		t.Fatalf("error=%v maintenance=%d close=%d", err, calls.Load(), closer.Calls())
 	}
 }
@@ -250,14 +271,15 @@ func TestSourceMaintenanceSkipsWorkerTimeout(t *testing.T) {
 	var calls atomic.Int32
 	result := make(chan error, 1)
 	go func() {
-		result <- RunSourceIntakeRuntime(context.Background(), 20*time.Millisecond, reader, queue, NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), runner), newSourceRuntimeCheckpoints(t, database), closer, func(context.Context) error { calls.Add(1); return nil })
+		result <- RunSourceIntakeRuntime(context.Background(), 20*time.Millisecond, reader, queue, NewCoordinator(newEnforcingSQLiteStoreAdapter(t, database), runner), newSourceRuntimeCheckpoints(t, database), func(context.Context) error { calls.Add(1); return nil })
 	}()
 	waitForSourceRuntimeSignal(t, runner.started, "worker start")
 	err = waitForSourceRuntimeResult(t, result)
+	err = finishSourceIntakeTestOwner(t, err, closer)
 	waitForSourceRuntimeSignal(t, runner.cancelled, "worker cancellation")
 	close(runner.release)
 	waitForSourceRuntimeSignal(t, runner.returned, "worker return")
-	if !errors.Is(err, context.DeadlineExceeded) || calls.Load() != 0 || closer.Calls() != 0 {
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrSourceIntakeShutdownTimeout) || calls.Load() != 0 || closer.Calls() != 0 {
 		t.Fatalf("error=%v maintenance=%d close=%d", err, calls.Load(), closer.Calls())
 	}
 }
@@ -302,8 +324,9 @@ func TestSourceMaintenanceSkipsFlushIOTimeout(t *testing.T) {
 	defer cancelDeadline()
 	closer := &sourceRuntimeCountingCloser{}
 	calls := 0
-	err = finishSourceIntakeRuntime(ctx, checkpoints, closer, nil, func(context.Context) error { calls++; return nil })
-	if !errors.Is(err, context.DeadlineExceeded) || !containsErrorText(err, "flush checkpoint") || !containsErrorText(err, "save source checkpoint") {
+	err = finishSourceIntakeRuntime(ctx, checkpoints, nil, func(context.Context) error { calls++; return nil })
+	err = finishSourceIntakeTestOwner(t, err, closer)
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrSourceIntakeShutdownTimeout) || !containsErrorText(err, "flush checkpoint") || !containsErrorText(err, "save source checkpoint") {
 		t.Fatalf("error=%v, want shutdown deadline and retained Flush IO error", err)
 	}
 	if calls != 0 || closer.Calls() != 0 {
